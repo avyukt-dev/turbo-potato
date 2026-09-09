@@ -25,10 +25,14 @@ When an explanatory example in another document conflicts with a shared contract
 | Overall system boundaries and end-to-end architecture | `ARCHITECTURE.md` |
 | PostgreSQL entities, relationships, persistence, and durable state | `DATA_MODEL.md` |
 | Redis Streams events, envelopes, delivery, retries, and consumer contracts | `EVENTS.md` |
-| AI providers, routing, prompts, structured output, provenance, and model lifecycle | `AI_PLATFORM.md` |
+| AI providers, routing, prompts, structured output execution, provenance, and model lifecycle | `AI_PLATFORM.md` |
 | Editorial priorities, evidence-aware framing, sensitive-topic policy, and content rules | `CONTENT_AND_EDITORIAL.md` |
-| Infrastructure, POCO deployment, runtime, networking, storage, backups, and operations | `INFRASTRUCTURE_AND_DEPLOYMENT.md` |
+| Source registry/roles, discovery, research planning, evidence acquisition, corroboration, contradictions, and historical research methodology | `SOURCE_AND_RESEARCH.md` |
+| Application-layer structured Pydantic/JSON contracts | `CONTENT_SCHEMAS.md` |
 | Social adapters, publication state, scheduling, retries, and platform constraints | `SOCIAL_PUBLISHING.md` |
+| FastAPI HTTP boundary, endpoint behavior, authorization expectations, and API-level state validation | `API_SPEC.md` |
+| Infrastructure, POCO deployment, runtime, networking, storage, backups, and infrastructure design | `INFRASTRUCTURE_AND_DEPLOYMENT.md` |
+| Day-to-day operations, health checks, deployment execution, incident response, and recovery procedures | `OPERATIONS_RUNBOOK.md` |
 | Test strategy, evaluation, release gates, and rollback criteria | `TESTING_AND_EVALUATION.md` |
 | Shared enums, cross-document state semantics, precedence, and invariants | `CANONICAL_CONTRACTS.md` |
 
@@ -591,7 +595,41 @@ retry only when safe
 
 ---
 
-# 22. Cross-Document Change Rule
+# 22. Structured Contract Boundary
+
+`CONTENT_SCHEMAS.md` owns application-layer Pydantic/JSON contracts.
+
+Schemas must use the shared enums in this document and must not redefine business truth, persistence ownership, or publication policy.
+
+`API_SPEC.md` may reference these schemas but must not create incompatible payload vocabularies.
+
+---
+
+# 23. Research Boundary
+
+`SOURCE_AND_RESEARCH.md` owns source roles, research planning, search-provider abstraction, evidence acquisition, source independence, contradiction handling, and historical research methodology.
+
+Research output must preserve the shared evidence/editorial separation and must not treat AI synthesis as evidence.
+
+---
+
+# 24. API Boundary
+
+`API_SPEC.md` owns HTTP endpoint semantics and API-level state validation.
+
+The API orchestrates domain services and asynchronous work. It does not become an alternate source of business-state truth or bypass the Fact Sheet/review/publication gates.
+
+---
+
+# 25. Operations Boundary
+
+`OPERATIONS_RUNBOOK.md` owns operator procedures.
+
+It may describe how to inspect, pause, recover, deploy, or roll back the system, but it must not redefine infrastructure architecture or domain lifecycle semantics.
+
+---
+
+# 26. Cross-Document Change Rule
 
 Any change to a shared concept must update this file first or in the same change set.
 
@@ -614,7 +652,7 @@ A new domain document must reference these contracts rather than inventing alter
 
 ---
 
-# 23. Final Invariant
+# 27. Final Invariant
 
 The system must remain implementable as:
 
