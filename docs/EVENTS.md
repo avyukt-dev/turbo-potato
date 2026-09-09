@@ -23,6 +23,8 @@ It specifies:
 
 The event system connects the processing pipeline without making Redis the source of truth.
 
+Shared enums and cross-document semantics are defined by `CANONICAL_CONTRACTS.md`.
+
 ---
 
 # 2. Core Principle
@@ -91,7 +93,7 @@ QUALITY GATE
       ↓
 content.quality_checked
       ↓
-HUMAN REVIEW
+HUMAN APPROVAL
       ↓
 publication.scheduled
       ↓
@@ -103,6 +105,8 @@ ANALYTICS
       ↓
 analytics.collected
 ```
+
+For the MVP, every external social publication requires explicit human approval. A future low-risk auto-approval mode may be introduced only under the conditions defined in `CANONICAL_CONTRACTS.md`.
 
 ---
 
@@ -305,8 +309,6 @@ Used for:
 * deduplication
 * debugging
 
----
-
 ## `event_type`
 
 Canonical event name.
@@ -317,29 +319,15 @@ Example:
 article.discovered
 ```
 
----
-
 ## `schema_version`
 
 Integer version.
 
-Example:
-
-```text
-1
-```
-
-Never silently change the meaning of an existing version.
-
-Breaking changes require a new version.
-
----
+Never silently change the meaning of an existing version. Breaking semantic changes require a new version.
 
 ## `occurred_at`
 
 UTC timestamp representing when the event occurred.
-
----
 
 ## `producer`
 
@@ -356,15 +344,9 @@ scheduler
 analytics-worker
 ```
 
----
-
 ## `producer_version`
 
 Application version.
-
-Useful when debugging deployment-specific failures.
-
----
 
 ## `aggregate_type`
 
@@ -382,92 +364,37 @@ publication
 job
 ```
 
----
-
 ## `aggregate_id`
 
 UUID of the affected database record.
-
----
 
 ## `correlation_id`
 
 Groups all events belonging to one processing flow.
 
-Example:
-
-```text
-RSS article
-→ story
-→ claims
-→ evidence
-→ content
-→ publication
-```
-
-All events can share one correlation ID.
-
----
-
 ## `causation_id`
 
 References the event that caused the current event.
-
-Example:
-
-```text
-article.normalized
-```
-
-may have:
-
-```text
-causation_id = article.discovered event_id
-```
-
-This creates an event lineage.
-
----
 
 ## `idempotency_key`
 
 Stable key allowing a consumer to recognize duplicate delivery.
 
----
-
 ## `payload`
 
-Event-specific data.
-
-Keep payloads small.
-
-The database remains authoritative.
+Event-specific data. Keep payloads small. PostgreSQL remains authoritative.
 
 ---
 
 # 10. Article Discovered
 
-Event:
+Event: `article.discovered`
 
-```text
-article.discovered
-```
+Produced by: `collector`
 
-Produced by:
+Stream: `news:articles`
 
-```text
-collector
-```
-
-Stream:
-
-```text
-news:articles
-```
-
-Payload:
-
-```json id="r8u4pq"
+```json
 {
   "article_id": "uuid",
   "source_id": "uuid",
@@ -478,37 +405,17 @@ Payload:
 }
 ```
 
-Consumer:
-
-```text
-processor
-```
-
-Action:
-
-```text
-fetch/normalize article
-```
+Consumer: `processor`
 
 ---
 
 # 11. Article Normalized
 
-Event:
+Event: `article.normalized`
 
-```text
-article.normalized
-```
+Produced by: `processor`
 
-Produced by:
-
-```text
-processor
-```
-
-Payload:
-
-```json id="5h2tqk"
+```json
 {
   "article_id": "uuid",
   "article_version_id": "uuid",
@@ -518,31 +425,17 @@ Payload:
 }
 ```
 
-Consumer:
-
-```text
-story-processor
-```
+Consumer: `story-processor`
 
 ---
 
 # 12. Story Created
 
-Event:
+Event: `story.created`
 
-```text
-story.created
-```
+Produced by: `story-processor`
 
-Produced by:
-
-```text
-story-processor
-```
-
-Payload:
-
-```json id="8n9w7s"
+```json
 {
   "story_id": "uuid",
   "article_id": "uuid",
@@ -561,21 +454,12 @@ editorial-worker
 
 # 13. Story Clustered
 
-Event:
+Event: `story.clustered`
 
-```text
-story.clustered
-```
-
-Payload:
-
-```json id="w6r1bk"
+```json
 {
   "story_id": "uuid",
-  "article_ids": [
-    "uuid",
-    "uuid"
-  ],
+  "article_ids": ["uuid", "uuid"],
   "similarity_score": 0.91,
   "cluster_method": "semantic+entity+time"
 }
@@ -587,60 +471,33 @@ The event indicates that related source material has been associated with the st
 
 # 14. Claims Extracted
 
-Event:
+Event: `claims.extracted`
 
-```text
-claims.extracted
-```
+Produced by: `ai-worker`
 
-Produced by:
-
-```text
-ai-worker
-```
-
-Payload:
-
-```json id="x6j3y4"
+```json
 {
   "story_id": "uuid",
-  "claim_ids": [
-    "uuid",
-    "uuid"
-  ],
+  "claim_ids": ["uuid", "uuid"],
   "ai_run_id": "uuid",
   "model_id": "uuid"
 }
 ```
 
-Claims themselves remain in PostgreSQL.
-
-Do not place entire claim objects in the event unless required.
+Claims remain in PostgreSQL. Do not place entire claim objects in the event unless required.
 
 ---
 
 # 15. Evidence Requested
 
-Event:
+Event: `evidence.requested`
 
-```text
-evidence.requested
-```
+Produced by: `fact-check-worker`
 
-Produced by:
-
-```text
-fact-check-worker
-```
-
-Payload:
-
-```json id="2e9gfr"
+```json
 {
   "story_id": "uuid",
-  "claim_ids": [
-    "uuid"
-  ],
+  "claim_ids": ["uuid"],
   "research_scope": {
     "primary_sources": true,
     "government_sources": true,
@@ -651,126 +508,89 @@ Payload:
 }
 ```
 
-Consumer:
-
-```text
-research-worker
-```
+Consumer: `research-worker`
 
 ---
 
 # 16. Evidence Collected
 
-Event:
+Event: `evidence.collected`
 
-```text
-evidence.collected
-```
-
-Payload:
-
-```json id="m83gxy"
+```json
 {
   "story_id": "uuid",
-  "claim_ids": [
-    "uuid"
-  ],
-  "evidence_ids": [
-    "uuid",
-    "uuid"
-  ],
+  "claim_ids": ["uuid"],
+  "evidence_ids": ["uuid", "uuid"],
   "research_run_id": "uuid"
 }
 ```
 
-Consumer:
-
-```text
-factcheck-worker
-```
+Consumer: `factcheck-worker`
 
 ---
 
 # 17. Story Verified
 
-Event:
+Event: `story.verified`
 
-```text
-story.verified
-```
-
-Payload:
-
-```json id="5cnw9h"
+```json
 {
   "story_id": "uuid",
-  "fact_check_ids": [
-    "uuid"
-  ],
+  "fact_check_ids": ["uuid"],
   "confidence_score": 0.84,
   "risk_level": "MEDIUM",
   "review_required": true
 }
 ```
 
-This event does not necessarily mean:
-
-```text
-"every statement is true"
-```
-
-It means the verification stage completed.
-
-Individual claims retain their own status.
+This event means the configured verification stage completed. It does **not** mean every statement is true. Individual claims retain their own `ClaimVerificationStatus` as defined in `CANONICAL_CONTRACTS.md`.
 
 ---
 
 # 18. Fact Check Completed
 
-Event:
+Event: `fact_check.completed`
 
-```text
-fact_check.completed
-```
+The verdict uses the `FactCheckLabel` namespace, not `ClaimVerificationStatus`.
 
-Payload:
-
-```json id="z9m4g6"
+```json
 {
   "story_id": "uuid",
   "fact_check_id": "uuid",
-  "status": "PARTIALLY_SUPPORTED",
+  "label": "PARTIALLY_TRUE",
   "confidence_score": 0.78,
   "review_required": true
 }
+```
+
+Canonical labels are:
+
+```text
+TRUE
+MOSTLY_TRUE
+PARTIALLY_TRUE
+MISLEADING
+OUT_OF_CONTEXT
+UNVERIFIED
+FALSE
+FABRICATED
+SATIRE
 ```
 
 ---
 
 # 19. Content Requested
 
-Event:
+Event: `content.requested`
 
-```text
-content.requested
-```
+Produced after a story has an adequate Fact Sheet.
 
-Produced after a story has an adequate fact sheet.
-
-Payload:
-
-```json id="y7w5p4"
+```json
 {
   "story_id": "uuid",
   "fact_sheet_id": "uuid",
-  "requested_platforms": [
-    "INSTAGRAM",
-    "X"
-  ],
-  "requested_formats": [
-    "CAROUSEL",
-    "POST"
-  ]
+  "requested_platforms": ["INSTAGRAM", "X"],
+  "requested_formats": ["CAROUSEL", "POST"]
 }
 ```
 
@@ -778,22 +598,13 @@ Payload:
 
 # 20. Content Generated
 
-Event:
+Event: `content.generated`
 
-```text
-content.generated
-```
-
-Payload:
-
-```json id="g5s4w1"
+```json
 {
   "story_id": "uuid",
   "content_draft_id": "uuid",
-  "content_variant_ids": [
-    "uuid",
-    "uuid"
-  ],
+  "content_variant_ids": ["uuid", "uuid"],
   "ai_run_id": "uuid"
 }
 ```
@@ -802,15 +613,9 @@ Payload:
 
 # 21. Content Quality Checked
 
-Event:
+Event: `content.quality_checked`
 
-```text
-content.quality_checked
-```
-
-Payload:
-
-```json id="j8f0tq"
+```json
 {
   "content_draft_id": "uuid",
   "passed": true,
@@ -818,31 +623,21 @@ Payload:
   "source_check_passed": true,
   "style_check_passed": true,
   "risk_level": "LOW",
-  "review_required": false
+  "review_required": true
 }
 ```
 
-For sensitive topics:
+For the MVP, `review_required` remains `true` for every externally publishable content item because all external publication requires explicit human approval.
 
-```text
-review_required = true
-```
-
-may remain mandatory even when automated checks pass.
+A future explicitly enabled low-risk auto-approval policy may permit `review_required = false` only under the conditions in `CANONICAL_CONTRACTS.md`. Sensitive or mandatory-review topics may never use that low-risk bypass.
 
 ---
 
 # 22. Publication Scheduled
 
-Event:
+Event: `publication.scheduled`
 
-```text
-publication.scheduled
-```
-
-Payload:
-
-```json id="a4e6zp"
+```json
 {
   "publication_id": "uuid",
   "content_variant_id": "uuid",
@@ -851,25 +646,15 @@ Payload:
 }
 ```
 
-Consumer:
-
-```text
-publisher
-```
+Consumer: `publisher`
 
 ---
 
 # 23. Publication Executed
 
-Event:
+Event: `publication.executed`
 
-```text
-publication.executed
-```
-
-Payload:
-
-```json id="2j4b8k"
+```json
 {
   "publication_id": "uuid",
   "attempt_id": "uuid",
@@ -884,15 +669,9 @@ Payload:
 
 # 24. Publication Failed
 
-Event:
+Event: `publication.failed`
 
-```text
-publication.failed
-```
-
-Payload:
-
-```json id="v4u0k8"
+```json
 {
   "publication_id": "uuid",
   "attempt_id": "uuid",
@@ -908,15 +687,9 @@ The publisher determines whether retry is safe.
 
 # 25. Analytics Requested
 
-Event:
+Event: `analytics.requested`
 
-```text
-analytics.requested
-```
-
-Payload:
-
-```json id="c2x8sj"
+```json
 {
   "publication_id": "uuid",
   "platform": "INSTAGRAM"
@@ -927,15 +700,9 @@ Payload:
 
 # 26. Analytics Collected
 
-Event:
+Event: `analytics.collected`
 
-```text
-analytics.collected
-```
-
-Payload:
-
-```json id="x5k3g1"
+```json
 {
   "publication_id": "uuid",
   "analytics_snapshot_id": "uuid",
@@ -957,7 +724,7 @@ job.completed
 
 Example:
 
-```json id="y8f6p0"
+```json
 {
   "job_id": "uuid",
   "job_type": "EVIDENCE_RESEARCH",
@@ -991,17 +758,7 @@ EMIT NEXT EVENT
 ACK
 ```
 
-Never:
-
-```text
-READ
- ↓
-ACK
- ↓
-PROCESS
-```
-
-because a worker crash after ACK can lose the event.
+Never ACK before durable processing completes.
 
 ---
 
@@ -1009,33 +766,15 @@ because a worker crash after ACK can lose the event.
 
 Consumers MUST assume duplicate delivery.
 
-Example:
-
-```text
-article.discovered
-```
-
-may arrive twice.
-
-Processor:
-
-```text
-1. Read article_id.
-2. Check current database state.
-3. Determine whether normalization already completed.
-4. If completed, safely ACK.
-5. Otherwise process.
-```
+A consumer loads current PostgreSQL state and safely no-ops when the work has already completed.
 
 ---
 
 # 30. Idempotency Table
 
-For high-value operations, maintain explicit processing records.
+For high-value operations, maintain explicit processing records where useful:
 
-Recommended future table:
-
-```text id="bq4k7m"
+```text
 processed_events
 ---------------
 event_id
@@ -1046,25 +785,15 @@ result
 
 Unique constraint:
 
-```text id="y7f3t1"
+```text
 (event_id, consumer_group)
 ```
-
-This prevents the same event from being processed twice by the same logical consumer.
 
 ---
 
 # 31. External Side-Effect Idempotency
 
-External APIs require additional protection.
-
-For publication:
-
-```text
-publication_id
-```
-
-is the canonical internal operation.
+For publication, `publication_id` is the canonical internal operation.
 
 Before sending:
 
@@ -1082,74 +811,25 @@ A retry MUST NOT blindly create another post.
 
 # 32. Redis Consumer Acknowledgement
 
-Use:
-
-```text
-XREADGROUP
-```
-
-with explicit:
-
-```text
-XACK
-```
-
-Only acknowledge after durable processing succeeds.
+Use `XREADGROUP` with explicit `XACK` only after durable processing succeeds.
 
 ---
 
 # 33. Pending Messages
 
-If a worker crashes while processing:
-
-```text
-Redis
-→ pending message
-```
-
-A recovery worker should periodically inspect pending messages.
-
-Recovery flow:
-
-```text
-pending message
-      ↓
-check consumer ownership
-      ↓
-check idle time
-      ↓
-claim message
-      ↓
-retry
-```
+If a worker crashes while processing, the message remains pending. Recovery workers inspect stale pending messages, claim them when safe, and retry idempotently.
 
 ---
 
 # 34. Dead-Letter Queue
 
-Messages that repeatedly fail should eventually enter a dead-letter stream.
-
-Recommended:
+Repeated failures should eventually enter:
 
 ```text
 news:dead-letter
 ```
 
-Dead-letter payload:
-
-```json id="c0l2s6"
-{
-  "original_event_id": "uuid",
-  "original_event_type": "evidence.requested",
-  "consumer": "research-worker",
-  "attempts": 8,
-  "last_error": "SEARCH_TIMEOUT",
-  "failed_at": "2026-09-09T12:00:00Z",
-  "original_payload": {}
-}
-```
-
-Dead-letter events MUST remain inspectable.
+Dead-letter events MUST remain inspectable and retain the original event reference, consumer, attempt count, final error, timestamp, and original payload/reference.
 
 ---
 
@@ -1165,23 +845,13 @@ attempt 4 → 30 minutes
 attempt 5 → 2 hours
 ```
 
-Add jitter.
-
-Example:
-
-```text
-delay = base_delay × random_factor
-```
-
-Do not retry forever.
+Add jitter. Do not retry forever.
 
 ---
 
 # 36. Retry Classification
 
-Errors should be classified.
-
-## Retryable
+Retryable examples:
 
 ```text
 NETWORK_TIMEOUT
@@ -1192,7 +862,7 @@ REDIS_CONNECTION_ERROR
 TEMPORARY_SEARCH_FAILURE
 ```
 
-## Non-retryable
+Non-retryable examples:
 
 ```text
 INVALID_PAYLOAD
@@ -1204,242 +874,74 @@ INVALID_SOCIAL_ACCOUNT
 POLICY_BLOCK
 ```
 
-Some provider errors may change classification depending on context.
-
 ---
 
 # 37. Rate Limiting
 
-Workers must respect external provider limits.
-
-Implement rate limiting separately from event semantics.
-
-Possible mechanisms:
-
-```text
-Redis token bucket
-Redis counter + TTL
-provider-aware scheduler
-```
-
-The event should remain queued rather than being discarded.
+Workers must respect provider limits. Rate limiting is separate from event semantics. Work should remain queued rather than being discarded.
 
 ---
 
 # 38. Ordering
 
-Do not assume global ordering across Redis Streams.
-
-Ordering should be meaningful only where required.
-
-For story-specific processing:
-
-```text
-aggregate_id = story_id
-```
-
-can be used for logical sequencing.
-
-Example:
-
-```text
-story.created
-→ story.clustered
-→ claims.extracted
-```
-
-The consumer should still verify database state before acting.
+Do not assume global ordering across Redis Streams. Consumers must always verify current PostgreSQL state before acting.
 
 ---
 
 # 39. Event Versioning
 
-Schema changes:
-
-### Backward-compatible
-
-Examples:
-
-```text
-add optional field
-add metadata
-```
-
-May remain:
-
-```text
-schema_version = 1
-```
-
-### Breaking
-
-Examples:
-
-```text
-rename field
-change field type
-change semantics
-```
-
-Require:
-
-```text
-schema_version = 2
-```
-
-Consumers should support a transition period where necessary.
+Backward-compatible additions may remain on the same schema version. Breaking changes to field names, field types, or semantics require a new version.
 
 ---
 
 # 40. Event Size
 
-Events should generally contain:
-
-```text
-IDs
-small metadata
-state references
-```
-
-Avoid putting:
-
-```text
-full article bodies
-large HTML
-large images
-full AI transcripts
-large search results
-```
-
-into Redis events.
-
-Store large data in:
-
-```text
-PostgreSQL
-object storage
-```
-
-and pass references.
+Events should generally contain IDs, small metadata, and state references. Store large article bodies, media, AI transcripts, and research results in PostgreSQL or media/object storage and pass references.
 
 ---
 
 # 41. Correlation Tracing
 
-One story should be traceable end-to-end.
-
-Example:
-
-```text
-correlation_id = STORY-UUID
-```
-
-Then:
-
-```text
-article.discovered
-article.normalized
-story.created
-claims.extracted
-evidence.requested
-evidence.collected
-fact_check.completed
-content.generated
-content.quality_checked
-publication.scheduled
-publication.executed
-```
-
-can all be associated with the same processing flow.
+One story should be traceable end-to-end through `correlation_id`, `causation_id`, and `event_id`.
 
 ---
 
 # 42. Causation Graph
 
-Example:
-
 ```text
 article.discovered
-        │
-        ▼
+        ↓
 article.normalized
-        │
-        ▼
+        ↓
 story.created
-        │
         ├──────────────┐
-        ▼              ▼
+        ↓              ↓
 claims.extracted   editorial.score
-        │
-        ▼
+        ↓
 evidence.requested
-        │
-        ▼
+        ↓
 evidence.collected
-        │
-        ▼
+        ↓
 fact_check.completed
-        │
-        ▼
+        ↓
 content.requested
-        │
-        ▼
+        ↓
 content.generated
-        │
-        ▼
+        ↓
 content.quality_checked
-        │
-        ▼
+        ↓
+human approval (database state)
+        ↓
 publication.scheduled
-        │
-        ▼
+        ↓
 publication.executed
-```
-
-This should be reconstructable using:
-
-```text
-correlation_id
-causation_id
-event_id
 ```
 
 ---
 
 # 43. Transactional Outbox
 
-Directly publishing an event after a database update creates a failure window:
-
-```text
-DB UPDATE
-   ↓
-process crashes
-   ↓
-event never published
-```
-
-Use an outbox.
-
-Transaction:
-
-```text
-BEGIN
-
-UPDATE stories
-SET status = 'VERIFIED'
-
-INSERT INTO event_outbox (...)
-
-COMMIT
-```
-
-Then:
-
-```text
-Outbox Worker
-    ↓
-Redis Streams
-```
+Important database state transitions should write the business update and outbox event in the same PostgreSQL transaction. The outbox worker then publishes to Redis Streams.
 
 ---
 
@@ -1447,7 +949,7 @@ Redis Streams
 
 Recommended:
 
-```text id="d8c7e5"
+```text
 event_outbox
 ------------
 id                    UUID PK
@@ -1481,286 +983,99 @@ FAILED
 
 # 45. Outbox Publishing
 
-Flow:
-
-```text
-PostgreSQL
-    ↓
-SELECT pending outbox rows
-    ↓
-claim rows
-    ↓
-publish Redis event
-    ↓
-mark PUBLISHED
-```
-
-If the worker crashes after Redis publish but before marking PostgreSQL:
-
-```text
-event may be published twice
-```
-
-Therefore consumers MUST remain idempotent.
-
-Exactly-once processing should not be assumed.
+If the outbox worker crashes after Redis publish but before marking PostgreSQL, an event may be delivered twice. Consumers MUST therefore remain idempotent. Exactly-once processing is not assumed.
 
 ---
 
 # 46. Event Retention
 
-Redis streams are transport infrastructure.
-
-Do not rely on indefinite retention.
-
-Recommended approach:
-
-```text
-Redis
-    → operational event window
-
-PostgreSQL
-    → permanent provenance where required
-```
-
-For important events, preserve the event record in:
-
-```text
-event_outbox
-audit_log
-ai_runs
-publication_attempts
-```
-
-as appropriate.
+Redis provides an operational event window. Permanent provenance lives in PostgreSQL through the appropriate business, outbox, audit, AI-run, and publication-attempt records.
 
 ---
 
 # 47. Event Observability
 
-Every worker should expose:
-
-```text
-events_received_total
-events_processed_total
-events_failed_total
-events_retried_total
-events_dead_lettered_total
-event_processing_latency_ms
-```
-
-Track by:
-
-```text
-event_type
-consumer
-status
-```
+Workers should expose counts and latency for received, processed, failed, retried, and dead-lettered events by event type and consumer.
 
 ---
 
 # 48. Queue Health
 
-The monitoring system should expose:
-
-```text
-stream
-consumer group
-pending count
-oldest pending age
-processing rate
-failure rate
-retry count
-dead-letter count
-```
-
-Example:
-
-```text
-EVENT QUEUES
-
-news:articles
-  pending: 12
-  oldest: 8s
-
-news:evidence
-  pending: 4
-  oldest: 31s
-
-news:content
-  pending: 2
-  oldest: 12s
-
-news:publishing
-  pending: 0
-```
+Monitor stream, consumer group, pending count, oldest pending age, processing rate, failure rate, retry count, and dead-letter count.
 
 ---
 
 # 49. Worker Health
 
-Every worker should expose:
-
-```text
-worker status
-last successful event
-last failure
-current job
-queue depth
-processing latency
-memory usage
-```
-
-The existing server health architecture should eventually incorporate:
-
-```text
-SERVICES
-├── Collector
-├── Processor
-├── AI Worker
-├── Publisher
-└── Scheduler
-
-QUEUES
-├── articles
-├── stories
-├── evidence
-├── content
-├── publishing
-└── analytics
-```
+Expose worker status, last successful event, last failure, current job, queue depth, processing latency, and resource use.
 
 ---
 
 # 50. Failure Isolation
 
-A failure in one domain must not stop the entire pipeline.
-
-Example:
-
-```text
-Instagram API down
-```
-
-must NOT prevent:
-
-```text
-news collection
-fact checking
-story research
-content generation
-```
-
-Only publishing should accumulate retryable work.
+A failure in one domain must not stop unrelated domains. For example, an Instagram API outage must not stop collection, research, fact checking, or content generation.
 
 ---
 
 # 51. Cloud AI Failure
 
-If a cloud AI provider fails:
-
-```text
-content generation
-      ↓
-provider failure
-      ↓
-retry
-      ↓
-alternate provider
-```
-
-Provider fallback should be controlled by the AI router.
-
-The event contract remains:
-
-```text
-content.requested
-```
-
-The internal provider choice does not need a separate event.
+Cloud-provider fallback is controlled by the AI router. Event contracts remain provider-independent.
 
 ---
 
 # 52. Local AI Failure
 
-If POCO local inference becomes unavailable:
-
-```text
-local AI unavailable
-       ↓
-health check
-       ↓
-router fallback
-       ↓
-cloud provider
-```
-
-Do not lose the job.
+If local inference is unavailable, the router may retry or use an allowed fallback provider without losing the job.
 
 ---
 
 # 53. Sensitive Story Failure
 
-If a sensitive story cannot be verified adequately:
-
-```text
-evidence.requested
-        ↓
-research failure
-        ↓
-retry
-        ↓
-insufficient evidence
-        ↓
-human review
-```
-
-Never automatically publish simply because the retry budget has been exhausted.
+If a sensitive story cannot be verified adequately, it must not become publishable simply because research retries are exhausted. Preserve insufficient-evidence state and route to human review.
 
 ---
 
 # 54. Human Review Boundary
 
-Human review is not a Redis event consumer.
+Human review is durable database state, not a Redis consumer.
 
-The database is the authoritative review state.
-
-Workflow:
+For the MVP:
 
 ```text
 quality check
     ↓
 database:
-review_required = true
+review_state = READY_FOR_REVIEW
     ↓
 dashboard
     ↓
 human decision
     ↓
-database update
+database:
+review_state = APPROVED
     ↓
 publication.scheduled
 ```
 
-Audit the human decision.
+Every external publication requires this explicit human approval in the MVP. Sensitive and mandatory-review categories always require human review, including in any future low-risk automation mode.
+
+Audit the human decision and the exact artifact/version approved.
 
 ---
 
 # 55. Publication Safety
 
-Publishing must require a valid database state.
+Publisher must re-check current PostgreSQL state immediately before an external side effect.
 
-Minimum:
+MVP minimum:
 
 ```text
-story = VERIFIED
+verification stage = complete
 fact_sheet = valid
 content = QUALITY_CHECKED
-review = APPROVED where required
+review = APPROVED
 publication = SCHEDULED
 ```
-
-Publisher must re-check state immediately before external publication.
 
 Never trust an old queue message alone.
 
@@ -1768,31 +1083,7 @@ Never trust an old queue message alone.
 
 # 56. Stale Event Handling
 
-Events can arrive after state has changed.
-
-Example:
-
-```text
-content.requested
-```
-
-arrives after:
-
-```text
-story = REJECTED
-```
-
-Consumer behavior:
-
-```text
-load current state
-→ detect invalid transition
-→ do not process
-→ ACK safely
-→ record reason
-```
-
-Do not blindly execute historical events.
+If an event arrives after state has changed, the consumer must load current state, reject invalid transitions, record the reason, and ACK safely without executing stale work.
 
 ---
 
@@ -1811,7 +1102,7 @@ CLAIMS_EXTRACTED
     ↓
 EVIDENCE_COLLECTED
     ↓
-VERIFIED
+VERIFICATION_COMPLETED
     ↓
 CONTENT_GENERATED
     ↓
@@ -1824,92 +1115,31 @@ SCHEDULED
 PUBLISHED
 ```
 
-Allowed transitions should be enforced by application services.
+`VERIFICATION_COMPLETED` is a pipeline stage and must not be interpreted as “all claims true.”
 
 ---
 
 # 58. Event Contract Testing
 
-Every event schema should have tests for:
-
-```text
-valid payload
-missing required field
-invalid UUID
-invalid enum
-unsupported schema version
-duplicate event
-malformed payload
-```
-
-Consumer tests should verify:
-
-```text
-given event
-→ expected database state
-→ expected next event
-```
+Every event schema should have tests for valid payload, missing required fields, invalid UUIDs/enums, unsupported schema versions, duplicate delivery, and malformed payloads.
 
 ---
 
 # 59. Integration Testing
 
-The integration test environment should include:
-
-```text
-PostgreSQL
-Redis
-Collector
-Processor
-AI Worker
-Publisher mock
-```
-
-Test:
-
-```text
-article.discovered
-→ article normalized
-→ story created
-→ claims extracted
-→ evidence collected
-→ fact check completed
-→ content generated
-→ quality check
-→ publication scheduled
-```
-
-No real social post should be created during automated integration tests.
+Integration tests should cover the end-to-end event sequence using PostgreSQL, Redis, workers, and mocked external publishers. Automated tests must not create real social posts.
 
 ---
 
 # 60. Replay
 
-Events should be replayable where practical.
-
-Example:
-
-```text
-historical event
-→ new consumer version
-→ rebuild derived state
-```
-
-Replay MUST NOT trigger dangerous external side effects automatically.
-
-Especially:
-
-```text
-publication.executed
-```
-
-should not be replayed into a live publisher.
+Events should be replayable where practical, but replay MUST NOT automatically trigger dangerous external side effects.
 
 ---
 
 # 61. Event Replay Modes
 
-Recommended:
+Recommended modes:
 
 ```text
 DRY_RUN
@@ -1918,224 +1148,63 @@ BACKFILL
 LIVE
 ```
 
-Default:
-
-```text
-REBUILD
-```
-
-for historical processing.
-
-Publishing workers should require explicit:
-
-```text
-LIVE
-```
-
-mode.
+Publishing workers require explicit `LIVE` mode.
 
 ---
 
 # 62. Event Security
 
-Do not place secrets in event payloads.
-
-Never include:
-
-```text
-API keys
-access tokens
-refresh tokens
-passwords
-session cookies
-authorization headers
-```
-
-Events may contain:
-
-```text
-credential_reference
-```
-
-but not the credential itself.
+Never place API keys, access tokens, refresh tokens, passwords, session cookies, or authorization headers in event payloads. Credential references are allowed.
 
 ---
 
 # 63. Payload Privacy
 
-Minimize personally identifying information.
-
-A claim event should normally contain:
-
-```text
-claim_id
-story_id
-```
-
-rather than copying unnecessary personal data.
+Minimize personally identifying information in events. Prefer IDs and database references over copying unnecessary personal data.
 
 ---
 
 # 64. Event Metadata
 
-Useful optional metadata:
-
-```json id="g8o2cc"
-{
-  "environment": "production",
-  "region": "india",
-  "trace_id": "...",
-  "request_id": "...",
-  "worker_id": "ai-worker-01"
-}
-```
-
-Do not make operational metadata part of the business payload.
+Operational metadata such as environment, trace ID, request ID, and worker ID should remain separate from business payload semantics.
 
 ---
 
 # 65. Service Responsibilities
 
 ## Collector
-
-Produces:
-
-```text
-article.discovered
-```
+Produces `article.discovered`.
 
 ## Processor
-
-Consumes:
-
-```text
-article.discovered
-```
-
-Produces:
-
-```text
-article.normalized
-story.created
-story.clustered
-```
+Consumes `article.discovered`; produces `article.normalized`, `story.created`, and `story.clustered`.
 
 ## AI Worker
-
-Consumes:
-
-```text
-claims.extracted requests
-content.requested
-```
-
-Produces:
-
-```text
-claims.extracted
-content.generated
-```
+Produces AI-derived events such as `claims.extracted` and `content.generated` according to task routing.
 
 ## Research Worker
-
-Consumes:
-
-```text
-evidence.requested
-```
-
-Produces:
-
-```text
-evidence.collected
-```
+Consumes `evidence.requested`; produces `evidence.collected`.
 
 ## Fact Check Worker
-
-Consumes:
-
-```text
-evidence.collected
-```
-
-Produces:
-
-```text
-fact_check.completed
-story.verified
-```
+Consumes `evidence.collected`; produces `fact_check.completed` and `story.verified`.
 
 ## Content Worker
-
-Consumes:
-
-```text
-content.requested
-```
-
-Produces:
-
-```text
-content.generated
-```
+Consumes `content.requested`; produces `content.generated`.
 
 ## Quality Worker
-
-Consumes:
-
-```text
-content.generated
-```
-
-Produces:
-
-```text
-content.quality_checked
-```
+Consumes `content.generated`; produces `content.quality_checked`.
 
 ## Scheduler
-
-Produces:
-
-```text
-publication.scheduled
-analytics.requested
-```
+Produces `publication.scheduled` and `analytics.requested` for eligible durable state.
 
 ## Publisher
-
-Consumes:
-
-```text
-publication.scheduled
-```
-
-Produces:
-
-```text
-publication.executed
-publication.failed
-```
+Consumes `publication.scheduled`; produces `publication.executed` or `publication.failed`.
 
 ## Analytics Worker
-
-Consumes:
-
-```text
-analytics.requested
-```
-
-Produces:
-
-```text
-analytics.collected
-```
+Consumes `analytics.requested`; produces `analytics.collected`.
 
 ---
 
 # 66. Recommended Event Package
-
-Repository structure:
 
 ```text
 packages/events/
@@ -2165,8 +1234,6 @@ Use Pydantic models for event validation.
 
 # 67. Event Registry
 
-Central registry:
-
 ```python
 EVENT_REGISTRY = {
     "article.discovered": ArticleDiscoveredV1,
@@ -2193,8 +1260,6 @@ EVENT_REGISTRY = {
 
 # 68. Example Event Model
 
-Conceptually:
-
 ```python
 class EventEnvelope(BaseModel):
     event_id: UUID
@@ -2217,42 +1282,13 @@ Specific events should use typed payload models.
 
 # 69. Producer API
 
-Application code should use:
-
-```python
-await event_bus.publish(
-    event_type="claims.extracted",
-    aggregate_id=story.id,
-    payload={
-        "story_id": str(story.id),
-        "claim_ids": claim_ids,
-        "ai_run_id": str(ai_run.id),
-    },
-)
-```
-
-It should NOT directly construct Redis commands throughout the codebase.
+Application code should publish through the event abstraction rather than scattering raw Redis commands through business logic.
 
 ---
 
 # 70. Consumer API
 
-Worker code should conceptually use:
-
-```python
-async for event in consumer:
-    try:
-        await processor.handle(event)
-        await consumer.ack(event)
-    except RetryableError:
-        await consumer.retry(event)
-    except PermanentError:
-        await consumer.dead_letter(event)
-```
-
-The infrastructure layer owns Redis mechanics.
-
-Business services own processing decisions.
+Workers should use a common consumer abstraction that handles ACK, retry, and dead-letter mechanics while business services own processing decisions.
 
 ---
 
@@ -2276,57 +1312,17 @@ outbox publisher
 Redis
 ```
 
-This pattern should be used for important state transitions.
-
 ---
 
 # 72. Event-Driven vs Direct Calls
 
-Use events for:
-
-```text
-long-running work
-background processing
-external APIs
-AI inference
-research
-publication
-analytics
-```
-
-Use direct service calls for:
-
-```text
-small deterministic transformations
-validation
-pure domain calculations
-repository operations
-```
-
-Do not turn every function call into an event.
+Use events for long-running/background work and direct service calls for small deterministic transformations, validation, calculations, and repository operations. Do not turn every function call into an event.
 
 ---
 
 # 73. Queue Backpressure
 
-If consumers become slower than producers:
-
-```text
-queue depth increases
-```
-
-The system should:
-
-```text
-1. expose queue depth
-2. limit worker concurrency
-3. prioritize important stories
-4. apply provider rate limits
-5. autoscale where appropriate
-6. preserve events
-```
-
-Priority should be represented in job/database state rather than relying solely on Redis ordering.
+If consumers lag, expose queue depth, limit concurrency, prioritize important stories, apply provider rate limits, and preserve events. Priority belongs in durable job/database state rather than relying solely on Redis ordering.
 
 ---
 
@@ -2342,104 +1338,49 @@ P3 = normal
 P4 = background enrichment
 ```
 
-Examples:
-
-```text
-major breaking geopolitical event → P1
-routine article enrichment → P3
-historical backfill → P4
-```
-
 ---
 
 # 75. Breaking News
 
-Breaking news should not bypass evidence requirements.
-
-Instead:
-
-```text
-breaking story
-    ↓
-higher processing priority
-    ↓
-faster collection/research
-    ↓
-stricter evidence handling
-```
-
-Speed changes scheduling priority.
-
-It does not change factual standards.
+Breaking news receives higher processing priority, not lower factual standards.
 
 ---
 
 # 76. Historical Research
 
-Historical jobs may be long-running.
-
-Recommended event flow:
+Historical event families may be introduced when that subsystem is implemented, for example:
 
 ```text
 historical.research.requested
-        ↓
 historical.sources.collected
-        ↓
 historical.analysis.completed
-        ↓
 historical.fact_sheet.created
 ```
 
-These events can be added when the historical research subsystem is implemented.
+They must follow the same versioning, idempotency, provenance, and evidence-boundary rules.
 
 ---
 
 # 77. Event Governance
 
-Adding a new event requires:
-
-```text
-1. Event name
-2. Schema version
-3. Producer
-4. Consumers
-5. Payload schema
-6. Idempotency key
-7. Retry behavior
-8. Failure behavior
-9. Security review
-10. Tests
-```
-
-Do not add ad-hoc Redis messages.
+Adding an event requires a name, schema version, producer, consumers, payload schema, idempotency key, retry/failure behavior, security review, and tests.
 
 ---
 
 # 78. Canonical Rule
 
-The event system must preserve this principle:
-
 ```text
-EVENT
-  ≠
-STATE
+EVENT ≠ STATE
 
-EVENT
-  →
-notification that state changed or work should be processed
-
-DATABASE
-  →
-authoritative state
+EVENT → notification that state changed or work should be processed
+DATABASE → authoritative state
 ```
 
-Workers must always validate current database state before performing important actions.
+Workers must always validate current PostgreSQL state before important actions.
 
 ---
 
 # 79. Final Architecture
-
-The canonical runtime architecture is:
 
 ```text
                     ┌─────────────────┐
@@ -2473,7 +1414,7 @@ The canonical runtime architecture is:
                        Quality Gate
                              │
                              ▼
-                        Human Review
+                       Human Approval
                              │
                              ▼
                          Scheduler
@@ -2488,7 +1429,7 @@ The canonical runtime architecture is:
                          Analytics
 ```
 
-The fundamental reliability rule is:
+The reliability rule remains:
 
 ```text
 DATABASE TRANSACTION
@@ -2504,4 +1445,4 @@ DEAD LETTER
 RELIABLE PIPELINE
 ```
 
-This is the canonical event architecture for the News AI Social Media Manager.
+This document uses the shared semantics defined in `CANONICAL_CONTRACTS.md`.
