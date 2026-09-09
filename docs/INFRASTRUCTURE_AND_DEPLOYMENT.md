@@ -3,7 +3,7 @@
 # INFRASTRUCTURE_AND_DEPLOYMENT.md
 
 **Status:** Canonical
-**Document Role:** Source of truth for infrastructure, runtime portability, deployment, service management abstraction, storage, networking, backups, secrets, monitoring, and production operations.
+**Document Role:** Source of truth for infrastructure, runtime portability, capability detection, deployment, service-management abstraction, storage, networking, backups, secrets, monitoring, and production operations.
 
 Shared runtime/configuration contracts are defined by `CANONICAL_CONTRACTS.md`.
 
@@ -11,9 +11,9 @@ Shared runtime/configuration contracts are defined by `CANONICAL_CONTRACTS.md`.
 
 # 1. Purpose
 
-This document defines how the News AI Social Media Manager is deployed and operated without making business/application code dependent on a specific operating system, init system, container runtime, or service manager.
+Deploy and operate the application without making business/application code depend on one operating system, CPU architecture, init system, container runtime, or service manager.
 
-The initial physical target is:
+Current physical target:
 
 ```text
 Xiaomi POCO F1 / beryllium
@@ -24,15 +24,13 @@ currently OpenRC
 Tailscale-managed
 ```
 
-Those are deployment characteristics, not application assumptions.
+These are runtime-profile characteristics, not application assumptions.
 
 ---
 
 # 2. Infrastructure Principle
 
-Start small and remain portable.
-
-Initial target:
+Start small:
 
 ```text
 ONE HOST
@@ -42,28 +40,15 @@ ONE LOCAL AI SERVICE
 ONE APPLICATION STACK
 ```
 
-Do not require:
-
-```text
-Kubernetes
-Kafka
-multi-region deployment
-multi-node PostgreSQL
-multi-node Redis
-distributed object storage
-GPU cluster
-large vector database
-```
-
-until measured workload justifies them.
+Do not require Kubernetes, Kafka, multi-region deployment, clustered databases, distributed object storage, GPU clusters, or a large vector database until measured workload justifies them.
 
 ---
 
 # 3. Platform Independence
 
-Application/domain/business logic must not directly invoke system-specific utilities.
+Application/domain/business code must not directly invoke host-specific service utilities.
 
-Prohibited in application code:
+Examples that may only appear inside runtime adapters/diagnostic documentation:
 
 ```text
 rc-service
@@ -71,11 +56,10 @@ rc-update
 systemctl
 service
 launchctl
-sc.exe
-PowerShell service-management commands
+Windows service commands
 ```
 
-The runtime boundary is:
+Canonical runtime boundary:
 
 ```text
 Application / Operator
@@ -91,56 +75,45 @@ capability-selected adapter
 host utility
 ```
 
-Only the infrastructure/runtime adapter knows the actual host utility.
+Only the runtime/infrastructure adapter knows native host commands.
 
 ---
 
-# 4. Capability-Based Runtime Detection
+# 4. Capability Detection
 
-Detection should prefer host capabilities over hard-coded OS assumptions.
-
-Useful signals:
+Runtime detection should consider:
 
 ```text
-Python platform.system()/os.name
+platform.system()
+platform.machine()
+os.name
 /etc/os-release where available
 executable discovery such as shutil.which(...)
 container/runtime metadata
-process/service-manager environment
+service-manager usability checks
 explicit operator override
 ```
 
-Conceptual selection:
+Selection examples:
 
 ```text
-rc-service + rc-update found
-    → OpenRC adapter
-
-systemctl found and usable
-    → systemd adapter
-
-service/init scripts found
-    → SysV adapter
-
-launchctl found
-    → launchd adapter
-
-Windows service capability found
-    → Windows adapter
-
-none found
-    → explicit unmanaged/unsupported mode
+OpenRC utilities found + usable → OpenRC adapter
+systemd utilities found + usable → systemd adapter
+SysV utility found + usable → SysV adapter
+launchd found + usable → launchd adapter
+Windows service capability usable → Windows adapter
+none supported → explicit unmanaged/unsupported mode
 ```
 
-Detection must verify the utility is usable rather than infer purely from filename or OS family.
+Do not infer a service manager from the OS name alone.
 
-Never guess a command and execute it.
+Do not guess and execute a fallback command.
 
 ---
 
 # 5. Runtime Abstraction
 
-Conceptual Python interfaces:
+Conceptual interfaces:
 
 ```python
 class RuntimeDetector(Protocol):
@@ -155,15 +128,11 @@ class ServiceManager(Protocol):
     def disable(self, service: str) -> ServiceResult: ...
 ```
 
-Implementation adapters may be platform-specific. Their use is isolated to the runtime package/infrastructure layer.
-
-Business services never import those adapters directly.
+Business services never import native adapters directly.
 
 ---
 
 # 6. Generic Operator Surface
-
-The intended operator surface is platform-neutral:
 
 ```text
 newsctl runtime detect
@@ -179,13 +148,77 @@ newsctl publish pause
 newsctl publish resume
 ```
 
-The exact CLI implementation can evolve, but scripts and automation should target this abstraction rather than native utilities directly.
+Scripts/automation should target this normalized surface rather than native host commands.
 
 ---
 
-# 7. Current POCO Runtime Profile
+# 7. Runtime Profiles
 
-Current target profile:
+Hardware/OS-specific facts are represented as data, not code branches.
+
+Recommended:
+
+```text
+infra/runtime/profiles/
+├── poco-beryllium.yaml
+├── generic-linux-arm64.yaml
+└── future-profile.yaml
+```
+
+A profile may describe:
+
+```text
+profile name
+architecture
+OS metadata expectations
+resource class
+known capability hints
+preferred adapter order
+filesystem defaults/overrides
+thermal/battery sensors where available
+```
+
+Profiles may provide hints but runtime capability detection still verifies actual utilities.
+
+Do not create application code directories such as `infra/postmarketos/` or make one OS tree canonical.
+
+---
+
+# 8. Runtime/Infrastructure Layout
+
+```text
+infra/
+├── postgres/
+├── redis/
+└── runtime/
+    ├── adapters/
+    │   ├── openrc/
+    │   ├── systemd/
+    │   ├── sysv/
+    │   ├── launchd/
+    │   └── windows/
+    ├── templates/
+    └── profiles/
+```
+
+Platform-neutral Python runtime code:
+
+```text
+packages/runtime/
+├── detector.py
+├── service_manager.py
+├── profile.py
+├── registry.py
+└── errors.py
+```
+
+Native adapters are isolated infrastructure implementation details.
+
+---
+
+# 9. Current POCO Profile
+
+Current expected profile:
 
 ```text
 Device: Xiaomi POCO F1
@@ -193,17 +226,15 @@ Codename: beryllium
 Architecture: aarch64
 OS: postmarketOS
 Mode: headless CLI
-Service manager currently detected: OpenRC
-Remote administration: Tailscale + SSH
+Current detected service manager: OpenRC
+Remote management: Tailscale + SSH
 ```
 
-OpenRC is therefore the initial adapter to implement and test.
-
-It is not the architectural default for all future systems.
+OpenRC is the first runtime adapter to implement because it is required by the current host, not because the architecture depends on it.
 
 ---
 
-# 8. Future Runtime Profiles
+# 10. Future Runtime Targets
 
 The application should remain portable to:
 
@@ -218,47 +249,13 @@ cloud VMs
 GPU inference nodes
 ```
 
-Adding support for another runtime should primarily mean adding/testing a runtime adapter, not rewriting application services.
+Supporting a new host should primarily require configuration/profile/adapter work, not changes to domain/business logic.
 
 ---
 
-# 9. Repository Infrastructure Layout
+# 11. Logical Services
 
-Recommended:
-
-```text
-infra/
-├── postgres/
-├── redis/
-├── runtime/
-│   ├── adapters/
-│   │   ├── openrc/
-│   │   ├── systemd/
-│   │   ├── sysv/
-│   │   ├── launchd/
-│   │   └── windows/
-│   └── templates/
-└── postmarketos/
-```
-
-And application-neutral runtime logic:
-
-```text
-packages/runtime/
-├── detector.py
-├── service_manager.py
-├── profile.py
-├── errors.py
-└── registry.py
-```
-
-Platform-specific deployment material may exist under `infra/runtime/adapters/`, but application/domain packages must remain platform-independent.
-
----
-
-# 10. Initial Services
-
-Logical application services:
+Application services:
 
 ```text
 news-api
@@ -271,7 +268,7 @@ news-scheduler
 news-media-worker
 ```
 
-Infrastructure services:
+Infrastructure:
 
 ```text
 PostgreSQL
@@ -279,13 +276,11 @@ Redis
 llama.cpp
 ```
 
-Not every logical component must be its own OS process during the MVP.
+Not every logical service needs its own host process in the MVP.
 
 ---
 
-# 11. Startup Dependencies
-
-Logical dependency order:
+# 12. Startup Dependencies
 
 ```text
 network
@@ -305,13 +300,13 @@ scheduler
 publisher eligibility
 ```
 
-Runtime adapters should enforce only necessary host-level dependencies.
+Only necessary host-level dependencies should be encoded in runtime adapter deployment material.
 
 ---
 
-# 12. Networking
+# 13. Networking
 
-Remote management:
+Preferred remote management:
 
 ```text
 Tailscale
@@ -319,39 +314,25 @@ Tailscale
 SSH
 ```
 
-Prefer private/Tailscale administration to direct public SSH exposure.
+Application services bind privately by default unless intentional public access is required.
 
-Application services should bind privately by default unless a public endpoint is intentionally required.
-
-The application must not depend on a fixed LAN IP.
+Do not depend on a fixed LAN address.
 
 ---
 
-# 13. Time Synchronization
+# 14. Time
 
-Accurate time is mandatory for:
+Accurate time is required for OAuth, TLS, scheduling, event timestamps, analytics, audit logs, and Tailscale.
 
-```text
-OAuth/token validation
-TLS
-scheduled publication
-event timestamps
-audit logs
-analytics
-Tailscale
-```
+The health/runtime layer detects available time-sync capability.
 
-Time synchronization is a host capability.
-
-The runtime/health layer may detect the available time service/tool, but application data continues to use UTC/PostgreSQL `TIMESTAMPTZ` regardless of host timezone.
-
-Current operator timezone may be `Asia/Kolkata`.
+Canonical application/database timestamps remain UTC/`TIMESTAMPTZ` regardless of host timezone.
 
 ---
 
-# 14. Storage Layout
+# 15. Storage
 
-Recommended configurable layout:
+Recommended configurable default:
 
 ```text
 /opt/news-ai/
@@ -364,57 +345,51 @@ Recommended configurable layout:
 └── runtime/
 ```
 
-Paths are configuration values, not hard-coded application constants.
+This is a profile/config default, not a cross-platform hard-coded path.
 
-Future platforms may use different paths.
+Other hosts may override it.
 
 ---
 
-# 15. PostgreSQL
+# 16. PostgreSQL
 
-PostgreSQL is the durable source of truth.
-
-It owns persistent state for stories, claims, evidence, fact checks, Fact Sheets, content, reviews, jobs, publications, external IDs, and audit history.
-
-Do not place database data files inside the application repository.
+PostgreSQL is durable truth for stories, claims, evidence, Fact Sheets, reviews, jobs, content, publications, external IDs, and audit history.
 
 Use versioned migrations.
 
+Do not store database data files in the application repository.
+
 ---
 
-# 16. Redis
+# 17. Redis
 
-Redis is used for:
+Redis provides:
 
 ```text
-Redis Streams / event delivery
+Streams/event delivery
 short-lived cache
 coordination/locks where appropriate
 ```
 
-Redis is not durable business truth.
-
-Redis loss must not erase the authoritative workflow state stored in PostgreSQL.
+Redis loss must not erase authoritative workflow state.
 
 ---
 
-# 17. Local AI Service
+# 18. Local AI Service
 
-Initial local runtime:
+Initial local inference service:
 
 ```text
 llama.cpp
 ```
 
-Run it as an isolated service/process behind the AI adapter.
+Run behind the AI provider abstraction.
 
-Application workers should communicate through a configured local endpoint rather than embedding backend-specific inference logic everywhere.
+Starting/stopping/checking the host process occurs through the runtime abstraction, not inside AI business logic.
 
 ---
 
-# 18. POCO Resource Policy
-
-The POCO is resource constrained.
+# 19. POCO Resource Policy
 
 Monitor:
 
@@ -422,57 +397,49 @@ Monitor:
 RAM
 CPU
 storage
-temperature
 battery/power
+temperature
 inference latency
 queue depth
 ```
 
 Do not assume usable GPU/NPU acceleration.
 
-Benchmark actual runtime support.
-
-If local AI destabilizes the host:
+If local inference destabilizes the host:
 
 ```text
 reduce concurrency
 reduce model size
 reduce context length
 delay optional work
-route allowed tasks to cloud
+route allowed work to cloud
 ```
 
 ---
 
-# 19. Media Storage and Public Delivery
+# 20. Media Storage and Delivery
 
-Media persistence and public delivery are separate.
+Persistence and public delivery are separate.
 
-Initial persistence may use:
-
-```text
-/opt/news-ai/media/
-```
+Initial profile may persist media locally.
 
 If a social platform requires a fetchable URL:
 
 ```text
 selected asset
    ↓
-deliberate media delivery layer/object storage
+deliberate media-delivery layer/object storage
    ↓
 HTTPS URL
    ↓
 platform API
 ```
 
-Never expose arbitrary filesystem paths, database ports, admin APIs, backups, or credentials to make media fetchable.
+Never expose arbitrary filesystem paths, database/admin ports, backups, or credentials.
 
 ---
 
-# 20. Configuration Layout
-
-Canonical configuration roots:
+# 21. Configuration Layout
 
 ```text
 config/
@@ -499,13 +466,9 @@ config/
 
 Secrets follow a separate secure path.
 
-No policy key should have two configuration owners.
-
 ---
 
-# 21. Configuration Precedence
-
-Recommended:
+# 22. Configuration Precedence
 
 ```text
 code defaults
@@ -519,32 +482,21 @@ secure secret references
 audited runtime override where explicitly allowed
 ```
 
-Startup validation should reject conflicting/ambiguous definitions where practical.
+Reject ambiguous duplicate policy definitions where practical.
 
 ---
 
-# 22. Secrets
+# 23. Secrets
 
-Never store secrets in:
-
-```text
-Git
-ordinary plaintext database fields
-AI prompts
-Redis events
-logs
-frontend state
-```
+Never store secrets in Git, ordinary plaintext DB fields, prompts, Redis events, logs, or frontend state.
 
 Use environment secrets, encrypted credential storage, or a secret manager according to deployment maturity.
 
-Log credential references/IDs only when necessary.
-
 ---
 
-# 23. Deployment Modes
+# 24. Deployment Modes
 
-Supported conceptual modes:
+Conceptual environments:
 
 ```text
 DEVELOPMENT
@@ -552,7 +504,7 @@ STAGING
 PRODUCTION
 ```
 
-AI/social modes may additionally be:
+AI/social execution modes may include:
 
 ```text
 MOCK
@@ -563,25 +515,23 @@ SANDBOX where supported
 LIVE
 ```
 
-Production credentials must never be inherited automatically by development/test environments.
+Production credentials never flow automatically into development/test.
 
 ---
 
-# 24. Native vs Container Deployment
+# 25. Native vs Containers
 
 Containers are optional.
 
-On the POCO, native services selected through the runtime abstraction are the default initial approach because of resource constraints and the current host environment.
+Current POCO deployment favors native services through runtime adapters because of resource constraints/current environment.
 
-Development or future deployment may use containers where they improve reproducibility.
+Development/future hosts may use containers when useful.
 
-Application code must not depend on whether it runs inside a container.
+Application code must not depend on container presence.
 
 ---
 
-# 25. Deployment Process
-
-Canonical sequence:
+# 26. Deployment Process
 
 ```text
 approved code
@@ -598,129 +548,66 @@ deploy
   ↓
 restart affected services through RuntimeController
   ↓
-health/readiness checks
+health/readiness
   ↓
 smoke tests
   ↓
 resume normal work/publication
 ```
 
-Zero-downtime deployment is not an MVP requirement on the single POCO.
-
-Safe, observable restart is preferred over unnecessary complexity.
+Zero downtime is not an MVP requirement on the single host.
 
 ---
 
-# 26. Database Migrations
+# 27. Migrations
 
-All schema changes use versioned migrations such as Alembic.
+Use versioned migrations such as Alembic.
 
-Do not manually edit production tables as the normal deployment method.
+Do not manually modify production schema as the normal method.
 
-Migration process:
-
-```text
-backup when appropriate
-verify migration against representative data
-apply
-validate schema/invariants
-start application
-smoke test
-```
-
-Do not blindly roll migrations backward if data compatibility is uncertain.
+Test migrations on representative data and avoid blind rollback when data compatibility is uncertain.
 
 ---
 
-# 27. Backups
+# 28. Backup and Restore
 
-Back up at minimum:
+Back up:
 
 ```text
 PostgreSQL
 versioned configuration
-required media metadata/assets according to retention policy
-deployment/runtime configuration
+required media/assets according to retention policy
+runtime/deployment configuration
 ```
 
-Secrets must not be copied into unsecured backups.
+Do not place secrets into unsecured backups.
 
-A backup is not considered operationally verified until restore has been tested.
+A backup is not verified until restore has been tested.
 
----
-
-# 28. Restore
-
-Recovery should be documented and tested independently of backup creation.
-
-Typical order:
-
-```text
-pause publication
-restore PostgreSQL
-restore required configuration/assets
-validate schema
-restore event delivery/runtime
-run health checks
-run smoke pipeline
-re-enable publication only after review
-```
+Recovery sequence should pause publication, restore durable state, restore event/runtime services, run health/smoke checks, then re-enable publication.
 
 ---
 
 # 29. Observability
 
-Whole-system health should expose:
+Whole-system health should cover:
 
 ```text
-SYSTEM
-├── CPU
-├── RAM
-├── disk
-├── temperature
-└── uptime
-
-NETWORK
-├── connectivity
-├── DNS
-└── Tailscale
-
-SERVICES
-├── PostgreSQL
-├── Redis
-├── API
-├── Collector
-├── Processor
-├── Research Worker
-├── AI Worker
-├── Publisher
-└── Scheduler
-
-AI
-├── model health
-├── latency
-├── queue depth
-└── failures
-
-JOBS
-├── pending
-├── running
-├── failed
-└── retrying
-
-SOCIAL
-├── adapter/account health
-├── rate limits
-└── publication failures
+SYSTEM: CPU, RAM, disk, temperature, uptime
+NETWORK: connectivity, DNS, Tailscale
+SERVICES: PostgreSQL, Redis, API, workers, scheduler, publisher
+AI: model health, latency, queue depth, failures
+JOBS: pending, running, failed, retrying
+SOCIAL: adapter/account health, rate limits, publication errors
 ```
 
-The implementation should query services through abstractions rather than hard-coded OS commands.
+Service checks use runtime abstractions, not hard-coded native commands.
 
 ---
 
-# 30. Runtime/Platform Tests
+# 30. Runtime Adapter Tests
 
-Every supported runtime adapter requires contract tests for:
+Every supported adapter requires contract tests for:
 
 ```text
 detect
@@ -737,34 +624,26 @@ command timeout
 unexpected output
 ```
 
-Detection tests must include conflicting signals and explicit override behavior.
-
-Application tests should run against a fake `ServiceManager` so ordinary business tests require no host-specific manager.
+Application tests should use a fake `ServiceManager`.
 
 ---
 
 # 31. Failure Isolation
 
-A platform/social provider outage must not stop:
-
 ```text
-collection
-research
-fact checking
-content preparation
+social platform outage → collection/research may continue
+local AI outage → evidence state remains intact
+Redis outage → PostgreSQL durable state remains intact
+runtime detection failure → no guessed host command
 ```
 
-A local AI outage must not corrupt evidence state.
-
-A Redis outage must not erase durable PostgreSQL state.
-
-A service-manager detection failure must not cause the application to execute an arbitrary fallback command.
+Fail safe rather than invent state or execute unsafe fallbacks.
 
 ---
 
 # 32. Publication Kill Switch
 
-The system must support a global publication pause independent of service-manager implementation.
+Publication pause is an application-level control, not merely an OS service stop.
 
 When active:
 
@@ -776,20 +655,18 @@ review may continue
 new external publication calls stop
 ```
 
-The control belongs at the application/publishing-policy level, not solely to stopping an OS process.
-
 ---
 
 # 33. Security Boundaries
 
-Do not publicly expose by default:
+Do not expose by default:
 
 ```text
 PostgreSQL
 Redis
 llama.cpp
-admin-only API endpoints
 runtime/service-manager control
+admin-only API endpoints
 backup storage
 internal media filesystem
 ```
@@ -802,15 +679,16 @@ Use least privilege and private management paths.
 
 ```text
 Application/domain code is platform independent.
-Host utilities are isolated behind capability-detected runtime adapters.
-The current POCO/OpenRC profile is not a universal assumption.
-Docker is optional, not required.
+CPU/OS/service-manager capabilities are detected at runtime.
+Host utilities are isolated behind adapters.
+Current POCO/postmarketOS/OpenRC details live in a runtime profile, not OS-named application code.
+Docker/containers are optional.
 PostgreSQL is durable truth.
 Redis is transport/coordination.
-Secrets never enter Git, prompts, events, or logs.
+Secrets never enter Git/prompts/events/logs.
 Media persistence and public delivery are separate.
 Configuration has one owner per concern.
 Backups must be restore-tested.
-Publishing can be paused independently of host service manager.
+Publishing can be paused independently of the host service manager.
 Scale only when measured workload requires it.
 ```
