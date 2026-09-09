@@ -14,8 +14,6 @@ Shared enums, configuration ownership, runtime portability, and cross-document s
 
 The News AI Social Media Manager is a human-reviewed AI newsroom and social publishing platform.
 
-Its canonical flow is:
-
 ```text
 DISCOVER
    ↓
@@ -27,7 +25,7 @@ EXTRACT CLAIMS
    ↓
 RESEARCH / COLLECT EVIDENCE
    ↓
-VERIFY
+VERIFY / FACT CHECK
    ↓
 BUILD FACT SHEET
    ↓
@@ -50,8 +48,6 @@ The system is initially optimized for Indian political, governance, geopolitical
 
 # 2. Fundamental Architecture Rule
 
-The system must preserve:
-
 ```text
 FACT
   ↓
@@ -62,36 +58,34 @@ INTERPRETATION
 EDITORIAL ANGLE
 ```
 
-Editorial preference may determine what receives attention, what context is emphasized, tone, audience relevance, and format.
+Editorial preference selects attention, context, tone, audience relevance, and format.
 
 Editorial preference must not determine factual conclusions.
 
-The prohibited workflow is:
+Prohibited:
 
 ```text
 preferred conclusion
         ↓
-search only for supporting evidence
+search only for supporting material
         ↓
 ignore contradiction
 ```
 
-The required workflow is:
+Required:
 
 ```text
 editorial priority
         ↓
 research
         ↓
-collect evidence
-        ↓
-evaluate support + contradiction
+collect support + contradiction
         ↓
 determine claim status
         ↓
-construct Fact Sheet
+Fact Sheet
         ↓
-apply editorial framing
+editorial framing
 ```
 
 ---
@@ -132,15 +126,11 @@ FEEDBACK
 
 For the MVP, every external social publication requires explicit human approval.
 
-A future low-risk auto-approval mode may exist only under the conditions in `CANONICAL_CONTRACTS.md` and is disabled by default.
-
 ---
 
-# 4. System Layers
+# 4. Layer Responsibilities
 
-## 4.1 Collection layer
-
-Responsibilities:
+## Collection
 
 ```text
 RSS / Atom
@@ -151,11 +141,7 @@ feed/API polling
 raw source acquisition
 ```
 
-Outputs normalized article/source references rather than editorial conclusions.
-
-## 4.2 Story intelligence layer
-
-Responsibilities:
+## Story intelligence
 
 ```text
 canonical URL normalization
@@ -168,11 +154,7 @@ initial classification
 editorial relevance scoring
 ```
 
-Article count must not be treated as confirmation count.
-
-## 4.3 Claim and evidence layer
-
-Responsibilities:
+## Research/evidence
 
 ```text
 atomic claim extraction
@@ -182,21 +164,14 @@ corroboration
 source-lineage analysis
 contradiction discovery
 claim/evidence linkage
-fact-check assistance
 confidence assessment
 ```
 
-Research is claim-driven, not article-summary-driven.
+## Fact Sheet
 
-## 4.4 Fact Sheet layer
+Canonical factual boundary before normal content generation.
 
-The Fact Sheet is the factual boundary between research and content generation.
-
-Normal content generation must consume a Fact Sheet rather than a pile of raw articles.
-
-## 4.5 Editorial layer
-
-Responsibilities:
+## Editorial
 
 ```text
 story priority
@@ -208,45 +183,27 @@ format
 risk/sensitive-topic routing
 ```
 
-The editorial layer must not change evidence or verification status.
+Editorial logic must not mutate evidence or claim verification status.
 
-## 4.6 Content layer
+## Content
 
-Produces platform-neutral and platform-specific content variants from the Fact Sheet plus Editorial Brief.
+Produces platform-neutral/platform-specific variants from the Fact Sheet plus editorial brief.
 
-## 4.7 Quality layer
+## Quality
 
-Checks for:
+Detects factual drift, unsupported claims, citation mismatch, fabricated quotations, wrong names/dates/numbers, missing context, overstatement, defamation risk, and sensitive-topic errors.
 
-```text
-factual drift
-unsupported claims
-citation mismatch
-fabricated quotations
-incorrect names/dates/numbers
-missing material context
-overstatement
-defamation risk
-sensitive-topic errors
-```
+## Publishing
 
-Quality pass is not publication approval in the MVP.
+Transports approved content through platform adapters. It does not rewrite factual claims.
 
-## 4.8 Publishing layer
+## Analytics
 
-Transports approved content to configured social platforms using isolated platform adapters.
-
-It must not rewrite factual claims.
-
-## 4.9 Analytics layer
-
-Collects post-publication performance and operational metrics without changing historical factual records.
+Collects post-publication performance/operational data without changing historical factual records.
 
 ---
 
-# 5. Core Services
-
-Initial logical services:
+# 5. Logical Services
 
 ```text
 news-api
@@ -268,41 +225,18 @@ local AI service (llama.cpp)
 media storage / delivery
 ```
 
-Logical service boundaries do not require one operating-system process per component during the MVP.
-
-Compatible workers may initially be consolidated while preserving domain/event boundaries.
+Logical boundaries do not require one host process per component during the MVP.
 
 ---
 
-# 6. Persistence and Event Architecture
-
-Canonical rule:
+# 6. Persistence and Events
 
 ```text
 PostgreSQL = durable source of truth
 Redis Streams = event/work transport
 ```
 
-Important durable state includes:
-
-```text
-sources
-articles
-stories
-claims
-evidence
-fact checks
-fact sheets
-content
-reviews
-jobs
-publications
-publication attempts
-external platform IDs
-audit history
-```
-
-Redis must never be the only location containing important business state.
+Important durable state includes stories, claims, evidence, Fact Sheets, content, reviews, jobs, publications, attempts, external IDs, and audit history.
 
 Worker pattern:
 
@@ -324,7 +258,7 @@ EMIT NEXT EVENT
 ACK
 ```
 
-Use a transactional outbox where state update and event emission must remain atomic.
+Use a transactional outbox where database state and event intent must remain atomic.
 
 ---
 
@@ -359,20 +293,14 @@ publication.scheduled
     ↓
 publication.executed / publication.failed
     ↓
-analytics.requested
-    ↓
-analytics.collected
+analytics.requested / analytics.collected
 ```
 
-`story.verified` means the configured verification stage completed. It does not mean every claim is true.
-
-Exact event contracts are owned by `EVENTS.md`.
+`story.verified` means the configured verification stage completed; it does not mean every claim is true.
 
 ---
 
-# 8. Data Model Overview
-
-Canonical core table family:
+# 8. Core Persistence Family
 
 ```text
 sources
@@ -381,56 +309,42 @@ articles
 article_versions
 stories
 story_sources
-
 claims
 claim_evidence
 evidence_items
-
 entities
 entity_mentions
-
 events
 event_locations
 event_entities
-
 historical_events
 historical_sources
-
 editorial_rules
 editorial_scores
-
 ai_models
 ai_runs
 ai_prompts
-
 fact_checks
 fact_sheets
-
 content_drafts
 content_variants
 media_assets
-
 social_accounts
 publications
 publication_attempts
-
 analytics_snapshots
-
 jobs
 job_attempts
-
 audit_log
 ```
 
-The precise schema is owned by `DATA_MODEL.md`.
+Precise persistence semantics are owned by `DATA_MODEL.md`.
 
 ---
 
-# 9. Claim Model
+# 9. Claim and Fact-Check Semantics
 
-A claim is an independently assessable factual proposition.
-
-Canonical example:
+Canonical claim example:
 
 ```json
 {
@@ -442,7 +356,7 @@ Canonical example:
 }
 ```
 
-`status` uses `ClaimVerificationStatus` only:
+`ClaimVerificationStatus`:
 
 ```text
 UNASSESSED
@@ -453,35 +367,31 @@ UNVERIFIED
 REFUTED
 ```
 
-Fact-check verdicts such as `FALSE`, `FABRICATED`, `SATIRE`, and `PARTIALLY_TRUE` belong to `FactCheckLabel`, not claim verification status.
-
----
-
-# 10. Evidence Model
-
-Every material claim should link to supporting, contradicting, qualifying, and contextual evidence as applicable.
-
-Source hierarchy and evidence methodology are owned by `SOURCE_AND_RESEARCH.md`.
-
-Important invariant:
+`FactCheckLabel`:
 
 ```text
-10 republished articles from one report
-!=
-10 independent confirmations
+TRUE
+MOSTLY_TRUE
+PARTIALLY_TRUE
+MISLEADING
+OUT_OF_CONTEXT
+UNVERIFIED
+FALSE
+FABRICATED
+SATIRE
 ```
+
+These enums are separate.
 
 ---
 
-# 11. Fact Sheet
-
-Canonical conceptual structure:
+# 10. Fact Sheet
 
 ```text
 FACT SHEET
 ├── headline
 ├── summary
-├── claims with ClaimVerificationStatus
+├── claims with canonical status
 ├── fact-check verdicts where applicable
 ├── evidence
 ├── sources
@@ -496,15 +406,11 @@ FACT SHEET
 └── sensitive-topic metadata
 ```
 
-The Fact Sheet version used for publication must remain auditable.
-
-Material corrections create a new version.
+The exact version used for publication must remain auditable.
 
 ---
 
-# 12. AI Architecture
-
-Application code calls provider-independent abstractions.
+# 11. AI and Search
 
 ```text
 AIProvider
@@ -526,53 +432,27 @@ SearchProvider
 └── FutureProvider
 ```
 
-Search/research providers are not AI model providers.
-
-AI may assist classification, extraction, synthesis, generation, and quality checking.
-
-AI is not itself evidence.
+AI may analyze/transform/generate. Search providers discover candidate sources. Neither substitutes for evidence validation.
 
 ---
 
-# 13. Local AI
+# 12. Local AI
 
-Initial local inference service:
+Initial local service:
 
 ```text
 llama.cpp + GGUF
 ```
 
-Initial target workload:
+Initial local workloads favor language detection, classification, keyword/entity extraction, similarity, short summarization, structured transformation, and initial claim extraction.
 
-```text
-language detection
-classification
-keyword/entity extraction
-story similarity
-spam filtering
-short summarization
-structured transformation
-initial claim extraction
-```
-
-Practical candidate model sizes on the current POCO should be measured rather than assumed.
-
-Guidance:
-
-```text
-0.5B–3B    primary candidate range
-4B         possible if measured viable
-7B–8B Q4   heavy / experimental
-13B+       not an initial POCO target
-```
-
-CPU/GPU/NPU capability must be benchmarked on the actual deployed runtime. NPU acceleration must never be assumed.
+Model sizes and acceleration must be benchmarked rather than assumed.
 
 ---
 
-# 14. Historical Research Architecture
+# 13. Historical Research
 
-Historical research must preserve separate evidence domains:
+Preserve separate evidence domains:
 
 ```text
 chronology
@@ -589,43 +469,23 @@ military conflict
 modern scholarship
 ```
 
-For contested questions, the system records competing hypotheses and their evidence rather than forcing a predetermined ideological binary.
-
-Language dispersal, population movement, genetic ancestry, archaeological continuity, cultural transmission, and military invasion are related but distinct claims.
+Competing historical hypotheses are represented by evidence, not predetermined ideology.
 
 ---
 
-# 15. Legal, Caste, Religious, and Demographic Safety Boundaries
+# 14. Sensitive/Legal/Demographic Boundaries
 
-The system preserves procedural legal status, including:
+Preserve legal procedural states such as allegation, FIR, investigation, arrest, charge, trial, court finding, conviction, acquittal, appeal, and final judgment.
 
-```text
-allegation
-complaint
-FIR
-investigation
-arrest
-charge
-prosecution
-trial
-court finding
-conviction
-acquittal
-appeal
-final judgment
-```
+Caste identity must not be used as a behavioral proxy or basis for collective guilt.
 
-An accusation is not a conviction.
+Demographic reporting separates observed data, statistical interpretation, possible explanations, causal evidence, and editorial interpretation.
 
-Caste-related facts may be reported where relevant and verified, but caste must not be used as a behavioral proxy or basis for collective guilt.
-
-Demographic reporting separates observed data, statistical interpretation, possible explanation, causal evidence, and editorial interpretation.
-
-Religious/civilizational analysis may use `INDIC_CIVILIZATIONAL_CONTEXT` while preserving distinct Hindu, Buddhist, Jain, Sikh, indigenous/regional, and ancient Indian cultural identities.
+Distinct Hindu, Buddhist, Jain, Sikh, indigenous/regional, and ancient Indian cultural identities remain distinct within `INDIC_CIVILIZATIONAL_CONTEXT`.
 
 ---
 
-# 16. Social Publishing Architecture
+# 15. Social Publishing
 
 Initial adapters:
 
@@ -635,8 +495,6 @@ X
 Facebook
 Telegram
 ```
-
-Canonical flow:
 
 ```text
 approved ContentVariant
@@ -654,29 +512,23 @@ Verification
 Publication Record
 ```
 
-Publishing must be idempotent.
-
-An ambiguous timeout must not trigger blind retry.
+Publishing is idempotent. Ambiguous external outcomes are verified before retry.
 
 ---
 
-# 17. Media Architecture
+# 16. Media
 
-Media persistence and public delivery are separate concerns.
+Local persistence and public delivery are separate.
 
-Initial local persistence may use the POCO filesystem.
+If a platform requires a fetchable HTTPS URL, selected media is exposed through a deliberate media-delivery layer/object storage only.
 
-If a social platform requires a fetchable HTTPS URL, selected media is exposed only through a deliberate media-delivery layer or object storage.
-
-Do not expose the admin API, database, backups, credentials, or arbitrary filesystem paths to satisfy platform ingestion.
+Do not expose arbitrary filesystem paths or internal services.
 
 ---
 
-# 18. Platform-Independent Runtime Architecture
+# 17. Platform-Independent Runtime
 
-The application must remain OS/platform/service-manager independent.
-
-Business and domain code must not directly execute:
+Business/domain/application code must not directly execute host service utilities such as:
 
 ```text
 rc-service
@@ -684,8 +536,7 @@ rc-update
 systemctl
 service
 launchctl
-sc.exe
-PowerShell service commands
+Windows service commands
 ```
 
 Instead:
@@ -700,31 +551,26 @@ ServiceManager interface
 capability-selected adapter
 ```
 
-Detection uses available capabilities and runtime metadata, for example:
+Detection considers runtime capabilities including:
 
 ```text
-Python platform/os information
+platform.system()
+platform.machine()
+os.name
 /etc/os-release where available
-shutil.which(...) or equivalent executable discovery
+executable discovery
 container/runtime metadata
 explicit operator override
 ```
 
-Possible infrastructure adapters include OpenRC, systemd, SysV, launchd, Windows service management, and an explicit unsupported/manual mode.
-
-The current POCO uses OpenRC, but that is only the current deployment profile.
-
-OS-specific adapter implementation is isolated inside the runtime/infrastructure layer and must not leak into application/domain code.
+The current POCO/OpenRC combination is a runtime profile, not a business-code branch.
 
 ---
 
-# 19. Repository Structure
-
-Recommended implementation layout:
+# 18. Repository Structure
 
 ```text
 news-ai/
-│
 ├── apps/
 │   ├── api/
 │   ├── collector/
@@ -734,7 +580,6 @@ news-ai/
 │   ├── publisher/
 │   ├── scheduler/
 │   └── media-worker/
-│
 ├── packages/
 │   ├── domain/
 │   ├── database/
@@ -746,15 +591,13 @@ news-ai/
 │   ├── social/
 │   ├── runtime/
 │   └── common/
-│
 ├── infra/
 │   ├── postgres/
 │   ├── redis/
-│   ├── runtime/
-│   │   ├── adapters/
-│   │   └── templates/
-│   └── postmarketos/
-│
+│   └── runtime/
+│       ├── adapters/
+│       ├── templates/
+│       └── profiles/
 ├── config/
 │   ├── sources/
 │   ├── research/
@@ -762,68 +605,48 @@ news-ai/
 │   ├── models/
 │   ├── prompts/
 │   └── platforms/
-│
 ├── migrations/
 ├── tests/
 ├── docs/
 └── scripts/
 ```
 
-There is no architecture-level dependency on `systemd/`, OpenRC, Docker, or any other one runtime technology.
+Runtime profiles are data/configuration, for example a POCO profile describing architecture and expected capabilities. They are not OS-specific business code.
 
 ---
 
-# 20. Configuration Ownership
-
-## `config/sources/`
-
-Source identity and collection mechanics:
+# 19. Configuration Ownership
 
 ```text
-registry.yaml
-feeds.yaml
-collection.yaml
+config/sources/
+    registry.yaml
+    feeds.yaml
+    collection.yaml
+
+config/research/
+    source-policy.yaml
+    search-policy.yaml
+    corroboration.yaml
+    fact-check.yaml
+    historical-research.yaml
+
+config/editorial/
+    priorities.yaml
+    taxonomy.yaml
+    content-style.yaml
+    risk-policy.yaml
+    publishing-policy.yaml
+
+config/models/      AI provider/model routing
+config/prompts/     versioned prompts
+config/platforms/   social constraints/capabilities
 ```
 
-## `config/research/`
-
-Evidence/research methodology:
-
-```text
-source-policy.yaml
-search-policy.yaml
-corroboration.yaml
-fact-check.yaml
-historical-research.yaml
-```
-
-## `config/editorial/`
-
-Editorial preference and publication policy:
-
-```text
-priorities.yaml
-taxonomy.yaml
-content-style.yaml
-risk-policy.yaml
-publishing-policy.yaml
-```
-
-## Other roots
-
-```text
-config/models/      → model/provider routing
-config/prompts/     → versioned prompts
-config/platforms/   → social-platform constraints/capabilities
-```
-
-The same policy must not be defined in multiple roots.
+One concern has one canonical owner.
 
 ---
 
-# 21. API Architecture
-
-FastAPI is the HTTP/orchestration boundary.
+# 20. API Boundary
 
 ```text
 HTTP
@@ -837,42 +660,36 @@ domain service
 repository / event / provider abstraction
 ```
 
-Long-running research, inference, media generation, and publishing execute asynchronously through durable jobs/events.
+Long-running research, inference, media generation, and publishing are asynchronous.
 
-Route handlers must not directly contain provider SDK calls, complex SQL, platform retry logic, or long-running model inference.
+Host-native service control is not embedded in normal API routes.
 
 ---
 
-# 22. Runtime Deployment
+# 21. Deployment Portability
 
-Initial target host:
+Current physical target:
 
 ```text
 Xiaomi POCO F1 / beryllium
-postmarketOS
 aarch64
+postmarketOS
 headless
-Tailscale-managed
 currently OpenRC
 ```
 
-Deployment principle:
+This host is represented by a runtime profile. Application code remains portable to other Linux systems, ARM/x86 servers, containers, macOS/Windows development hosts, and future compute nodes.
 
-```text
-native service management selected by runtime adapter = default on POCO
-containers = optional
-```
-
-The application must remain portable to other Linux distributions, future ARM/x86 servers, containers, macOS development environments, and Windows development environments without rewriting business logic.
+Containers are optional, not required.
 
 ---
 
-# 23. MVP Scope
+# 22. MVP
 
 ```text
 RSS/news collection
     ↓
-deduplication/story clustering
+story clustering
     ↓
 classification/editorial priority
     ↓
@@ -891,26 +708,11 @@ human approval
 publish
 ```
 
-Initial production philosophy:
-
-```text
-ONE POCO
-ONE POSTGRESQL
-ONE REDIS
-ONE LOCAL LLM
-ONE CLOUD LLM ROUTE
-NEWS COLLECTION
-FACT ENGINE
-INSTAGRAM
-```
-
-Do not start with Kubernetes, Kafka, multi-region deployment, a large vector database, giant local models, or autonomous high-risk publishing.
+Do not start with Kubernetes, Kafka, multi-region deployment, giant local models, a large vector database, or autonomous high-risk publishing.
 
 ---
 
-# 24. Build Order
-
-Recommended implementation order:
+# 23. Build Order
 
 ```text
 01 Repository skeleton
@@ -929,9 +731,9 @@ Recommended implementation order:
 14 llama.cpp integration
 15 AI router
 16 Claim extraction
-17 Research/SearchProvider abstraction
+17 SearchProvider/research abstraction
 18 Evidence engine
-19 Fact-check engine
+19 Fact-check/verification engine
 20 Fact-sheet generator
 21 Content engine
 22 Quality gate
@@ -942,46 +744,43 @@ Recommended implementation order:
 27 Health/monitoring/newsctl
 ```
 
-Then add historical-research specialization, additional social platforms, advanced analytics, richer media generation, and broader automation.
-
 ---
 
-# 25. Documentation Boundaries
+# 24. Documentation Boundaries
 
 ```text
-CANONICAL_CONTRACTS.md             shared invariants/precedence
+CANONICAL_CONTRACTS.md             shared invariants
 ARCHITECTURE.md                    end-to-end architecture
 DATA_MODEL.md                      persistence
 EVENTS.md                          event contracts
-AI_PLATFORM.md                     AI provider/model architecture
-SOURCE_AND_RESEARCH.md             research/evidence architecture
+AI_PLATFORM.md                     AI architecture
+SOURCE_AND_RESEARCH.md             research/evidence
 CONTENT_AND_EDITORIAL.md           editorial/content policy
-CONTENT_SCHEMAS.md                 structured application contracts
-INFRASTRUCTURE_AND_DEPLOYMENT.md   runtime/deployment architecture
+CONTENT_SCHEMAS.md                 structured contracts
+INFRASTRUCTURE_AND_DEPLOYMENT.md   runtime/deployment
 SOCIAL_PUBLISHING.md               social execution
 API_SPEC.md                        HTTP boundary
 TESTING_AND_EVALUATION.md          testing/release gates
-OPERATIONS_RUNBOOK.md              day-to-day operations
+OPERATIONS_RUNBOOK.md              operations
 ```
-
-No domain document should redefine another document's owned concept with a different enum, path, state machine, or runtime assumption.
 
 ---
 
-# 26. Final Architecture Rules
+# 25. Final Architecture Rules
 
 ```text
 PostgreSQL is durable truth.
 Redis Streams is event/work transport.
 AI is not evidence.
 Editorial preference selects attention, not truth.
-Claim verification status is not a fact-check verdict.
-UNVERIFIED is not FALSE.
-Fact Sheet is the normal factual boundary before content generation.
-All external publication requires explicit human approval in the MVP.
+ClaimVerificationStatus != FactCheckLabel.
+UNVERIFIED != REFUTED and UNVERIFIED != FALSE.
+Fact Sheet is the normal factual boundary.
+All external MVP publication requires explicit human approval.
 Publishing is idempotent and ambiguity-safe.
-Runtime/service-manager behavior is capability-detected behind an abstraction.
+Runtime behavior is capability-detected behind adapters.
 Business code contains no OS/service-manager-specific commands.
-Source collection config, research policy, and editorial policy have separate owners.
-Current docs use current enums and examples; stale illustrative terminology is not retained intentionally.
+Current device/OS details live in runtime profiles, not OS-named code paths.
+Source collection, research policy, and editorial policy have separate owners.
+Current docs use current examples; stale illustrative terminology is not retained intentionally.
 ```
