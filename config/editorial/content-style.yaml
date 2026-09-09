@@ -1,0 +1,6 @@
+schema_version: 1
+defaults:
+  source_aware: true
+  explicit_about_uncertainty: true
+  avoid_unsupported_motive_attribution: true
+  avoid_sensational_overstatement: true

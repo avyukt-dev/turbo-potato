@@ -1,0 +1,17 @@
+schema_version: 1
+evidence_domains:
+  - LINGUISTICS
+  - ARCHAEOLOGY
+  - GENETICS
+  - LITERARY_SOURCES
+  - EPIGRAPHY
+  - CHRONOLOGY
+  - MATERIAL_CULTURE
+  - POPULATION_MOVEMENT
+  - CULTURAL_TRANSMISSION
+  - POLITICAL_EXPANSION
+  - MILITARY_CONFLICT
+rules:
+  keep_evidence_domains_separate: true
+  record_competing_hypotheses: true
+  predetermined_ideological_conclusion: false

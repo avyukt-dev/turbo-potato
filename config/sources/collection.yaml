@@ -1,0 +1,6 @@
+schema_version: 1
+defaults:
+  request_timeout_seconds: 20
+  max_concurrency: 4
+  user_agent: news-ai-social-manager/0.1
+  respect_retry_after: true

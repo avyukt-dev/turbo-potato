@@ -1,0 +1,10 @@
+schema_version: 1
+source_levels:
+  1: primary
+  2: established_secondary
+  3: specialist_research
+  4: discovery
+rules:
+  primary_is_not_automatic_truth: true
+  discovery_is_not_sufficient_for_serious_claims: true
+  preserve_source_lineage: true
