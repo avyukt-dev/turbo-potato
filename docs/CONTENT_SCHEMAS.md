@@ -3,7 +3,7 @@
 # CONTENT_SCHEMAS.md
 
 **Status:** Canonical
-**Document Role:** Source of truth for application-layer structured contracts exchanged between research, evidence, Fact Sheet, editorial, content, quality, media, and publication layers.
+**Document Role:** Source of truth for application-layer Pydantic/JSON contracts exchanged between research, evidence, Fact Sheet, editorial, content, quality, media, review, and publication layers.
 
 Shared enums and lifecycle semantics are defined by `CANONICAL_CONTRACTS.md`.
 
@@ -13,9 +13,7 @@ Persistence details remain owned by `DATA_MODEL.md`.
 
 # 1. Purpose
 
-This document defines the canonical Pydantic/JSON contracts used by application services.
-
-The structured flow is:
+Canonical structured flow:
 
 ```text
 Story
@@ -34,6 +32,8 @@ ContentVariant[]
   ↓
 QualityCheck
   ↓
+ReviewDecision
+  ↓
 PublicationRequest
 ```
 
@@ -41,21 +41,31 @@ Normal content generation must not bypass the Fact Sheet boundary.
 
 ---
 
-# 2. Schema Principles
+# 2. Pydantic Example Conventions
 
-All cross-service structured data must be:
+Illustrative models assume Pydantic and use safe collection defaults.
 
-```text
-versioned where materially necessary
-validated before use
-traceable to source artifact IDs
-explicit about uncertainty
-explicit about claim status
-explicit about risk/sensitivity
-free of secrets
+Use:
+
+```python
+from pydantic import BaseModel, Field
 ```
 
-Raw AI output is untrusted until parsed and validated.
+For mutable collections prefer:
+
+```python
+items: list[str] = Field(default_factory=list)
+metadata: dict[str, Any] = Field(default_factory=dict)
+```
+
+Do not use shared mutable defaults such as:
+
+```python
+items: list[str] = []
+metadata: dict[str, Any] = {}
+```
+
+Even where a framework currently protects against shared-state behavior, canonical examples should follow ordinary safe Python/Pydantic practice.
 
 ---
 
@@ -63,9 +73,7 @@ Raw AI output is untrusted until parsed and validated.
 
 Do not define alternate enum vocabularies in application modules.
 
-Import/use the canonical values from `CANONICAL_CONTRACTS.md`.
-
-## 3.1 ClaimVerificationStatus
+## ClaimVerificationStatus
 
 ```text
 UNASSESSED
@@ -76,7 +84,7 @@ UNVERIFIED
 REFUTED
 ```
 
-## 3.2 FactCheckLabel
+## FactCheckLabel
 
 ```text
 TRUE
@@ -90,7 +98,7 @@ FABRICATED
 SATIRE
 ```
 
-## 3.3 RiskLevel
+## RiskLevel
 
 ```text
 LOW
@@ -99,7 +107,7 @@ HIGH
 CRITICAL
 ```
 
-## 3.4 ReviewState
+## ReviewState
 
 ```text
 NOT_READY
@@ -110,7 +118,7 @@ REJECTED
 CHANGES_REQUESTED
 ```
 
-## 3.5 PublicationStatus
+## PublicationStatus
 
 ```text
 DRAFT
@@ -125,13 +133,16 @@ FAILED
 CANCELLED
 ```
 
+Critical invariants:
+
+```text
+UNVERIFIED != REFUTED
+UNVERIFIED != FALSE
+```
+
 ---
 
-# 4. Base Metadata
-
-Common metadata should support provenance without requiring every schema to duplicate large context.
-
-Conceptual model:
+# 4. Artifact Metadata
 
 ```python
 class ArtifactMeta(BaseModel):
@@ -141,7 +152,7 @@ class ArtifactMeta(BaseModel):
     correlation_id: UUID | None = None
 ```
 
-Where database IDs exist, use UUIDs consistently.
+Use UUIDs consistently for database-backed externally meaningful records.
 
 ---
 
@@ -159,11 +170,9 @@ class SourceRef(BaseModel):
     language: str | None = None
 ```
 
-Rules:
+`source_level` reflects the hierarchy in `SOURCE_AND_RESEARCH.md` and is a role/authority signal, not a truth guarantee.
 
-- `source_level` uses the hierarchy from `SOURCE_AND_RESEARCH.md`.
-- source level is a role/authority signal, not a guarantee of truth.
-- secrets, cookies, authorization headers, and private credentials are prohibited.
+Collection metadata comes from the source registry domain. Evidence-policy evaluation comes from the research domain.
 
 ---
 
@@ -183,7 +192,7 @@ class EvidenceRef(BaseModel):
     provenance_note: str | None = None
 ```
 
-`relation` maps to the evidence relationships owned by `DATA_MODEL.md`, such as direct support, contradiction, qualification, or context.
+`relation` maps to evidence relationships owned by `DATA_MODEL.md`.
 
 A citation/reference must actually support the associated proposition.
 
@@ -201,19 +210,21 @@ class Claim(BaseModel):
     confidence_score: float | None = None
     importance_score: float | None = None
     risk_level: RiskLevel
-    sensitive_topics: list[str] = []
-    evidence_ids: list[UUID] = []
-    contradictory_evidence_ids: list[UUID] = []
+    sensitive_topics: list[str] = Field(default_factory=list)
+    evidence_ids: list[UUID] = Field(default_factory=list)
+    contradictory_evidence_ids: list[UUID] = Field(default_factory=list)
     temporal_start: datetime | None = None
     temporal_end: datetime | None = None
-    location_ids: list[UUID] = []
+    location_ids: list[UUID] = Field(default_factory=list)
 ```
 
 Rules:
 
-- claim text must be independently assessable where practical.
-- `UNVERIFIED` must not be transformed into `REFUTED` without evidence.
-- verdict labels such as `FALSE` and `SATIRE` do not belong in `Claim.status`.
+```text
+Claim.status uses ClaimVerificationStatus only.
+FALSE/SATIRE/PARTIALLY_TRUE do not belong in Claim.status.
+Legacy partially_confirmed is invalid.
+```
 
 ---
 
@@ -227,19 +238,13 @@ class FactCheck(BaseModel):
     label: FactCheckLabel
     confidence_score: float | None = None
     summary: str
-    supporting_evidence_ids: list[UUID] = []
-    contradicting_evidence_ids: list[UUID] = []
+    supporting_evidence_ids: list[UUID] = Field(default_factory=list)
+    contradicting_evidence_ids: list[UUID] = Field(default_factory=list)
     review_required: bool
     review_state: ReviewState
 ```
 
-Critical invariant:
-
-```text
-UNVERIFIED != FALSE
-```
-
-A fact-check verdict is separate from `ClaimVerificationStatus`.
+A fact-check verdict is separate from claim verification state.
 
 ---
 
@@ -252,11 +257,11 @@ class TimelineEvent(BaseModel):
     date_text: str | None = None
     precision: str | None = None
     description: str
-    claim_ids: list[UUID] = []
-    evidence_ids: list[UUID] = []
+    claim_ids: list[UUID] = Field(default_factory=list)
+    evidence_ids: list[UUID] = Field(default_factory=list)
 ```
 
-If chronology is uncertain, preserve uncertainty through `date_text`/`precision` rather than inventing an exact timestamp.
+If chronology is uncertain, preserve uncertainty rather than invent an exact timestamp.
 
 ---
 
@@ -270,13 +275,11 @@ class EntityRef(BaseModel):
     role: str | None = None
 ```
 
-Entity types should use the vocabulary owned by `DATA_MODEL.md`.
+Entity types use the vocabulary owned by `DATA_MODEL.md`.
 
 ---
 
 # 11. Research Result
-
-Research workers should return structured results.
 
 ```python
 class ResearchResult(BaseModel):
@@ -285,21 +288,19 @@ class ResearchResult(BaseModel):
     sources: list[SourceRef]
     evidence: list[EvidenceRef]
     contradictions: list[EvidenceRef]
-    counterclaims: list[Claim] = []
-    timeline: list[TimelineEvent] = []
-    entities: list[EntityRef] = []
-    unresolved_questions: list[str] = []
-    research_notes: list[str] = []
+    counterclaims: list[Claim] = Field(default_factory=list)
+    timeline: list[TimelineEvent] = Field(default_factory=list)
+    entities: list[EntityRef] = Field(default_factory=list)
+    unresolved_questions: list[str] = Field(default_factory=list)
+    research_notes: list[str] = Field(default_factory=list)
     budget_exhausted: bool = False
 ```
 
-`budget_exhausted = true` does not imply a claim is false.
+`budget_exhausted = true` does not imply a claim is false or refuted.
 
 ---
 
 # 12. Fact Sheet Contract
-
-The Fact Sheet is the canonical factual intermediate representation for content generation.
 
 ```python
 class FactSheet(BaseModel):
@@ -310,31 +311,35 @@ class FactSheet(BaseModel):
     summary: str
 
     claims: list[Claim]
-    fact_checks: list[FactCheck] = []
+    fact_checks: list[FactCheck] = Field(default_factory=list)
     evidence: list[EvidenceRef]
     sources: list[SourceRef]
 
-    timeline: list[TimelineEvent] = []
-    entities: list[EntityRef] = []
-    locations: list[str] = []
-    context: list[str] = []
-    counterclaims: list[Claim] = []
-    unresolved_questions: list[str] = []
+    timeline: list[TimelineEvent] = Field(default_factory=list)
+    entities: list[EntityRef] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    context: list[str] = Field(default_factory=list)
+    counterclaims: list[Claim] = Field(default_factory=list)
+    unresolved_questions: list[str] = Field(default_factory=list)
 
     confidence_score: float | None = None
     risk_level: RiskLevel
-    sensitive_topics: list[str] = []
+    sensitive_topics: list[str] = Field(default_factory=list)
     created_at: datetime
 ```
 
-Persistence may maintain convenience partitions such as supported/disputed/unverified claim JSONB fields as described by `DATA_MODEL.md`; the application contract above preserves the canonical status on every claim.
-
 Rules:
 
-- published Fact Sheet versions are immutable.
-- material corrections create a new version.
-- contradictions and unresolved questions must not be silently dropped.
-- content generation may only treat `SUPPORTED` material as established fact unless policy/context explicitly allows attributed discussion of disputed/unverified claims.
+```text
+Published Fact Sheet versions are immutable.
+Material corrections create a new version.
+Contradictions/unresolved questions are preserved.
+SUPPORTED material may be treated as established fact.
+DISPUTED/UNVERIFIED material requires attribution/uncertainty when discussed.
+REFUTED material must not be presented as established fact.
+```
+
+Persistence may maintain convenience partitions while preserving each canonical claim status.
 
 ---
 
@@ -347,21 +352,21 @@ class EditorialBrief(BaseModel):
     priority_topics: list[str]
     editorial_angle: str
     key_points: list[str]
-    exclusions: list[str] = []
+    exclusions: list[str] = Field(default_factory=list)
     tone: str
     audience_relevance: float | None = None
     risk_level: RiskLevel
-    sensitive_topics: list[str] = []
+    sensitive_topics: list[str] = Field(default_factory=list)
     human_review_required: bool
 ```
 
-Editorial Briefs may select emphasis but must not change claim statuses, evidence, or fact-check labels.
+Editorial Briefs select emphasis. They must not modify claim status, evidence, or fact-check verdicts.
 
-For the MVP, any brief intended for external social publication results in a workflow that requires human approval.
+For the MVP, any external-publication workflow requires human approval regardless of `risk_level`.
 
 ---
 
-# 14. Platform-Neutral Content Draft
+# 14. Content Draft
 
 ```python
 class ContentDraft(BaseModel):
@@ -371,12 +376,12 @@ class ContentDraft(BaseModel):
     fact_sheet_version: int
     editorial_brief_id: UUID | None = None
     risk_level: RiskLevel
-    sensitive_topics: list[str] = []
+    sensitive_topics: list[str] = Field(default_factory=list)
     review_state: ReviewState
-    variant_ids: list[UUID] = []
+    variant_ids: list[UUID] = Field(default_factory=list)
 ```
 
-A draft cannot be publication-eligible without a valid Fact Sheet.
+A draft cannot become publication-eligible without a valid Fact Sheet.
 
 ---
 
@@ -397,90 +402,76 @@ class ContentVariant(BaseModel):
     title: str | None = None
     body: str | None = None
     caption: str | None = None
-    slides: list[str] = []
-    thread: list[str] = []
-    hashtags: list[str] = []
-    media_asset_ids: list[UUID] = []
+    slides: list[str] = Field(default_factory=list)
+    thread: list[str] = Field(default_factory=list)
+    hashtags: list[str] = Field(default_factory=list)
+    media_asset_ids: list[UUID] = Field(default_factory=list)
 
-    claim_ids_used: list[UUID] = []
-    source_ids_used: list[UUID] = []
+    claim_ids_used: list[UUID] = Field(default_factory=list)
+    source_ids_used: list[UUID] = Field(default_factory=list)
 
     risk_level: RiskLevel
-    sensitive_topics: list[str] = []
+    sensitive_topics: list[str] = Field(default_factory=list)
     review_state: ReviewState
     version: int
 ```
 
-Rules:
+Every factual statement should map to the Fact Sheet/claim set.
 
-- every factual statement should map to the Fact Sheet/claim set.
-- platform transformation may change length/presentation, not factual status.
-- a material content edit after approval invalidates prior approval as defined by policy.
+A material edit after approval invalidates/re-evaluates approval according to policy.
 
 ---
 
-# 16. Instagram Carousel Schema
+# 16. Instagram Carousel
 
 ```python
 class InstagramCarouselContent(BaseModel):
     headline: str
     slides: list[str]
     caption: str
-    hashtags: list[str] = []
-    media_asset_ids: list[UUID] = []
-    claim_ids_used: list[UUID] = []
+    hashtags: list[str] = Field(default_factory=list)
+    media_asset_ids: list[UUID] = Field(default_factory=list)
+    claim_ids_used: list[UUID] = Field(default_factory=list)
 ```
 
-A useful logical structure may be:
-
-```text
-hook/headline
-what happened
-verified facts
-context/timeline
-material qualification or contradiction
-why it matters
-sources/attribution
-```
-
-This is a content pattern, not a mandatory fixed slide count.
+Logical slide patterns are presentation guidance, not factual-state transformations.
 
 ---
 
-# 17. X Content Schema
+# 17. X Content
 
 ```python
 class XPostContent(BaseModel):
     text: str
-    media_asset_ids: list[UUID] = []
+    media_asset_ids: list[UUID] = Field(default_factory=list)
     reply_to_variant_id: UUID | None = None
-    claim_ids_used: list[UUID] = []
+    claim_ids_used: list[UUID] = Field(default_factory=list)
 ```
 
 A thread is an ordered list of `XPostContent` records.
 
-Platform limits remain configuration/provider-defined and are not hard-coded in this schema document.
+Platform limits remain configuration/provider-defined.
 
 ---
 
-# 18. Facebook Content Schema
+# 18. Facebook Content
 
 ```python
 class FacebookPostContent(BaseModel):
     text: str
-    media_asset_ids: list[UUID] = []
-    claim_ids_used: list[UUID] = []
+    media_asset_ids: list[UUID] = Field(default_factory=list)
+    claim_ids_used: list[UUID] = Field(default_factory=list)
 ```
 
 ---
 
-# 19. Telegram Content Schema
+# 19. Telegram Content
 
 ```python
 class TelegramPostContent(BaseModel):
     text: str
-    media_asset_ids: list[UUID] = []
-    claim_ids_used: list[UUID] = []
+    media_asset_ids: list[UUID] = Field(default_factory=list)
+    claim_ids_used: list[UUID] = Field(default_factory=list)
 ```
 
 ---
@@ -491,10 +482,10 @@ class TelegramPostContent(BaseModel):
 class ShortsScript(BaseModel):
     hook: str
     narration: str
-    on_screen_text: list[str] = []
+    on_screen_text: list[str] = Field(default_factory=list)
     closing: str
-    claim_ids_used: list[UUID] = []
-    source_ids_used: list[UUID] = []
+    claim_ids_used: list[UUID] = Field(default_factory=list)
+    source_ids_used: list[UUID] = Field(default_factory=list)
     estimated_duration_seconds: int | None = None
 ```
 
@@ -502,21 +493,19 @@ The script must not introduce facts absent from the Fact Sheet.
 
 ---
 
-# 21. Translation Contract
+# 21. Translation Result
 
 ```python
 class TranslationResult(BaseModel):
     source_language: str
     target_language: str
     translated_text: str
-    preserved_names: list[str] = []
-    uncertainty_notes: list[str] = []
+    preserved_names: list[str] = Field(default_factory=list)
+    uncertainty_notes: list[str] = Field(default_factory=list)
     ai_run_id: UUID | None = None
 ```
 
-Translation must preserve factual meaning, legal status, uncertainty, and attribution.
-
-Material translation uncertainty must be surfaced.
+Translation preserves factual meaning, legal status, uncertainty, and attribution.
 
 ---
 
@@ -529,19 +518,17 @@ class ImageBrief(BaseModel):
     purpose: str
     visual_subject: str
     factual_elements: list[str]
-    prohibited_elements: list[str] = []
+    prohibited_elements: list[str] = Field(default_factory=list)
     aspect_ratio: str
     text_overlay: str | None = None
-    claim_ids_used: list[UUID] = []
+    claim_ids_used: list[UUID] = Field(default_factory=list)
 ```
-
-AI image prompts must derive factual elements from verified structured context.
 
 Synthetic visuals must not independently invent details that could be mistaken for documentary evidence.
 
 ---
 
-# 23. Media Asset Contract
+# 23. Media Asset
 
 ```python
 class MediaAsset(BaseModel):
@@ -558,11 +545,11 @@ class MediaAsset(BaseModel):
     visual_check_status: str | None = None
 ```
 
-Local persistence and public delivery are separate concerns as defined by `CANONICAL_CONTRACTS.md` and `SOCIAL_PUBLISHING.md`.
+Local persistence and public delivery remain separate concerns.
 
 ---
 
-# 24. Quality Check Contract
+# 24. Quality Check
 
 ```python
 class QualityCheck(BaseModel):
@@ -572,25 +559,25 @@ class QualityCheck(BaseModel):
     citation_alignment_passed: bool
     style_passed: bool
 
-    unsupported_claims: list[str] = []
-    fabricated_quotes: list[str] = []
-    incorrect_names: list[str] = []
-    incorrect_dates: list[str] = []
-    incorrect_numbers: list[str] = []
-    missing_context: list[str] = []
+    unsupported_claims: list[str] = Field(default_factory=list)
+    fabricated_quotes: list[str] = Field(default_factory=list)
+    incorrect_names: list[str] = Field(default_factory=list)
+    incorrect_dates: list[str] = Field(default_factory=list)
+    incorrect_numbers: list[str] = Field(default_factory=list)
+    missing_context: list[str] = Field(default_factory=list)
 
     defamation_risk: bool = False
     sensitive_topic_error: bool = False
     passed: bool
     review_required: bool
-    notes: list[str] = []
+    notes: list[str] = Field(default_factory=list)
 ```
 
-For the MVP, a passing quality check does not authorize external publication. `review_required` remains true for externally publishable content.
+For the MVP, `review_required` remains true for any content intended for external publication. A quality pass does not authorize publication.
 
 ---
 
-# 25. Review Decision Contract
+# 25. Review Decision
 
 ```python
 class ReviewDecision(BaseModel):
@@ -603,7 +590,7 @@ class ReviewDecision(BaseModel):
     decided_at: datetime
 ```
 
-Allowed decision outcomes for a review action are normally:
+Review action outcomes normally use:
 
 ```text
 APPROVED
@@ -611,7 +598,7 @@ REJECTED
 CHANGES_REQUESTED
 ```
 
-Review records must identify the exact version reviewed.
+The record identifies the exact reviewed version.
 
 ---
 
@@ -627,9 +614,7 @@ class PublicationRequest(BaseModel):
     idempotency_key: str
 ```
 
-Eligibility rules are owned by `SOCIAL_PUBLISHING.md`.
-
-For the MVP, a request must not enter external execution unless the relevant content/review state is explicitly `APPROVED` by a human.
+For the MVP, external execution is invalid unless the relevant content/version has explicit human `APPROVED` state.
 
 ---
 
@@ -647,7 +632,7 @@ class PublicationResult(BaseModel):
     retryable: bool | None = None
 ```
 
-Ambiguous platform timeouts must not be represented as definitive failure if external state is unknown.
+An ambiguous platform timeout must not be represented as definitive failure if external state is unknown.
 
 ---
 
@@ -655,184 +640,86 @@ Ambiguous platform timeouts must not be represented as definitive failure if ext
 
 `AI_PLATFORM.md` owns `AIRequest`, `AIResponse`, model routing, and AI-run provenance.
 
-Content schemas may reference `ai_run_id` but must not redefine provider-specific response formats.
+Content schemas may reference `ai_run_id` but must not redefine provider-specific formats.
 
 ---
 
-# 29. Structured Output Validation
+# 29. Runtime Relationship
 
-Canonical flow:
+Structured content/domain contracts remain platform-independent.
+
+No content/research/editorial schema should include native service-manager commands or OS-specific process-control details.
+
+Runtime status/control contracts, if later needed, belong to the runtime infrastructure package rather than these content schemas.
+
+---
+
+# 30. Configuration Relationship
+
+Schemas may reference effective configuration by version/hash/ID, but they do not redefine configuration ownership.
+
+Canonical roots remain:
 
 ```text
-AI output
-   ↓
+config/sources/   collection mechanics
+config/research/  evidence/research methodology
+config/editorial/ prioritization/content/review policy
+config/models/    AI routing
+config/prompts/   prompt versions
+config/platforms/ social platform constraints
+```
+
+---
+
+# 31. Validation Pipeline
+
+Every AI-produced structured artifact follows:
+
+```text
+raw model output
+    ↓
 parse
-   ↓
+    ↓
 Pydantic validation
-   ↓
-semantic validation
-   ↓
-persistence / next stage
-```
-
-If validation fails:
-
-```text
-retry/repair according to AI policy
     ↓
-fallback where allowed
+semantic/domain validation
     ↓
-fail/escalate if still invalid
+reference validation
+    ↓
+persist
 ```
 
-Never persist malformed output merely because it appears plausible.
+Malformed output is never accepted merely because it appears semantically plausible.
 
 ---
 
-# 30. Semantic Validation
+# 32. Versioning and Immutability
 
-Schema validity is necessary but insufficient.
-
-Validate:
+Version:
 
 ```text
-claim IDs exist
-source/evidence IDs exist
-claims belong to story
-Fact Sheet version matches referenced artifact
-content statements map to claims
-review applies to exact version
-publication references approved content
-numeric ranges are sane
-dates/locations are compatible with source context
+Fact Sheets
+content variants
+reviewed artifacts
+material research outputs where required
+prompts/models through AI provenance
 ```
+
+Published content remains traceable to the exact Fact Sheet/content/review version used.
 
 ---
 
-# 31. Versioning
-
-Material structured contracts should include `schema_version` where backward compatibility matters.
-
-Breaking schema changes require explicit version changes and contract tests.
-
-Artifact content versions are separate from schema versions.
-
-Example:
+# 33. Final Schema Rules
 
 ```text
-FactSheet schema_version = 1
-FactSheet content version = 4
+Use canonical enums only.
+Use Field(default_factory=...) for mutable example defaults.
+Fact Sheet is the factual boundary.
+ClaimVerificationStatus != FactCheckLabel.
+UNVERIFIED != REFUTED.
+UNVERIFIED != FALSE.
+Content variants cannot change factual status.
+Quality pass != publication approval.
+All external MVP publication requires explicit human approval.
+Schemas remain OS/platform/service-manager independent.
 ```
-
----
-
-# 32. Immutability
-
-Publication-relevant historical artifacts must remain auditable.
-
-Do not silently mutate:
-
-```text
-published Fact Sheets
-approved content versions
-completed review decisions
-publication attempts
-published external IDs
-```
-
-Create new versions/correction records where required.
-
----
-
-# 33. Sensitive Data
-
-Structured schemas must not contain:
-
-```text
-API keys
-access tokens
-refresh tokens
-passwords
-private keys
-session cookies
-authorization headers
-```
-
-Use secure credential references where needed.
-
----
-
-# 34. Evidence Packet Schema
-
-A reviewer-facing evidence packet may be assembled as:
-
-```python
-class EvidencePacket(BaseModel):
-    story_id: UUID
-    fact_sheet: FactSheet
-    supporting_evidence: list[EvidenceRef]
-    contradicting_evidence: list[EvidenceRef]
-    unresolved_questions: list[str] = []
-    editorial_brief: EditorialBrief | None = None
-    content_variant: ContentVariant | None = None
-    quality_check: QualityCheck | None = None
-    review_state: ReviewState
-```
-
-The packet is a view over canonical records; it does not have to be stored as one giant database object.
-
----
-
-# 35. Contract Testing
-
-`TESTING_AND_EVALUATION.md` owns the testing strategy.
-
-Every schema should have tests for:
-
-```text
-valid payload
-missing required field
-invalid enum
-invalid UUID
-out-of-range score
-unknown reference
-schema version mismatch
-claim/fact-check enum confusion
-publication without approval
-unsupported content claim
-```
-
----
-
-# 36. Final Schema Rules
-
-```text
-Schemas represent structured facts and workflow state; they do not invent truth.
-Claim verification status is not a fact-check verdict.
-UNVERIFIED is not FALSE.
-Fact Sheet is the normal factual boundary before content generation.
-Every content variant identifies the claims it uses.
-Every publication references an approved content variant in MVP.
-Quality pass is not publication approval.
-Material changes create new versions.
-PostgreSQL remains authoritative for durable state.
-Provider-specific details stay behind adapters.
-```
-
----
-
-# 37. Documentation Relationship
-
-This document owns application-layer structured contracts.
-
-`CANONICAL_CONTRACTS.md` owns shared enums and lifecycle meanings.
-
-`DATA_MODEL.md` owns persistence.
-
-`SOURCE_AND_RESEARCH.md` owns source/research methodology.
-
-`AI_PLATFORM.md` owns AI request/response execution semantics.
-
-`CONTENT_AND_EDITORIAL.md` owns editorial/content policy.
-
-`SOCIAL_PUBLISHING.md` owns publication eligibility and external platform execution.
