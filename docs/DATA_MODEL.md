@@ -2,13 +2,13 @@
 
 ## 1. Purpose
 
-This document defines the canonical PostgreSQL data model for the News AI Social Media Manager.
+This document defines the canonical PostgreSQL persistence model for the News AI Social Media Manager.
 
-It is the implementation reference for database schema, entity relationships, provenance, claims and evidence, story clustering, editorial scoring, AI execution, fact checking, content generation, human review, social publishing, jobs and retries, analytics, and auditing.
+PostgreSQL is the durable source of truth.
 
-The database is the **system of record**. Redis Streams is the event transport layer, not the source of truth.
+Redis Streams is event/work transport and must not become authoritative business state.
 
-Shared enums and cross-document semantics are defined by `CANONICAL_CONTRACTS.md`.
+Shared enums and lifecycle semantics are defined by `CANONICAL_CONTRACTS.md`.
 
 ---
 
@@ -16,27 +16,49 @@ Shared enums and cross-document semantics are defined by `CANONICAL_CONTRACTS.md
 
 ## 2.1 PostgreSQL is authoritative
 
-Persistent business state MUST live in PostgreSQL.
+Persistent business state lives in PostgreSQL.
 
-Redis MUST NOT be treated as the canonical store for stories, claims, evidence, fact checks, generated content, approvals, publications, credentials, or audit history.
+Redis may hold:
 
-Redis may contain queues, transient processing state, stream messages, locks, and short-lived caches.
+```text
+stream messages
+consumer state
+short-lived cache
+locks/coordination
+```
+
+but must not be the only location containing stories, claims, evidence, reviews, publications, jobs, or audit state.
 
 ## 2.2 Provenance is mandatory
 
-Every important factual object should be traceable to its origin, supporting and contradicting evidence, producing AI run, and human approval where applicable.
+Important factual/content objects should be traceable to:
+
+```text
+source material
+claims
+evidence
+contradictions
+AI runs/prompts
+Fact Sheet version
+review decision
+publication attempt
+```
 
 ## 2.3 IDs
 
-Use UUIDs for externally meaningful database records.
+Use UUIDs for externally meaningful durable records.
 
-## 2.4 Timestamps
+## 2.4 Time
 
-All canonical timestamps MUST use PostgreSQL `TIMESTAMPTZ`. Render local time only at the application boundary.
+Use PostgreSQL `TIMESTAMPTZ` for canonical timestamps.
 
-## 2.5 Soft deletion
+Render local time at application/UI boundaries.
 
-Records participating in provenance or audit history should generally not be physically deleted. Historical evidence, publications, AI runs, and audit records should remain immutable where practical.
+## 2.5 Deletion and immutability
+
+Provenance-critical records should not be physically deleted as the normal workflow.
+
+Historical evidence, Fact Sheets used for publication, AI runs, publication attempts, and audit records should remain reconstructable.
 
 ---
 
@@ -56,9 +78,9 @@ SOURCE
                 ▼
               STORY
                 │
-        ┌───────┼────────┬──────────┐
-        ▼       ▼        ▼          ▼
-      CLAIM   ENTITY    EVENT    EDITORIAL_SCORE
+        ┌───────┼────────┬──────────────┐
+        ▼       ▼        ▼              ▼
+      CLAIM   ENTITY   REAL_EVENT   EDITORIAL_SCORE
         │
         ▼
    CLAIM_EVIDENCE
@@ -67,32 +89,32 @@ SOURCE
     EVIDENCE_ITEM
         │
         ▼
-   FACT_CHECK
+     FACT_CHECK
         │
         ▼
-     FACT_SHEET
+      FACT_SHEET
         │
         ▼
-   CONTENT_DRAFT
+    CONTENT_DRAFT
         │
         ▼
- CONTENT_VARIANT
+   CONTENT_VARIANT
         │
         ▼
-    PUBLICATION
+     PUBLICATION
         │
         ▼
-PUBLICATION_ATTEMPT
+ PUBLICATION_ATTEMPT
         │
         ▼
-    ANALYTICS
+ ANALYTICS_SNAPSHOT
 ```
 
-AI execution and jobs connect across the pipeline. All important mutations may be represented in `AUDIT_LOG`.
+AI runs, jobs, and audit records connect across the pipeline.
 
 ---
 
-# 4. PostgreSQL Extensions
+# 4. Extensions
 
 Recommended initially:
 
@@ -104,11 +126,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 ---
 
-# 5. Enumerations
-
-Prefer explicit application enums backed by PostgreSQL enums only where the state is sufficiently stable.
-
-Shared enums MUST use the meanings in `CANONICAL_CONTRACTS.md`.
+# 5. Canonical Shared Enums
 
 ## 5.1 ClaimVerificationStatus
 
@@ -121,9 +139,9 @@ UNVERIFIED
 REFUTED
 ```
 
-This enum describes the evidence/verification state of a claim.
+`UNVERIFIED != REFUTED`.
 
-It must not contain fact-check verdict labels such as `FALSE`, `FABRICATED`, `OUT_OF_CONTEXT`, or `SATIRE`.
+Legacy values such as `partially_confirmed` are invalid.
 
 ## 5.2 FactCheckLabel
 
@@ -139,13 +157,7 @@ FABRICATED
 SATIRE
 ```
 
-This enum describes a fact-check verdict and is separate from claim verification state.
-
-Critical invariant:
-
-```text
-UNVERIFIED != FALSE
-```
+`UNVERIFIED != FALSE`.
 
 ## 5.3 RiskLevel
 
@@ -156,7 +168,7 @@ HIGH
 CRITICAL
 ```
 
-Sensitivity is stored separately from risk level.
+Sensitivity remains separate metadata.
 
 ## 5.4 ReviewState
 
@@ -184,13 +196,13 @@ FAILED
 CANCELLED
 ```
 
-Post-publication descriptors such as `UPDATED`, `CORRECTED`, and `ARCHIVED` should not erase the original publication history.
+Post-publication descriptors such as `UPDATED`, `CORRECTED`, and `ARCHIVED` may be stored separately without erasing history.
 
 ---
 
-# 6. Core Tables
+# 6. Canonical Table Set
 
-The canonical table set is:
+Initial domain tables:
 
 ```text
 sources
@@ -228,11 +240,13 @@ job_attempts
 audit_log
 ```
 
+Infrastructure support tables such as an event outbox/processed-event ledger may be added according to `EVENTS.md`.
+
 ---
 
 # 7. Sources
 
-`sources` represents an external information source.
+`sources` represents external source identity/metadata.
 
 Recommended fields:
 
@@ -252,52 +266,98 @@ created_at           TIMESTAMPTZ NOT NULL
 updated_at           TIMESTAMPTZ NOT NULL
 ```
 
-Authority levels are source roles, not truth guarantees:
+`authority_level` reflects a source role/hierarchy signal, not a truth guarantee.
 
-```text
-1 = primary
-2 = established
-3 = specialist/research
-4 = discovery/social
-```
+Evidence methodology is owned by `SOURCE_AND_RESEARCH.md`; operational collection configuration is owned by `config/sources/`.
 
 ---
 
 # 8. Source Feeds
 
-`source_feeds` represents collection mechanisms such as RSS, Atom, APIs, sitemaps, webpages, or social APIs.
+```text
+source_feeds
+------------
+id                    UUID PK
+source_id              UUID FK → sources.id
+name                   TEXT NOT NULL
+feed_url               TEXT
+feed_type              TEXT NOT NULL
+poll_interval_seconds  INTEGER
+last_polled_at         TIMESTAMPTZ
+etag                    TEXT
+last_modified           TEXT
+is_active              BOOLEAN NOT NULL DEFAULT TRUE
+configuration          JSONB
+created_at             TIMESTAMPTZ NOT NULL
+updated_at             TIMESTAMPTZ NOT NULL
+```
+
+This table stores collection mechanics, not evidence sufficiency policy.
+
+---
+
+# 9. Articles
+
+`articles` stores normalized article identity/current metadata.
+
+Useful fields:
 
 ```text
-id                  UUID PK
-source_id            UUID FK → sources.id
-name                 TEXT NOT NULL
-feed_url             TEXT
-feed_type            TEXT NOT NULL
-poll_interval_seconds INTEGER
-last_polled_at       TIMESTAMPTZ
-etag                  TEXT
-last_modified         TEXT
-is_active            BOOLEAN NOT NULL DEFAULT TRUE
-configuration        JSONB
-created_at           TIMESTAMPTZ NOT NULL
-updated_at           TIMESTAMPTZ NOT NULL
+id
+source_id
+source_feed_id
+canonical_url
+title
+author
+published_at
+first_seen_at
+language
+current_version
+content_hash
+metadata
+created_at
+updated_at
+```
+
+Recommended uniqueness:
+
+```text
+(source_id, canonical_url)
 ```
 
 ---
 
-# 9. Articles and Versions
+# 10. Article Versions
 
-`articles` stores normalized discovered article identity and metadata. `article_versions` stores immutable retrieved versions so source edits are not silently overwritten.
+`article_versions` preserves retrieved source versions.
 
-Use uniqueness on `(source_id, canonical_url)` and `(article_id, version_number)`.
+```text
+id
+article_id
+version_number
+title
+content
+content_hash
+retrieved_at
+source_updated_at
+metadata
+```
+
+Recommended uniqueness:
+
+```text
+(article_id, version_number)
+```
+
+Source edits must not silently overwrite the material used for earlier evidence/review decisions.
 
 ---
 
-# 10. Stories
+# 11. Stories
 
-A story is the normalized real-world event/topic being tracked. Multiple articles may belong to one story.
+A story represents the normalized real-world topic/event under processing.
 
-Recommended fields include:
+Recommended fields:
 
 ```text
 id
@@ -310,7 +370,7 @@ last_updated_at
 importance_score
 evidence_strength
 controversy_score
-risk_score
+risk_level
 confidence_score
 cluster_key
 metadata
@@ -318,15 +378,15 @@ created_at
 updated_at
 ```
 
-`story.verified` semantics are defined by `CANONICAL_CONTRACTS.md`: it means the verification stage completed, not that every claim is true.
+`story.verified` is an event/stage semantic, not a claim that all attached propositions are true.
 
 ---
 
-# 11. Story Sources
+# 12. Story Sources
 
-`story_sources` is the many-to-many relation between stories and articles.
+Many-to-many relationship between stories and articles.
 
-Possible relationship types:
+Relationship examples:
 
 ```text
 PRIMARY_REPORT
@@ -338,24 +398,24 @@ BACKGROUND
 DISCOVERY
 ```
 
+These values do not by themselves establish source independence.
+
 ---
 
-# 12. Claims
-
-A claim is a discrete factual proposition.
+# 13. Claims
 
 ```text
 claims
 ------
 id                    UUID PK
-story_id              UUID FK
+story_id              UUID FK → stories.id
 claim_text             TEXT NOT NULL
 normalized_claim       TEXT
 claim_type             TEXT
-status                 TEXT  -- ClaimVerificationStatus
+status                 TEXT NOT NULL -- ClaimVerificationStatus
 confidence_score       NUMERIC
 importance_score       NUMERIC
-risk_level             TEXT  -- RiskLevel
+risk_level             TEXT -- RiskLevel
 temporal_start         TIMESTAMPTZ
 temporal_end           TIMESTAMPTZ
 location_id            UUID NULL
@@ -365,36 +425,66 @@ created_at             TIMESTAMPTZ NOT NULL
 updated_at             TIMESTAMPTZ NOT NULL
 ```
 
-## 12.1 Claim status
+Only canonical `ClaimVerificationStatus` values are valid.
 
-Only these canonical values are used:
+Fact-check labels must never be stored in `claims.status`.
+
+---
+
+# 14. Evidence Items
+
+Evidence items may represent:
 
 ```text
-UNASSESSED
-SUPPORTED
-PARTIALLY_SUPPORTED
-DISPUTED
-UNVERIFIED
-REFUTED
+court judgment/order
+government/police statement
+treaty
+official statistic/dataset
+research paper
+article
+interview
+photograph/video
+social post
+archived webpage
+historical source
 ```
 
-`UNVERIFIED` means insufficient evidence. `REFUTED` means sufficient evidence establishes that the proposition, as stated, is not supported.
+Recommended fields:
+
+```text
+id
+source_id
+source_type
+source_url/document_id
+title
+published_at
+retrieved_at
+content_hash
+excerpt/reference_location
+language
+provenance
+metadata
+created_at
+```
+
+Do not store secrets or authorization headers.
 
 ---
 
-# 13. Evidence Items
+# 15. Claim Evidence
 
-`evidence_items` stores individual evidence records such as court judgments, government releases, police statements, research papers, statistics, articles, interviews, photographs, videos, social posts, and archived webpages.
+```text
+claim_evidence
+--------------
+claim_id
+ evidence_id
+relation
+strength_score
+notes
+created_at
+```
 
-Evidence metadata must preserve provenance and must never contain credentials or authorization headers.
-
----
-
-# 14. Claim Evidence
-
-`claim_evidence` links evidence to claims.
-
-Recommended relation vocabulary:
+Canonical relation vocabulary may include:
 
 ```text
 DIRECT_SUPPORT
@@ -406,13 +496,13 @@ PRIMARY_EVIDENCE
 SECONDARY_EVIDENCE
 ```
 
-The relation should be explicit rather than inferred solely from a boolean.
+The relationship is explicit and claim-specific.
 
 ---
 
-# 15. Entities and Mentions
+# 16. Entities and Mentions
 
-Canonical entity types include:
+Entity types include:
 
 ```text
 PERSON
@@ -430,13 +520,17 @@ LAW
 EVENT
 ```
 
-Entity mentions connect canonical entities to source material, stories, and claims.
+`entity_mentions` links canonical entities to source material/stories/claims.
 
 ---
 
-# 16. Events and Locations
+# 17. Events and Locations
 
-`events`, `event_locations`, and `event_entities` represent concrete events and participants. Temporal precision may be:
+`events`, `event_locations`, and `event_entities` model real-world events and their participants/places.
+
+Avoid confusing the `events` domain table with Redis event messages.
+
+Temporal precision may be:
 
 ```text
 EXACT
@@ -449,11 +543,9 @@ UNKNOWN
 
 ---
 
-# 17. Historical Events and Sources
+# 18. Historical Events and Sources
 
-Historical research supports uncertain chronology and multiple evidence domains.
-
-Possible source types include:
+Historical source types may include:
 
 ```text
 PRIMARY_TEXT
@@ -468,37 +560,49 @@ SECONDARY_SCHOLARSHIP
 MODERN_RESEARCH
 ```
 
-Historical interpretations must support competing hypotheses without collapsing distinct evidence domains.
+Historical interpretations must support competing hypotheses and preserve evidence-domain distinctions.
 
 ---
 
-# 18. Editorial Rules and Scores
+# 19. Editorial Rules and Scores
 
-Editorial rules determine attention, ranking, framing preferences, and review requirements. They MUST NOT determine factual truth.
+Editorial rules/scores determine:
+
+```text
+importance
+coverage priority
+audience relevance
+framing preferences
+risk/review routing
+```
+
+They must not determine factual truth.
 
 Editorial scoring keeps importance and evidence strength separate.
 
 ---
 
-# 19. AI Models, Runs, and Prompts
+# 20. AI Models, Runs, and Prompts
 
-`ai_models`, `ai_runs`, and `ai_prompts` provide provider/model registry, execution provenance, and prompt versioning.
+`ai_models`, `ai_runs`, and `ai_prompts` provide model registry and provenance.
 
-Do not store provider API keys in these tables.
+Do not store provider credentials here.
+
+`ai_runs` should identify model/provider/task/prompt version/input/output references/latency/status.
 
 ---
 
-# 20. Fact Checks
+# 21. Fact Checks
 
-`fact_checks.status` stores `FactCheckLabel`, not `ClaimVerificationStatus`.
+Use `label` consistently across database, application schema, and events.
 
 ```text
 fact_checks
 -----------
 id                    UUID PK
-story_id               UUID FK
-claim_id               UUID FK NULL
-status                 TEXT NOT NULL  -- FactCheckLabel
+story_id               UUID FK → stories.id
+claim_id               UUID FK → claims.id NULL
+label                  TEXT NOT NULL -- FactCheckLabel
 confidence_score       NUMERIC
 summary                TEXT
 reasoning_summary      TEXT
@@ -506,33 +610,21 @@ primary_evidence_count INTEGER
 supporting_count       INTEGER
 contradicting_count    INTEGER
 review_required        BOOLEAN
-review_status          TEXT           -- ReviewState
+review_state           TEXT -- ReviewState
 ai_run_id              UUID FK NULL
 created_at             TIMESTAMPTZ
 updated_at             TIMESTAMPTZ
 ```
 
-Allowed verdicts:
-
-```text
-TRUE
-MOSTLY_TRUE
-PARTIALLY_TRUE
-MISLEADING
-OUT_OF_CONTEXT
-UNVERIFIED
-FALSE
-FABRICATED
-SATIRE
-```
-
-The system must distinguish automated assessment from human-approved assessment.
+Do not call this field `status` when it represents `FactCheckLabel`; `label` prevents confusion with claim/workflow status.
 
 ---
 
-# 21. Fact Sheets
+# 22. Fact Sheets
 
-The Fact Sheet is the canonical intermediate representation between research and content generation.
+The Fact Sheet is the canonical factual intermediate representation.
+
+Recommended persistence:
 
 ```text
 fact_sheets
@@ -542,41 +634,97 @@ story_id
 version
 headline
 summary
-verified_claims
-disputed_claims
-unverified_claims
-evidence
-timeline
-entities
-locations
-context
-counterclaims
+claims_snapshot          JSONB
+fact_checks_snapshot     JSONB
+evidence_snapshot        JSONB
+sources_snapshot         JSONB
+timeline                 JSONB
+entities                 JSONB
+locations                JSONB
+context                  JSONB
+counterclaims            JSONB
+unresolved_questions     JSONB
 confidence_score
 risk_level
-source_snapshot
+sensitive_topics         JSONB
 ai_run_id
 created_at
 ```
 
-A Fact Sheet used for publication should be immutable. Corrections create a new version.
-
----
-
-# 22. Content Drafts and Variants
-
-`content_drafts` represents a generated package tied to a story and Fact Sheet. `content_variants` represents platform/format/language-specific outputs.
-
-Normal content generation must consume a Fact Sheet rather than bypassing directly from raw articles.
-
----
-
-# 23. Media Assets
-
-`media_assets` tracks storage and delivery metadata separately.
-
-Recommended fields include:
+`claims_snapshot` preserves canonical status on every included claim:
 
 ```text
+SUPPORTED
+PARTIALLY_SUPPORTED
+DISPUTED
+UNVERIFIED
+REFUTED
+```
+
+Optional derived partitions may be materialized for query convenience, but they must not replace the canonical per-claim status or omit refuted/partially-supported claims.
+
+A Fact Sheet version used for publication is immutable.
+
+Corrections create a new version.
+
+---
+
+# 23. Content Drafts
+
+`content_drafts` represents one generated content package for a Fact Sheet/editorial brief.
+
+Recommended fields:
+
+```text
+id
+story_id
+fact_sheet_id
+fact_sheet_version
+risk_level
+sensitive_topics
+review_state
+created_by_ai_run_id
+version
+created_at
+updated_at
+```
+
+---
+
+# 24. Content Variants
+
+`content_variants` stores platform/format/language variants.
+
+Recommended fields:
+
+```text
+id
+content_draft_id
+platform
+format
+language
+body/caption/title
+structured_payload
+claim_ids_used
+source_ids_used
+media_asset_ids
+review_state
+version
+created_at
+updated_at
+```
+
+A material edit after approval must not silently retain approval for the previous version.
+
+---
+
+# 25. Media Assets
+
+Recommended fields:
+
+```text
+id
+asset_type
 storage_provider
 storage_key
 public_url
@@ -588,21 +736,37 @@ file_hash
 generation_ai_run_id
 source_metadata
 visual_check_status
+created_at
+updated_at
 ```
 
-Local storage does not imply public accessibility. Public delivery is governed by infrastructure and social publishing policy.
+Local storage does not imply public accessibility.
 
 ---
 
-# 24. Social Accounts
+# 26. Social Accounts
 
-`social_accounts` stores connected publishing accounts and a `credential_reference`, never raw tokens.
+Store:
+
+```text
+id
+platform
+account_name
+account_identifier
+status
+credential_reference
+capabilities
+rate_limit_state
+metadata
+created_at
+updated_at
+```
+
+Never store raw tokens in ordinary plaintext application tables.
 
 ---
 
-# 25. Publications
-
-`publications.status` uses `PublicationStatus`.
+# 27. Publications
 
 ```text
 publications
@@ -610,8 +774,9 @@ publications
 id
 content_variant_id
 social_account_id
-status
+status -- PublicationStatus
 scheduled_at
+started_at
 published_at
 external_post_id
 external_url
@@ -620,47 +785,120 @@ created_at
 updated_at
 ```
 
-For the MVP, external publication requires explicit human approval before reaching `SCHEDULED`.
+For the MVP, external publication must not reach eligible `SCHEDULED` state without explicit human approval for the exact content version.
 
 ---
 
-# 26. Publication Attempts
+# 28. Publication Attempts
 
-Each external attempt is recorded independently so retry history is never overwritten.
+Each external attempt is a separate durable record.
+
+```text
+id
+publication_id
+attempt_number
+started_at
+completed_at
+status
+provider_response_metadata
+error_code
+error_class
+created_at
+```
+
+Do not overwrite attempt history.
 
 ---
 
-# 27. Analytics Snapshots
+# 29. Analytics Snapshots
 
-Analytics are stored as timestamped snapshots rather than mutable counters.
+Store timestamped snapshots rather than one mutable counter row.
+
+```text
+id
+publication_id
+captured_at
+metrics
+provider_metadata
+```
 
 ---
 
-# 28. Jobs and Job Attempts
+# 30. Jobs and Job Attempts
 
-`jobs` represents durable asynchronous work state. `job_attempts` records individual processing attempts.
+`jobs` stores durable async work state.
+
+`job_attempts` stores individual attempts.
 
 Redis delivery never replaces these durable records.
 
----
+Useful job fields:
 
-# 29. Audit Log
-
-Audit meaningful human/system actions, including approvals, rejections, corrections, publication decisions, source changes, and editorial-rule changes.
-
-Approval records should include who, what, when, which version, decision, and reason.
-
----
-
-# 30. Evidence Packet
-
-Every publication candidate must be reconstructable as an evidence packet containing story, claims, sources, primary/supporting/contradicting evidence, timeline, entities, locations, counterclaims, fact-check result, confidence, risk, editorial angle, AI runs, and human review.
-
-The packet may be reconstructed from normalized tables rather than stored as one giant JSON object.
+```text
+job_type
+priority
+status
+attempt_count
+scheduled_at
+started_at
+completed_at
+result_reference
+last_error
+```
 
 ---
 
-# 31. Sensitive-Topic Metadata
+# 31. Audit Log
+
+Audit significant human/system actions:
+
+```text
+review approval/rejection/change request
+source enable/disable
+policy/config override
+Fact Sheet correction
+publication scheduling/cancellation/retry
+credential/account administrative action
+```
+
+Approval audit must preserve:
+
+```text
+actor
+artifact type/id
+exact version
+decision
+timestamp
+reason where applicable
+```
+
+---
+
+# 32. Evidence Packet
+
+A publication candidate must be reconstructable with:
+
+```text
+story
+claims
+sources
+supporting evidence
+contradictory evidence
+primary evidence
+counterclaims
+Fact Sheet
+content variant
+risk/sensitivity
+AI provenance
+human review
+publication history
+```
+
+The packet may be reconstructed from normalized tables rather than duplicated as one giant object.
+
+---
+
+# 33. Sensitive-Topic Metadata
 
 Sensitivity is separate from `RiskLevel`.
 
@@ -668,22 +906,18 @@ Example:
 
 ```json
 {
-  "sensitive_topics": [
-    "COMMUNAL_VIOLENCE",
-    "RELIGIOUS_ALLEGATION",
-    "SC_ST_ALLEGATION"
-  ],
+  "sensitive_topics": ["COMMUNAL_VIOLENCE", "SC_ST_ALLEGATION"],
   "risk_level": "HIGH"
 }
 ```
 
-Sensitive topics trigger stricter evidence and review gates.
+Sensitive-topic metadata drives stricter research/review policy but must not change factual truth.
 
 ---
 
-# 32. Demographic Data
+# 34. Demographic Data
 
-Demographic information must distinguish:
+Demographic records/Fact Sheets should preserve distinctions among:
 
 ```text
 OBSERVED_DATA
@@ -693,11 +927,11 @@ CAUSAL_EVIDENCE
 EDITORIAL_INTERPRETATION
 ```
 
-Never automatically convert demographic change into communal blame.
+Do not automatically convert demographic change into communal causation/blame.
 
 ---
 
-# 33. Civilizational Taxonomy
+# 35. Civilizational Taxonomy
 
 Use:
 
@@ -711,228 +945,133 @@ INDIC_CIVILIZATIONAL_CONTEXT
 └── ANCIENT_INDIAN_CULTURAL_TRADITIONS
 ```
 
-This permits shared historical context without collapsing distinct religious identities.
+Distinct identities remain distinct.
 
 ---
 
-# 34. Indexing and JSONB
+# 36. JSONB
 
-Index fields based on measured query patterns. Use JSONB for evolving/provider-specific metadata, not as a substitute for relational modeling of frequently queried or integrity-critical fields.
+Use JSONB for evolving/provider-specific/snapshot structures where relational constraints would otherwise be brittle.
 
----
-
-# 35. Foreign-Key and Uniqueness Rules
-
-Prefer restrictive deletion for provenance-critical relationships. Preserve uniqueness for canonical URLs, article versions, story/article links, Fact Sheet versions, content variants, and attempt numbers.
+Do not use JSONB as a substitute for relational modeling of frequently queried integrity-critical relationships such as claim/evidence/publication ownership.
 
 ---
 
-# 36. Idempotency
+# 37. Indexing
 
-All external side effects must be idempotent where possible. Publication idempotency should be based on the canonical publication operation and verified external state.
+Index based on measured query patterns.
 
----
-
-# 37. Transaction Boundaries
-
-Important state transitions should be transactional. Do not perform external API calls inside long PostgreSQL transactions.
-
-Use:
+Likely early indexes include:
 
 ```text
-database state
-→ job/outbox
-→ external API
-→ database result
+articles(source_id, canonical_url)
+stories(last_updated_at)
+claims(story_id, status)
+claim_evidence(claim_id)
+fact_checks(story_id, label)
+fact_sheets(story_id, version)
+content_variants(content_draft_id, platform)
+publications(status, scheduled_at)
+jobs(status, priority)
+```
+
+Use GIN selectively for JSONB/full-text patterns where justified.
+
+---
+
+# 38. Foreign Keys and Uniqueness
+
+Prefer restrictive deletion for provenance-critical relationships.
+
+Important uniqueness examples:
+
+```text
+(source_id, canonical_url)
+(article_id, version_number)
+(story_id, article_id)
+(story_id, fact_sheet_version)
+(publication_id, attempt_number)
 ```
 
 ---
 
-# 38. Optimistic Concurrency
+# 39. Transaction Boundaries
 
-Mutable editorial objects should use versioning or equivalent optimistic concurrency to prevent silent reviewer overwrites.
+Important state changes should be transactional.
 
----
+Do not hold long database transactions open around external API calls.
 
-# 39. Retention
-
-Claims, evidence, fact checks, Fact Sheets, publications, and audit history should be retained long-term according to policy. AI runs and raw provider responses may have configurable retention.
-
----
-
-# 40. Database Migrations
-
-Every schema change must be represented by a versioned migration. Alembic is the recommended Python migration tool.
-
----
-
-# 41. SQLAlchemy Organization
-
-Keep ORM/persistence code under `packages/database/`, with domain logic in services rather than raw ORM models.
-
----
-
-# 42. Repository and Service Layers
-
-Use:
+Preferred pattern:
 
 ```text
-API / Worker
+PostgreSQL state/outbox
     ↓
-Service
+commit
     ↓
-Repository
+external work
     ↓
-SQLAlchemy
-    ↓
-PostgreSQL
+PostgreSQL result
 ```
-
-Repositories handle persistence. Services handle business logic.
 
 ---
 
-# 43. Event References and Outbox
+# 40. Idempotency
 
-Redis events should reference database records rather than duplicate large payloads.
+All external side effects must be idempotent where practical.
 
-Where reliable event emission is required, use a transactional outbox:
+Publication idempotency relies on canonical publication state, attempt history, and verification of ambiguous external outcomes.
+
+---
+
+# 41. Optimistic Concurrency
+
+Versioned mutable editorial/content artifacts should use optimistic concurrency or equivalent checks to prevent silent overwrites.
+
+---
+
+# 42. Retention
+
+Long-term retention should favor:
 
 ```text
-PostgreSQL transaction
-    ├── business state update
-    └── outbox event
-        ↓
-Outbox publisher
-        ↓
-Redis Streams
+claims/evidence
+Fact Sheets
+reviews
+publications/attempts
+corrections
+audit history
 ```
+
+AI raw responses and temporary source/media data may have separate retention policies.
 
 ---
 
-# 44. MVP Database Scope
+# 43. Migrations
 
-MVP tables:
+Every schema change must use a versioned migration.
+
+Recommended migration tool:
 
 ```text
-sources
-source_feeds
-articles
-article_versions
-stories
-story_sources
-claims
-claim_evidence
-evidence_items
-entities
-entity_mentions
-editorial_scores
-ai_models
-ai_runs
-fact_checks
-fact_sheets
-content_drafts
-content_variants
-social_accounts
-publications
-publication_attempts
-jobs
-audit_log
+Alembic
 ```
 
-Historical-specific tables may follow immediately if historical research is included in MVP.
+Migrations are tested against representative data before production use.
 
 ---
 
-# 45. First Working Flow
+# 44. Final Data Rules
 
 ```text
-RSS item
-   ↓
-sources / source_feeds
-   ↓
-articles / article_versions
-   ↓
-stories / story_sources
-   ↓
-claims
-   ↓
-evidence_items / claim_evidence
-   ↓
-fact_checks
-   ↓
-fact_sheets
-   ↓
-content_drafts / content_variants
-   ↓
-human approval
-   ↓
-publications
+PostgreSQL is durable truth.
+Redis is not durable business truth.
+Claim.status uses ClaimVerificationStatus only.
+FactCheck.label uses FactCheckLabel only.
+Use label consistently instead of fact-check status terminology.
+Fact Sheet stores every material claim status, including PARTIALLY_SUPPORTED and REFUTED.
+UNVERIFIED != REFUTED.
+UNVERIFIED != FALSE.
+Fact Sheets used for publication are immutable versions.
+Publication approval is version-specific and mandatory for MVP external publishing.
+Evidence/source provenance remains reconstructable.
 ```
-
-Every stage must be independently inspectable.
-
----
-
-# 46. Data Integrity Rules
-
-The application MUST prevent:
-
-* publication without a content variant
-* content generation without a story and eligible Fact Sheet
-* fact sheet without a story
-* claim evidence without a claim
-* publication without a social account
-* publication retry without an attempt record
-* human approval without an audit record
-* fact-check verdict without associated evidence assessment
-* deletion of evidence required by published content
-* scheduling external publication before required human approval
-
----
-
-# 47. Corrections
-
-Corrections create a new Fact Sheet/content version and preserve the original evidence and publication trail.
-
----
-
-# 48. Documentation Precedence
-
-Cross-document shared semantics are defined in `CANONICAL_CONTRACTS.md`.
-
-Persistent structures are defined here.
-
-System architecture remains defined in `ARCHITECTURE.md`.
-
-Implementation MUST conform to all three. If implementation reveals a necessary change, update the canonical documentation, migrations/models, and tests together.
-
----
-
-# 49. Final Canonical Model
-
-```text
-SOURCE
-  ↓
-ARTICLE
-  ↓
-STORY
-  ↓
-CLAIM
-  ↓
-EVIDENCE
-  ↓
-FACT CHECK
-  ↓
-FACT SHEET
-  ↓
-CONTENT
-  ↓
-HUMAN APPROVAL
-  ↓
-PUBLICATION
-  ↓
-ANALYTICS
-```
-
-AI is an analysis and generation layer around this chain. It is not the source of truth.
