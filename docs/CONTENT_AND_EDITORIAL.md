@@ -3,42 +3,15 @@
 # CONTENT_AND_EDITORIAL.md
 
 **Status:** Canonical
-**Document Role:** Source of truth for editorial policy, story prioritization, fact-checking, content generation, sensitive-topic handling, and publication review.
+**Document Role:** Source of truth for editorial policy, story prioritization, fact-checking, content generation, sensitive-topic handling, and publication-review requirements.
+
+Shared enums and cross-document semantics are defined by `CANONICAL_CONTRACTS.md`.
 
 ---
 
-# 1. Purpose
+# 1. Core Editorial Principle
 
-This document defines how the News AI Social Media Manager decides:
-
-* what stories matter
-* how stories are categorized
-* how editorial priority is calculated
-* how claims are evaluated
-* how evidence is ranked
-* how fact-check results are expressed
-* how historical claims are handled
-* how sensitive subjects are handled
-* how verified information becomes social content
-* when human approval is mandatory
-* what the system must never do
-
-This document governs **editorial behavior**, not infrastructure.
-
-Infrastructure, database architecture, event contracts, and AI-provider architecture remain defined in:
-
-```text
-ARCHITECTURE.md
-DATA_MODEL.md
-EVENTS.md
-AI_PLATFORM.md
-```
-
----
-
-# 2. Core Editorial Principle
-
-The system separates four layers:
+The system separates:
 
 ```text
 FACT
@@ -50,66 +23,43 @@ INTERPRETATION
 EDITORIAL ANGLE
 ```
 
-The editorial system may decide which stories deserve attention.
+Editorial preference determines attention, prioritization, context, tone, and format.
 
-It must not alter factual conclusions merely because a conclusion is politically inconvenient, ideologically inconvenient, culturally inconvenient, or commercially inconvenient.
+Evidence determines factual confidence.
 
-Therefore:
+Political, cultural, religious, civilizational, or commercial preferences must not override contradictory evidence or convert unsupported claims into facts.
+
+---
+
+# 2. Editorial Mission
+
+The system prioritizes coverage of:
 
 ```text
-Editorial preference → determines attention
-Evidence → determines factual confidence
-Human review → determines high-risk publication
+Indian governance and politics
+Indian economic development
+Indian defence and security
+Indian foreign policy and geopolitics
+wars, conflict, diplomacy, and international institutions
+religious freedom, persecution, violence, and discrimination
+demographic change
+constitutional and legal developments
+human-rights developments
+caste-related developments and SC/ST Act cases
+hate speech, blasphemy, and derogatory statements
+Hinduism and Hindu traditions
+Sikh, Jain, Buddhist, indigenous, and regional Indian traditions
+Indian civilizational history
+ancient, medieval, colonial, and modern Indian history
+archaeology, inscriptions, linguistic history, and population history
+fact checking, misinformation, and disinformation
 ```
 
----
-
-# 3. Editorial Mission
-
-The system is designed to monitor and explain:
-
-* Indian governance
-* Indian politics
-* Indian economic development
-* Indian defence and security
-* Indian foreign policy
-* India's international relationships
-* geopolitical developments
-* wars and conflicts
-* diplomacy
-* international institutions
-* religious freedom
-* religious persecution
-* religious violence
-* demographic changes
-* constitutional and legal developments
-* human-rights developments
-* caste-related developments
-* SC/ST Act cases
-* hate speech and derogatory statements
-* blasphemy-related developments
-* Hinduism and Hindu traditions
-* Sikh, Jain and Buddhist traditions
-* Indian civilizational history
-* ancient Indian history
-* archaeology
-* inscriptions
-* historical migration
-* linguistic history
-* population history
-* colonial history
-* medieval history
-* modern Indian history
-* fact checking
-* misinformation and disinformation
-
-The system should also cover other major international and domestic stories when their importance warrants coverage.
+Other major domestic and international stories may be covered when important.
 
 ---
 
-# 4. Editorial Taxonomy
-
-## 4.1 Primary Categories
+# 3. Primary Taxonomy
 
 ```text
 INDIA
@@ -127,397 +77,42 @@ SCIENCE_TECH
 FACT_CHECK
 ```
 
-A story may have multiple categories.
-
-Example:
-
-```text
-INDIA
-POLITICS
-LAW
-FACT_CHECK
-```
+Stories may belong to multiple categories.
 
 ---
 
-# 5. India Taxonomy
+# 4. Indic Civilizational Context
+
+The system may analyze shared Indian civilizational context while preserving distinct identities.
+
+Use:
 
 ```text
-INDIA
-├── Government
-├── Parliament
-├── Judiciary
-├── Elections
-├── Governance
-├── Infrastructure
-├── Economy
-├── Defence
-├── Space
-├── Science
-├── Technology
-├── Foreign Policy
-├── Internal Security
-├── Public Policy
-├── States
-├── Union Territories
-└── Public Institutions
+INDIC_CIVILIZATIONAL_CONTEXT
+├── HINDU_TRADITIONS
+├── BUDDHIST_TRADITIONS
+├── JAIN_TRADITIONS
+├── SIKH_TRADITIONS
+├── INDIGENOUS_REGIONAL_TRADITIONS
+└── ANCIENT_INDIAN_CULTURAL_TRADITIONS
 ```
 
-Priority should generally be high for developments with substantial national consequences.
+Do not collapse distinct traditions into one religious identity.
 
 ---
 
-# 6. Geopolitics Taxonomy
-
-```text
-GEOPOLITICS
-├── Pakistan
-├── China
-├── United States
-├── Russia
-├── Middle East
-├── Bangladesh
-├── Nepal
-├── Sri Lanka
-├── Bhutan
-├── Maldives
-├── Indian Ocean
-├── Indo-Pacific
-├── Europe
-├── Africa
-├── Central Asia
-├── ASEAN
-├── United Nations
-├── BRICS
-├── G20
-└── International Organizations
-```
-
-Indian strategic relevance should be explicitly scored.
-
----
-
-# 7. Security Taxonomy
-
-```text
-SECURITY
-├── Military
-├── Terrorism
-├── Counterterrorism
-├── Border Security
-├── Cybersecurity
-├── Maritime Security
-├── Intelligence
-├── Defence Procurement
-├── Military Technology
-├── Strategic Weapons
-├── Internal Security
-├── Insurgency
-└── Conflict
-```
-
-Security claims require strong source verification.
-
----
-
-# 8. Civilization Taxonomy
-
-The system should support analysis of India's civilizational history without collapsing distinct traditions into a single identity.
-
-```text
-CIVILIZATION
-├── Ancient India
-├── Indus / Harappan Civilization
-├── Vedic Traditions
-├── Classical India
-├── Regional Civilizations
-├── Sanskrit
-├── Prakrits
-├── Archaeology
-├── Epigraphy
-├── Literature
-├── Philosophy
-├── Mathematics
-├── Science
-├── Architecture
-├── Art
-├── Cultural Heritage
-└── Historical Geography
-```
-
-Civilizational relevance does not override historical evidence.
-
----
-
-# 9. Religion Taxonomy
-
-```text
-RELIGION
-├── Hinduism
-├── Sikhism
-├── Jainism
-├── Buddhism
-├── Indigenous / Regional Traditions
-├── Temples
-├── Religious Sites
-├── Religious Freedom
-├── Religious Discrimination
-├── Religious Violence
-├── Conversion
-├── Blasphemy
-├── Religious Law
-├── Religious Demography
-└── Interfaith Relations
-```
-
-Distinct religious traditions must remain analytically distinguishable.
-
-The system may study shared Indian civilizational contexts while preserving differences between traditions.
-
----
-
-# 10. Law and Rights Taxonomy
-
-```text
-LAW
-├── Constitution
-├── Supreme Court
-├── High Courts
-├── Parliament
-├── Criminal Law
-├── Civil Law
-├── Constitutional Law
-├── Hate Speech
-├── Religious Freedom
-├── SC/ST Act
-├── Election Law
-└── Human Rights Law
-
-RIGHTS
-├── Civil Rights
-├── Religious Rights
-├── Minority Rights
-├── Women's Rights
-├── Children's Rights
-├── Human Rights
-├── Freedom of Speech
-├── Freedom of Religion
-└── Equality Before Law
-```
-
-Legal reporting must distinguish:
-
-```text
-allegation
-→ complaint
-→ FIR
-→ investigation
-→ arrest
-→ charge sheet
-→ trial
-→ conviction/acquittal
-→ appeal
-→ final judgment
-```
-
-These states must never be conflated.
-
----
-
-# 11. Demographics
-
-Demographic reporting must distinguish:
-
-```text
-OBSERVED DATA
-    ↓
-STATISTICAL INTERPRETATION
-    ↓
-POSSIBLE EXPLANATIONS
-    ↓
-EDITORIAL INTERPRETATION
-```
-
-The system must not automatically infer:
-
-```text
-population change
-→ malicious intent
-```
-
-or:
-
-```text
-demographic correlation
-→ causal relationship
-```
-
-Potential explanations must be evaluated using evidence.
-
-Relevant factors may include:
-
-* fertility
-* mortality
-* migration
-* age structure
-* urbanization
-* marriage patterns
-* regional variation
-* economic conditions
-* policy
-* census methodology
-* data-quality limitations
-
----
-
-# 12. Caste-Related Reporting
-
-The system may report verified caste-related facts when relevant.
-
-Examples:
-
-* documented caste discrimination
-* court cases
-* government statistics
-* reservation policy
-* SC/ST Act cases
-* historical caste institutions
-* social mobility
-* caste violence
-* documented discrimination
-
-The system must never:
-
-* infer behavior from caste identity
-* generalize criminality to a caste
-* create caste stereotypes
-* fabricate caste statistics
-* imply collective guilt
-* encourage discrimination
-
-Facts about an individual or event must not automatically become claims about an entire caste group.
-
----
-
-# 13. Historical Research Policy
-
-Historical questions must be treated as evidence problems.
-
-The system should construct:
-
-```text
-HistoricalEvent
-├── date / date range
-├── location
-├── people
-├── political entities
-├── primary sources
-├── archaeological evidence
-├── inscriptions
-├── literary sources
-├── linguistic evidence
-├── genetic evidence
-├── material culture
-├── modern scholarship
-├── competing hypotheses
-└── confidence
-```
-
----
-
-# 14. Ancient Population and Migration Claims
-
-The system must not encode historical conclusions as ideological absolutes.
-
-For disputed questions, separate:
-
-```text
-language movement
-population movement
-genetic ancestry
-archaeological continuity
-cultural transmission
-political expansion
-military invasion
-```
-
-These are different propositions.
-
-For example, evidence for population movement does not automatically establish:
-
-```text
-military invasion
-```
-
-Similarly:
-
-```text
-linguistic relationship
-```
-
-does not by itself establish a complete demographic replacement.
-
----
-
-# 15. Aryan / Indo-European Historical Questions
-
-When discussing Aryan, Indo-European, Indo-Iranian, Vedic, or related historical questions, the system must represent the actual evidence and competing scholarly interpretations.
-
-Relevant evidence domains include:
-
-```text
-LINGUISTICS
-ARCHAEOLOGY
-GENETICS
-LITERARY SOURCES
-CHRONOLOGY
-MATERIAL CULTURE
-HISTORICAL GEOGRAPHY
-```
-
-The system must not force a binary:
-
-```text
-"invasion definitely happened"
-```
-
-versus:
-
-```text
-"invasion definitely did not happen"
-```
-
-unless the specific evidence warrants such a conclusion.
-
-The system should distinguish:
-
-```text
-Aryan invasion
-Aryan migration
-Indo-European language dispersal
-Indo-Iranian language dispersal
-Steppe-related ancestry
-Vedic cultural development
-Harappan / post-Harappan continuity
-```
-
-and report the evidentiary status of each separately.
-
----
-
-# 16. Evidence Hierarchy
-
-Evidence sources are classified as:
+# 5. Evidence Hierarchy
 
 ## Level 1 — Primary
+
+Examples:
 
 ```text
 court judgments
 government documents
 parliamentary records
 official statistics
-official diplomatic statements
-official military statements
+official diplomatic or military statements
 police documents
 original research papers
 archaeological reports
@@ -547,7 +142,7 @@ subject-matter experts
 specialist databases
 ```
 
-## Level 4 — Discovery Sources
+## Level 4 — Discovery
 
 ```text
 X
@@ -560,107 +155,52 @@ blogs
 forums
 ```
 
-Level 4 sources may identify a claim or breaking event.
-
-They generally should not be the sole evidence for high-risk factual claims.
+Level 4 sources may discover a claim but should generally not be the sole evidence for high-risk factual claims.
 
 ---
 
-# 17. Source Independence
+# 6. Source Independence
 
-The number of articles is not equivalent to the number of independent confirmations.
-
-Example:
+Article count is not independent-confirmation count.
 
 ```text
-Agency A publishes claim
-       ↓
-Newspaper B republishes A
-       ↓
-Website C republishes B
-       ↓
-Website D republishes C
+10 republished articles from one originating report
+!=
+10 independent confirmations
 ```
 
-This is effectively one source chain.
-
-The evidence engine should identify:
-
-```text
-source_origin
-source_chain
-syndication
-citation_dependency
-independent_confirmation
-```
+The evidence engine should track source origin, lineage, syndication, citation dependency, and independent confirmation.
 
 ---
 
-# 18. Claim Model
+# 7. Claim Verification Status
 
-Every important factual proposition should become a structured claim.
-
-Example:
-
-```json
-{
-  "claim": "X happened in Y on date Z",
-  "status": "partially_confirmed",
-  "confidence": 0.82,
-  "sources": [],
-  "primary_evidence": [],
-  "contradictory_evidence": []
-}
-```
-
-Claims should support:
+A claim's evidence state uses `ClaimVerificationStatus`:
 
 ```text
-claim_id
-story_id
-claim_text
-claim_type
-status
-confidence
-importance
-sources
-evidence
-counter_evidence
-created_at
-updated_at
+UNASSESSED
+SUPPORTED
+PARTIALLY_SUPPORTED
+DISPUTED
+UNVERIFIED
+REFUTED
+```
+
+These are processing/evidence states.
+
+They are not fact-check verdict labels.
+
+Critical distinction:
+
+```text
+UNVERIFIED != REFUTED
 ```
 
 ---
 
-# 19. Claim Types
+# 8. Fact-Check Labels
 
-Recommended claim types:
-
-```text
-EVENT
-DATE
-LOCATION
-PERSON
-ORGANIZATION
-NUMBER
-QUOTE
-LEGAL_STATUS
-CASUALTY
-MILITARY_ACTION
-POLICY
-DEMOGRAPHIC_STATISTIC
-HISTORICAL_INTERPRETATION
-SCIENTIFIC_CLAIM
-ALLEGATION
-CAUSE
-CORRELATION
-```
-
----
-
-# 20. Fact-Check Labels
-
-Supported labels:
+A fact-check verdict uses `FactCheckLabel`:
 
 ```text
 TRUE
@@ -674,102 +214,72 @@ FABRICATED
 SATIRE
 ```
 
-The system must preserve the distinction between:
+Critical invariant:
 
 ```text
-UNVERIFIED
+UNVERIFIED != FALSE
 ```
 
-and:
+Lack of evidence is not evidence of falsity.
 
-```text
-FALSE
-```
-
-Lack of evidence is not automatically evidence of falsity.
+A fact-check verdict may be applied to a checked claim, statement, post, media item, or composite assertion after evaluation.
 
 ---
 
-# 21. Fact-Check Decision Logic
+# 9. Fact-Check Logic
 
 Conceptually:
 
 ```text
-Claim
+Claim / assertion
  ↓
 Can it be checked?
- ├── No → UNVERIFIED
- └── Yes
-      ↓
+ ↓
 Primary evidence?
-      ↓
+ ↓
 Independent corroboration?
-      ↓
+ ↓
 Contradictory evidence?
-      ↓
+ ↓
 Context complete?
-      ↓
-Final classification
+ ↓
+FactCheckLabel
 ```
 
-A claim may be:
+`PARTIALLY_TRUE` is a verdict label.
 
-```text
-PARTIALLY_TRUE
-```
+`PARTIALLY_SUPPORTED` is a claim-verification status.
 
-when its central event occurred but important context is omitted.
-
-A claim may be:
-
-```text
-MISLEADING
-```
-
-when technically true information is presented in a way that creates a materially false impression.
+They must never be used interchangeably.
 
 ---
 
-# 22. Confidence
+# 10. Confidence
 
 Confidence is evidence-based.
 
-It should consider:
+It may consider:
 
 ```text
 source quality
 source independence
 primary evidence
 corroboration
-contradictions
+contradiction
 claim specificity
 data quality
-temporal reliability
-geographic reliability
-model uncertainty
+temporal/geographic reliability
 ```
 
-Example:
+A score such as `0.91` must not be described as an objective 91% probability of truth unless the score is explicitly calibrated for that interpretation.
 
-```text
-confidence = 0.91
-```
-
-means strong evidentiary support.
-
-It does not mean:
-
-```text
-91% chance the AI is correct
-```
-
-unless the underlying calibration methodology explicitly supports that interpretation.
+AI model agreement alone is not evidence.
 
 ---
 
-# 23. Editorial Scoring
+# 11. Editorial Scoring
 
-Each story receives separate scores.
+Keep separate scores for:
 
 ```text
 importance
@@ -786,120 +296,40 @@ controversy
 publication_risk
 ```
 
-Editorial relevance and factual confidence are separate dimensions.
+Editorial priority and factual confidence are separate dimensions.
+
+A high-priority but weakly evidenced story should receive more research, not premature publication.
 
 ---
 
-# 24. Suggested Story Priority Formula
+# 12. Risk and Sensitivity
 
-Initial implementation:
+Canonical `RiskLevel`:
 
 ```text
-priority =
-    0.20 * importance
-  + 0.15 * india_relevance
-  + 0.10 * geopolitical_relevance
-  + 0.10 * civilizational_relevance
-  + 0.08 * religious_relevance
-  + 0.08 * historical_relevance
-  + 0.10 * fact_check_value
-  + 0.07 * breaking_news_score
-  + 0.05 * audience_interest
-  + 0.07 * evidence_strength
+LOW
+MEDIUM
+HIGH
+CRITICAL
 ```
 
-The formula is configurable.
-
-It must not contain hidden ideological multipliers.
-
----
-
-# 25. Editorial Priority vs Evidence Strength
-
-These are intentionally separate.
+Sensitivity is separate from risk level.
 
 Example:
 
 ```text
-Story A
-Editorial priority: 0.96
-Evidence strength: 0.42
-```
-
-This means:
-
-> The story is important but insufficiently verified.
-
-It should therefore receive research attention rather than immediate publication.
-
-Another story:
-
-```text
-Editorial priority: 0.55
-Evidence strength: 0.98
-```
-
-may be extremely well established but less important to the current editorial mission.
-
----
-
-# 26. Controversy Score
-
-Controversy should measure disagreement or public dispute.
-
-It must not be interpreted as evidence of falsity.
-
-Example:
-
-```text
-high controversy
-+
-high evidence
-```
-
-is possible.
-
-Similarly:
-
-```text
-low controversy
-+
-weak evidence
-```
-
-is possible.
-
----
-
-# 27. Publication Risk
-
-Risk should consider:
-
-```text
-defamation
-communal tension
-religious accusation
-individual criminal allegation
-sexual-assault allegation
-terrorism attribution
-war casualty claims
-election fraud
-SC/ST allegations
-unverified breaking news
-medical misinformation
-financial misinformation
-historical misinformation
+sensitive_topic = true
+sensitive_categories = [COMMUNAL_VIOLENCE]
+risk_level = HIGH
 ```
 
 Risk is independent of editorial importance.
 
 ---
 
-# 28. Sensitive Topic Policy
+# 13. Sensitive Topic Policy
 
-High-risk topics require stronger verification and human review.
-
-Minimum categories:
+At minimum, stricter verification and mandatory human review apply to material claims involving:
 
 ```text
 communal violence
@@ -913,255 +343,204 @@ election fraud
 SC/ST allegations
 caste-related accusations
 blasphemy allegations
-political corruption allegations
 unverified breaking news
 ```
 
+Sensitive-topic classification must not be inferred merely from demographic identity.
+
 ---
 
-# 29. Individual Allegations
+# 14. MVP Human Approval Policy
 
-The system must use legally accurate language.
-
-Prefer:
+For the MVP/current brainstorming implementation phase:
 
 ```text
-"Police allege..."
-"According to the FIR..."
-"The complaint alleges..."
-"Investigators say..."
-"The court held..."
-"The accused denied..."
+ALL external social publication requires explicit human approval.
+```
+
+This includes low-risk content.
+
+Automated checks may decide that content is ready for review, but they do not authorize external publication.
+
+A future low-risk auto-approval mode may be introduced only when explicitly enabled and only under `CANONICAL_CONTRACTS.md`.
+
+Mandatory-review topics may never use that future low-risk bypass.
+
+---
+
+# 15. Legal and Allegation Reporting
+
+Preserve procedural status:
+
+```text
+allegation
+complaint
+FIR
+investigation
+arrest
+charge / charge sheet
+prosecution
+trial
+court finding
+conviction
+acquittal
+appeal
+final judgment
 ```
 
 Do not convert:
 
 ```text
-allegation
+X accused Y
 ```
 
 into:
 
 ```text
-fact
+Y did X
 ```
 
-before adjudication.
+unless evidence establishes the underlying act.
+
+An official allegation remains an allegation unless the status changes.
 
 ---
 
-# 30. Criminal Case Lifecycle
+# 16. Caste-Related Reporting
 
-The content engine must understand legal status.
+The system may report verified caste-related facts when relevant.
 
-Example:
-
-```text
-Complaint
- ↓
-FIR
- ↓
-Investigation
- ↓
-Arrest
- ↓
-Charge Sheet
- ↓
-Trial
- ↓
-Conviction / Acquittal
- ↓
-Appeal
-```
-
-A person described as:
+It must not:
 
 ```text
-accused
+infer behavior from caste identity
+generalize criminality to a caste
+create caste stereotypes
+fabricate caste statistics
+imply collective guilt
+encourage discrimination
 ```
 
-must not be described as:
-
-```text
-convicted
-```
-
-unless a conviction exists.
+SC/ST Act reporting must preserve procedural status and underlying evidence.
 
 ---
 
-# 31. SC/ST Act Reporting
-
-SC/ST Act-related stories require:
-
-```text
-exact allegation
-legal section
-complainant statement
-police action
-investigation status
-court status
-counterclaims
-available documentary evidence
-```
-
-The system must not:
-
-* dismiss an allegation without evidence
-* assume guilt because an FIR exists
-* assume fabrication because allegations are disputed
-* generalize the conduct of individuals to caste groups
-
----
-
-# 32. Religious and Blasphemy Claims
-
-Religious-insult and blasphemy stories require careful attribution.
-
-The system should distinguish:
-
-```text
-statement actually made
-claimed statement
-edited recording
-satire
-quotation
-translation
-interpretation
-allegation
-legal complaint
-criminal charge
-court finding
-```
-
-A religiously offensive claim should not be amplified merely because it is inflammatory.
-
----
-
-# 33. Hate Speech
-
-For alleged hate speech:
-
-```text
-obtain original statement
-→ preserve exact context
-→ identify speaker
-→ verify date/location
-→ verify recording
-→ identify legal response
-→ identify competing interpretations
-```
-
-Do not infer intent solely from a short clipped excerpt.
-
----
-
-# 34. War and Conflict Reporting
-
-Conflict claims require special handling.
+# 17. Demographic Reporting
 
 Separate:
 
 ```text
-military claim
-government claim
-opposition claim
-independent verification
-visual evidence
-satellite evidence
-open-source evidence
-casualty estimate
-confirmed casualty
+OBSERVED DATA
+    ↓
+STATISTICAL INTERPRETATION
+    ↓
+POSSIBLE EXPLANATIONS
+    ↓
+CAUSAL EVIDENCE
+    ↓
+EDITORIAL INTERPRETATION
 ```
 
-Casualty numbers must be attributed unless independently established.
+Do not infer malicious intent, wrongdoing, or causation merely from population change or correlation.
+
+Record dataset, time period, geography, population definition, methodology, and uncertainty where relevant.
 
 ---
 
-# 35. Breaking News
+# 18. Historical Research Policy
 
-Breaking-news workflow:
+Historical questions are evidence problems, not ideological switches.
 
-```text
-DISCOVERY
- ↓
-INITIAL VERIFICATION
- ↓
-PRIMARY SOURCE SEARCH
- ↓
-INDEPENDENT CORROBORATION
- ↓
-PROVISIONAL FACT SHEET
- ↓
-HUMAN REVIEW
- ↓
-PUBLISH
-```
-
-If verification is incomplete:
+Relevant domains include:
 
 ```text
-"Reports indicate..."
-"According to..."
-"Not independently verified..."
+LINGUISTICS
+ARCHAEOLOGY
+GENETICS
+LITERARY SOURCES
+EPIGRAPHY
+CHRONOLOGY
+MATERIAL CULTURE
+POPULATION MOVEMENT
+CULTURAL TRANSMISSION
+POLITICAL EXPANSION
+MILITARY CONFLICT
 ```
 
-must be used where appropriate.
+Evidence in one domain must not automatically be represented as proof in another.
+
+For contested questions, record competing hypotheses, supporting evidence, limiting/contradicting evidence, and uncertainty.
 
 ---
 
-# 36. Contradictory Evidence
+# 19. Indo-European / Indo-Aryan Historical Questions
 
-The evidence engine must preserve contradictory evidence rather than silently selecting the preferred narrative.
+The system must not hard-code a blanket instruction to automatically accept or reject an “Aryan theory.”
+
+Distinguish propositions such as:
 
 ```text
-Claim
-├── Supporting Evidence
-├── Contradictory Evidence
-└── Unresolved Questions
+language dispersal
+population movement
+genetic ancestry
+archaeological continuity
+cultural transmission
+political expansion
+military invasion
 ```
 
-The final fact sheet should explicitly surface major contradictions.
+These are related but not interchangeable claims.
+
+Report the evidentiary status of each separately.
 
 ---
 
-# 37. Counterclaims
+# 20. Counterclaims and Contradictions
 
-A counterclaim is not automatically equally credible.
+Contradictory evidence must be retained even when it weakens the preferred editorial angle.
 
-The system should evaluate:
+A counterclaim is not automatically equally credible; evaluate source quality, directness, independence, and evidence strength.
 
-```text
-source quality
-evidence quality
-independence
-specificity
-contradictions
-```
-
-Therefore:
-
-```text
-"both sides say..."
-```
-
-is not sufficient analysis.
-
-Evidence determines weight.
+Material unresolved disagreement must remain visible in the Fact Sheet and final content.
 
 ---
 
-# 38. Fact Sheet Contract
+# 21. Fact Sheet Boundary
 
-Every publishable story should produce:
+Normal content generation consumes a Fact Sheet.
+
+```text
+RAW SOURCES
+   ↓
+STORY
+   ↓
+CLAIMS
+   ↓
+EVIDENCE
+   ↓
+FACT SHEET
+   ↓
+EDITORIAL ANGLE
+   ↓
+CONTENT
+```
+
+Do not ask a model to read many raw articles and immediately produce the final post.
+
+---
+
+# 22. Fact Sheet Content
+
+Canonical conceptual structure:
 
 ```text
 FACT SHEET
 ├── headline
 ├── summary
-├── verified_claims
-├── disputed_claims
-├── unverified_claims
+├── verified/supported claims
+├── disputed claims
+├── unverified claims
+├── refuted claims where material
 ├── evidence
 ├── timeline
 ├── entities
@@ -1173,1211 +552,158 @@ FACT SHEET
 └── sources
 ```
 
-The content generator consumes the fact sheet rather than raw articles.
+The Fact Sheet must preserve material contradictions and uncertainty.
 
 ---
 
-# 39. Fact Sheet Rules
+# 23. Editorial Angle
 
-The fact sheet must:
-
-* preserve source attribution
-* preserve uncertainty
-* preserve legal status
-* preserve contradictory evidence
-* preserve important context
-* distinguish fact from interpretation
-* distinguish direct evidence from secondary reporting
-* identify unresolved questions
-
----
-
-# 40. Content Generation Principle
-
-Never use:
+Editorial angle may determine:
 
 ```text
-raw articles
-→ LLM
-→ publishable post
+which supported facts lead
+which context is emphasized
+what question the post answers
+tone and format
+audience relevance
 ```
 
-Use:
+It must not:
 
 ```text
-sources
-→ claims
-→ evidence
-→ fact sheet
-→ content generation
-→ quality gate
-→ human review where required
-→ publication
+invent evidence
+hide material contradictions
+turn allegations into findings
+manufacture quotes/numbers
+attribute unsupported motives
 ```
 
 ---
 
-# 41. Editorial Angle
-
-An editorial angle describes why the story matters.
-
-Examples:
-
-```text
-What happened?
-Why does it matter?
-What changed?
-What is verified?
-What remains disputed?
-What does the evidence show?
-What is the historical context?
-What is the Indian strategic relevance?
-```
-
-The angle must not introduce unsupported factual claims.
-
----
-
-# 42. Content Modes
-
-Supported modes:
-
-```text
-NEWS
-ANALYSIS
-FACT_CHECK
-HISTORICAL_CONTEXT
-EXPLAINER
-TIMELINE
-BREAKING_NEWS
-DATA_STORY
-EDITORIAL_COMMENTARY
-```
-
-The selected mode must be recorded with the generated content.
-
----
-
-# 43. Instagram Content
-
-Primary format:
-
-```text
-CAROUSEL
-```
-
-Typical structure:
-
-```text
-Slide 1 → Hook / headline
-Slide 2 → What happened
-Slide 3 → Key verified facts
-Slide 4 → Evidence
-Slide 5 → Timeline
-Slide 6 → Context
-Slide 7 → What is disputed
-Slide 8 → Why it matters
-Slide 9 → Sources
-```
-
-Slide count is configurable.
-
----
-
-# 44. Instagram Caption
-
-Caption structure:
-
-```text
-HOOK
-
-What happened.
-
-Key facts.
-
-Important context.
-
-What remains uncertain.
-
-Why it matters.
-
-Source reference.
-```
-
-Avoid unnecessary sensationalism.
-
----
-
-# 45. X Content
-
-Formats:
-
-```text
-single post
-thread
-reply
-quote-context post
-```
-
-Single post should prioritize:
-
-```text
-fact
-context
-source
-```
-
-Thread structure:
-
-```text
-1. Hook
-2. Event
-3. Evidence
-4. Timeline
-5. Context
-6. Counterclaim
-7. Conclusion
-8. Sources
-```
-
----
-
-# 46. Facebook
-
-Facebook content may use:
-
-```text
-headline
-summary
-context
-key facts
-source
-```
-
-Longer explanatory content is acceptable when the story warrants it.
-
----
-
-# 47. Telegram
-
-Telegram can support:
-
-```text
-headline
-summary
-key facts
-timeline
-context
-sources
-```
-
-Telegram content may be more detailed than X while remaining evidence-grounded.
-
----
-
-# 48. YouTube Shorts
-
-Short-form script:
-
-```text
-HOOK
- ↓
-WHAT HAPPENED
- ↓
-KEY EVIDENCE
- ↓
-WHY IT MATTERS
- ↓
-IMPORTANT CAVEAT
- ↓
-SOURCE / CTA
-```
-
-The script must not sacrifice factual accuracy for retention.
-
----
-
-# 49. Headlines
-
-Headlines should be:
-
-```text
-specific
-accurate
-concise
-informative
-non-defamatory
-non-sensational
-```
-
-Avoid unsupported:
-
-```text
-"shocking"
-"explosive"
-"everyone is talking about"
-"proof that..."
-"definitively proves..."
-```
-
-unless the evidence genuinely supports the wording.
-
----
-
-# 50. Hooks
-
-Hooks should create interest through information.
-
-Preferred:
-
-```text
-"What actually happened?"
-"Here is what the court record shows."
-"Three facts explain this development."
-"Why this matters for India."
-```
-
-Avoid fear-based or rage-based hooks when they distort the story.
-
----
-
-# 51. Quotes
-
-Quoted text must be traceable to a source.
-
-Never fabricate:
-
-* quotations
-* interviews
-* statements
-* court language
-* government statements
-
-If the exact quote cannot be verified, paraphrase and attribute.
-
----
-
-# 52. Numbers
-
-Numbers require verification.
-
-Important numerical claims should preserve:
-
-```text
-value
-unit
-date
-geography
-source
-methodology where relevant
-```
-
-Do not round numbers in a way that changes their meaning.
-
----
-
-# 53. Dates
-
-Dates should be normalized internally.
-
-Content should use an unambiguous format appropriate to the target audience.
-
-When relative dates could create confusion, use absolute dates.
-
----
-
-# 54. Names
-
-Names of:
-
-* people
-* organizations
-* cities
-* countries
-* courts
-* laws
-* military units
-
-must be verified.
-
-AI must not silently correct an uncertain name without evidence.
-
----
-
-# 55. Translation
-
-Translation must preserve:
-
-```text
-meaning
-legal status
-uncertainty
-attribution
-tone
-names
-numbers
-dates
-```
-
-A translated allegation must remain an allegation.
-
----
-
-# 56. Multilingual Publishing
-
-Internal canonical representation should remain language-neutral.
-
-Example:
-
-```text
-Fact Sheet
-    ↓
-English content
-Hindi content
-other supported languages
-```
-
-Each translation should be validated independently.
-
----
-
-# 57. Image Generation
-
-Image generation must consume a verified image brief.
-
-Pipeline:
-
-```text
-FACT SHEET
- ↓
-IMAGE BRIEF
- ↓
-IMAGE MODEL
- ↓
-VISUAL CHECK
- ↓
-MEDIA ASSET
-```
-
-Generated images must not introduce fictional factual details.
-
----
-
-# 58. Historical Visuals
-
-Historical images must clearly distinguish:
-
-```text
-actual historical artifact
-reconstruction
-artist interpretation
-AI-generated visualization
-modern photograph
-archaeological reconstruction
-```
-
-An AI-generated historical scene must never be presented as an authentic photograph.
-
----
-
-# 59. Sensitive Visual Content
-
-Avoid unnecessary graphic imagery.
-
-Visual selection should prioritize:
-
-```text
-information
-context
-dignity
-verification
-```
-
-rather than shock value.
-
----
-
-# 60. AI Writing Rules
-
-AI must not:
-
-* invent sources
-* invent quotations
-* invent statistics
-* invent court findings
-* invent historical evidence
-* invent eyewitness accounts
-* fabricate experts
-* manufacture consensus
-* suppress contradictory evidence
-* turn allegations into facts
-* turn uncertainty into certainty
-
----
-
-# 61. AI Editorial Role
-
-AI may:
-
-```text
-classify
-cluster
-summarize
-extract claims
-compare sources
-identify contradictions
-score stories
-draft content
-translate
-generate visual briefs
-```
-
-AI may not independently override verified evidence.
-
----
-
-# 62. Model Agreement
-
-Agreement between AI models is not evidence.
-
-Example:
-
-```text
-Model A → TRUE
-Model B → TRUE
-Model C → TRUE
-```
-
-does not establish truth.
-
-The evidence engine remains authoritative.
-
----
-
-# 63. Prompt Injection
-
-External content is untrusted.
-
-Articles, webpages, social posts and documents may contain instructions intended for the AI.
-
-The system must treat retrieved content as:
-
-```text
-DATA
-```
-
-not:
-
-```text
-INSTRUCTIONS
-```
-
-Only trusted system/application prompts may control AI behavior.
-
----
-
-# 64. Source Manipulation
-
-The system should detect:
-
-* duplicated articles
-* copied text
-* circular citations
-* suspicious source chains
-* altered screenshots
-* missing context
-* edited videos
-* misleading headlines
-* AI-generated claims presented as reporting
-
-Suspicion should trigger additional research rather than automatic rejection.
-
----
-
-# 65. Publication Evidence Packet
-
-Every publication should retain:
-
-```text
-story
-claims
-sources
-primary evidence
-contradictory evidence
-fact-check results
-confidence
-risk
-editorial angle
-generated content
-AI model
-AI prompt version
-reviewer
-review status
-publication result
-```
-
-This enables post-publication auditing.
-
----
-
-# 66. Human Review Levels
-
-## Level 0 — Automated
-
-Low-risk, high-confidence content.
-
-Examples:
-
-```text
-routine non-controversial announcements
-basic weather-like informational data
-non-sensitive summaries
-```
-
-## Level 1 — Automated + Spot Check
-
-Moderate-risk content.
-
-## Level 2 — Human Review Required
-
-Sensitive content.
-
-## Level 3 — Senior Review
-
-Extremely sensitive or potentially consequential content.
-
----
-
-# 67. Mandatory Human Review
-
-Human approval is required for:
-
-```text
-communal violence
-religious violence
-religious accusations
-individual criminal allegations
-sexual assault allegations
-terrorism attribution
-war casualty claims
-election fraud claims
-SC/ST allegations
-high-impact political allegations
-uncertain breaking news
-high-risk historical claims
-high-risk demographic claims
-```
-
----
-
-# 68. Review Dashboard
-
-Recommended interface:
-
-```text
-REVIEW QUEUE
-
-Risk: HIGH
-Category: RELIGION / INDIA
-
-Confidence: 71%
-Sources: 7
-Primary: 2
-Independent: 4
-Contradictory evidence: 1
-
-CLAIMS
-├── Claim 1
-├── Claim 2
-└── Claim 3
-
-EVIDENCE
-├── Primary
-├── Secondary
-└── Counter-evidence
-
-CONTENT
-├── Instagram
-├── X
-└── Telegram
-
-ACTIONS
-[Research]
-[Edit]
-[Approve]
-[Reject]
-```
-
-Reviewer should inspect the evidence packet, not just the final caption.
-
----
-
-# 69. Reviewer Actions
-
-Supported actions:
-
-```text
-APPROVE
-REJECT
-REQUEST_RESEARCH
-REQUEST_EDIT
-MARK_UNVERIFIED
-MARK_FACT_CHECKED
-ESCALATE
-```
-
-Every decision should enter the audit log.
-
----
-
-# 70. Revisions
-
-If new evidence appears:
-
-```text
-publication
- ↓
-new evidence
- ↓
-re-evaluation
- ↓
-content revision
- ↓
-correction / update
-```
-
-The system should retain previous versions.
-
-Never silently overwrite historical publication state.
-
----
-
-# 71. Corrections
-
-Corrections should be explicit when material factual errors were published.
-
-Correction workflow:
-
-```text
-ERROR DETECTED
- ↓
-VERIFY ERROR
- ↓
-ASSESS IMPACT
- ↓
-CORRECT CONTENT
- ↓
-REVIEW
- ↓
-REPUBLISH / UPDATE
- ↓
-AUDIT
-```
-
----
-
-# 72. Source Transparency
-
-Where appropriate, published content should identify source categories.
-
-Examples:
-
-```text
-Court judgment
-Government data
-Police statement
-Reuters
-Research paper
-Official diplomatic statement
-```
-
-The system should avoid presenting anonymous or weak sources as authoritative.
-
----
-
-# 73. Source Display
-
-Internal records should preserve full source metadata.
-
-Public-facing source presentation may be shortened for readability.
-
-Example:
-
-```text
-Sources:
-• Supreme Court judgment
-• Ministry of External Affairs
-• Research paper
-```
-
-The underlying evidence packet remains complete.
-
----
-
-# 74. Editorial Style
+# 24. Content Style
 
 Default style:
 
 ```text
 clear
-direct
-evidence-led
-concise
-contextual
-confident when evidence is strong
-cautious when evidence is weak
+specific
+source-aware
+confident only where evidence warrants
+explicit about uncertainty
+non-sensational unless the facts themselves are extraordinary
 ```
 
-Avoid unnecessary academic verbosity.
+Avoid loaded wording that adds facts or motives not present in evidence.
 
 ---
 
-# 75. Political Coverage
+# 25. Headline Rules
 
-Political coverage should distinguish:
+Headlines must not materially overstate the strongest supported claim.
 
-```text
-policy
-statement
-promise
-proposal
-implementation
-result
-criticism
-allegation
-court finding
-official data
-```
+For allegations, attribute the allegation.
 
-A politician's claim should not automatically become a system fact.
+For uncertain breaking news, reflect uncertainty.
+
+For fact checks, distinguish the claim being checked from the system's verdict.
 
 ---
 
-# 76. Government Achievements
+# 26. Quotations
 
-Government achievements may be covered positively when supported by evidence.
+Quotes must be traceable to a source and preserved accurately.
 
-Examples:
+Never fabricate quotation marks around paraphrases.
 
-```text
-infrastructure completed
-economic indicators
-defence production
-space missions
-digital infrastructure
-international agreements
-welfare implementation
-scientific achievements
-```
-
-The evidence must still be checked.
+If translation is used, preserve the source language where practical in provenance and identify material translation uncertainty.
 
 ---
 
-# 77. Government Failures
+# 27. Numbers and Statistics
 
-Government failures should also be covered when supported.
+Numbers require source alignment.
 
-Examples:
-
-```text
-policy failure
-implementation failure
-administrative failure
-court criticism
-audit findings
-economic deterioration
-security failure
-```
-
-Editorial preference does not exempt positive or negative claims from verification.
+Preserve units, period, geography, denominators, and whether a number is official, estimated, alleged, or independently verified.
 
 ---
 
-# 78. Comparative Claims
+# 28. Images and Visuals
 
-Claims such as:
+Image briefs must derive from verified Fact Sheet information.
 
-```text
-best
-largest
-fastest
-highest
-lowest
-first
-only
-unprecedented
-historic
-```
+AI-generated visuals must not be presented in a way that could reasonably be mistaken for authentic documentary evidence when they are synthetic.
 
-require especially careful verification.
-
-Where possible, define the comparison set.
-
-Example:
-
-```text
-"largest in India by installed capacity"
-```
-
-is preferable to:
-
-```text
-"largest in the world"
-```
-
-unless the broader claim is verified.
+Do not invent uniforms, insignia, people, documents, locations, weapons, casualty scenes, or events as factual evidence.
 
 ---
 
-# 79. Historical Civilizational Claims
+# 29. Platform Transformation
 
-Civilizational claims must distinguish:
+One Fact Sheet may generate:
 
 ```text
-archaeological evidence
-literary tradition
-religious tradition
-modern historical interpretation
+Instagram carousel + caption
+X post/thread
+Facebook post
+Telegram post
+YouTube Shorts script
 ```
 
-A traditional account may be historically significant without being treated as independently established empirical fact.
-
-Likewise, scholarly uncertainty should not erase the existence of a documented cultural tradition.
+Each variant may change length and presentation, but not factual status.
 
 ---
 
-# 80. Religious Tradition and Historical Evidence
+# 30. Quality Gate
 
-The system should respectfully distinguish:
+Quality checking should detect:
 
 ```text
-religious belief
-traditional account
-historical claim
-archaeological claim
-textual claim
-scientific claim
+factual drift
+unsupported claims
+citation/source mismatch
+fabricated quotes
+incorrect names/dates/numbers
+missing material context
+overstatement
+defamation risk
+sensitive-topic errors
 ```
 
-This allows religious traditions to be represented accurately without forcing theological claims into inappropriate scientific categories.
+Quality pass does not equal publication approval in the MVP.
 
 ---
 
-# 81. Historical Disagreement
+# 31. Review Integrity
 
-When serious scholarship disagrees:
+Human review must inspect the content together with its evidence packet.
 
-```text
-Consensus
-Minority interpretation
-Evidence
-Counter-evidence
-Unresolved questions
-```
+Review state is version-specific.
 
-should be represented proportionally.
-
-The system should not manufacture a false consensus.
+Material changes after approval may invalidate approval and require re-review.
 
 ---
 
-# 82. Demographic Editorial Rules
+# 32. Prohibited Inferences
 
-Demographic stories should include:
-
-```text
-dataset
-date
-population
-geography
-methodology
-confidence
-known limitations
-```
-
-If causality is uncertain, say so.
-
----
-
-# 83. Statistical Correlation
-
-The system must distinguish:
+The system must not infer, without supporting evidence:
 
 ```text
-correlation
-```
-
-from:
-
-```text
-causation
-```
-
-A demographic or political trend may correlate with another variable without proving causal responsibility.
-
----
-
-# 84. Audience Interest
-
-Audience interest may affect:
-
-```text
-story priority
-format
-hook
-posting time
-content length
-```
-
-It must not affect:
-
-```text
-factual conclusion
-evidence ranking
-fact-check label
-legal status
+religion → criminal tendency
+caste → behavior
+nationality → moral character
+demographic change → malicious intent
+political affiliation → factual truth/falsity
+population movement → military invasion
+linguistic relationship → demographic replacement
+correlation → causation
+accusation → guilt
 ```
 
 ---
 
-# 85. Engagement Optimization
+# 33. Configuration
 
-Engagement optimization must not encourage:
-
-```text
-rage bait
-false certainty
-fabricated controversy
-communal provocation
-personal harassment
-misleading thumbnails
-fake quotations
-```
-
-The objective is:
-
-```text
-attention × accuracy × trust
-```
-
-not engagement at any cost.
-
----
-
-# 86. Quality Gate
-
-Before publication:
-
-```text
-CONTENT
- ↓
-FACT CHECK
- ↓
-SOURCE CHECK
- ↓
-LEGAL / RISK CHECK
- ↓
-STYLE CHECK
- ↓
-SENSITIVE TOPIC CHECK
- ↓
-HUMAN REVIEW IF REQUIRED
- ↓
-PUBLISH
-```
-
----
-
-# 87. Fact Check Gate
-
-Check:
-
-```text
-names
-dates
-numbers
-quotes
-locations
-legal status
-causal claims
-historical claims
-source attribution
-confidence
-```
-
----
-
-# 88. Source Check
-
-Check:
-
-```text
-source exists
-source says what content claims
-source date is correct
-source is relevant
-source is independent where claimed
-primary evidence is correctly characterized
-```
-
----
-
-# 89. Citation Mismatch Detection
-
-Example failure:
-
-```text
-Caption:
-"Court convicted X."
-
-Source:
-"Court ordered investigation."
-```
-
-This must fail quality control.
-
-The source must actually support the generated claim.
-
----
-
-# 90. Unsupported Claim Detection
-
-Every factual sentence should map to:
-
-```text
-claim_id
-```
-
-and each claim should map to evidence.
-
-Conceptually:
-
-```text
-Sentence
- ↓
-Claim
- ↓
-Evidence
- ↓
-Source
-```
-
-If no evidence exists:
-
-```text
-remove
-or
-mark uncertainty
-```
-
----
-
-# 91. Factual Drift
-
-Generated content must be compared with the fact sheet.
-
-Detect:
-
-```text
-new facts
-changed numbers
-changed dates
-stronger wording
-missing caveats
-changed legal status
-fabricated context
-```
-
-Any material drift should fail the quality gate.
-
----
-
-# 92. Defamation Protection
-
-The system must not publish unsupported accusations about identifiable individuals.
-
-Required:
-
-```text
-credible sourcing
-accurate attribution
-legal status
-appropriate wording
-human review
-```
-
----
-
-# 93. Communal Sensitivity
-
-Coverage of communal events must focus on verified events and responsible attribution.
-
-Avoid:
-
-```text
-collective blame
-religious stereotyping
-unverified identity claims
-incendiary generalizations
-```
-
-Individuals should be described based on verified facts rather than group identity.
-
----
-
-# 94. Religious Identity
-
-Religious identity may be relevant to a story.
-
-However:
-
-```text
-identity ≠ guilt
-identity ≠ motive
-identity ≠ collective responsibility
-```
-
-The system must not infer the latter without evidence.
-
----
-
-# 95. Political Identity
-
-The same principle applies to political identity:
-
-```text
-party membership ≠ guilt
-political affiliation ≠ criminality
-ideology ≠ factual conclusion
-```
-
----
-
-# 96. Editorial Bias Control
-
-The system may have an explicit editorial mission.
-
-That mission must be encoded as:
-
-```text
-topic priorities
-research priorities
-audience priorities
-format preferences
-```
-
-not:
-
-```text
-factual override rules
-```
-
----
-
-# 97. Editorial Configuration
-
-Canonical files:
+Editorial policy belongs under:
 
 ```text
 config/editorial/
@@ -2390,279 +716,42 @@ config/editorial/
 └── publishing-policy.yaml
 ```
 
-Editorial policy should be configurable rather than hidden in prompts.
+Do not scatter editorial identity across unrelated prompts or code paths.
 
 ---
 
-# 98. Example Editorial Configuration
-
-```yaml
-topics:
-  india_governance:
-    priority: 1.0
-
-  indian_civilization:
-    priority: 1.0
-
-  religious_freedom:
-    priority: 1.0
-
-  history:
-    priority: 0.95
-
-  fact_check:
-    priority: 1.0
-
-  geopolitics:
-    priority: 0.95
-```
-
-These values determine attention.
-
-They do not determine truth.
-
----
-
-# 99. Content Provenance
-
-Every generated artifact should record:
+# 34. Final Editorial Rules
 
 ```text
-story_id
-fact_sheet_version
-content_type
-platform
-model
-model_version
-prompt_version
-generation_timestamp
-review_state
-reviewer
-publication_state
-```
-
----
-
-# 100. Golden Editorial Dataset
-
-Maintain a curated evaluation dataset covering:
-
-```text
-political claims
-religious claims
-historical claims
-demographic claims
-legal claims
-war claims
-fact checks
-caste-related claims
-SC/ST cases
-misleading headlines
-source conflicts
-breaking news
-```
-
-Each item should contain an expected evidence-grounded result.
-
----
-
-# 101. Editorial Evaluation
-
-Measure:
-
-```text
-factual accuracy
-citation accuracy
-claim coverage
-unsupported claim rate
-hallucination rate
-legal-status accuracy
-historical accuracy
-translation accuracy
-sensitive-topic error rate
-human override rate
-correction rate
-```
-
----
-
-# 102. Final Editorial Pipeline
-
-Canonical end-to-end flow:
-
-```text
-NEWS / SOCIAL WEB
-        ↓
-COLLECTION
-        ↓
-NORMALIZATION
-        ↓
-DEDUPLICATION
-        ↓
-STORY CLUSTERING
-        ↓
-CLAIM EXTRACTION
-        ↓
-EVIDENCE COLLECTION
-        ↓
-SOURCE INDEPENDENCE CHECK
-        ↓
-FACT CHECK
-        ↓
-HISTORICAL / LEGAL / DEMOGRAPHIC CONTEXT
-        ↓
-EDITORIAL SCORING
-        ↓
-FACT SHEET
-        ↓
-CONTENT GENERATION
-        ↓
-FACTUAL DRIFT CHECK
-        ↓
-SOURCE / CITATION CHECK
-        ↓
-RISK CHECK
-        ↓
-STYLE CHECK
-        ↓
-HUMAN REVIEW IF REQUIRED
-        ↓
-PUBLICATION
-        ↓
-ANALYTICS
-        ↓
-CORRECTION / FEEDBACK LOOP
-```
-
----
-
-# 103. Final Editorial Rules
-
-The system must always remember:
-
-```text
-Editorial preference selects attention.
+Editorial priority selects attention, not truth.
 Evidence determines factual confidence.
-
-A claim is not true because an AI model says it is true.
-
-A claim is not false merely because it is controversial.
-
-An allegation is not a conviction.
-
-A social-media post is not automatically evidence.
-
-Ten copied articles are not ten independent confirmations.
-
-Historical disagreement must be represented honestly.
-
-Religious identity must not be converted into collective guilt.
-
-Caste facts may be reported without creating caste stereotypes.
-
-Demographic change does not automatically prove causation.
-
-Political preference does not override evidence.
-
-Uncertainty must remain visible.
-
-High-risk publication requires human review.
-
-The final content must be traceable back to evidence.
+AI output is not evidence by itself.
+UNVERIFIED is not FALSE.
+Claim verification status is not a fact-check verdict.
+Allegation is not conviction.
+Contradictory evidence must remain visible.
+Distinct religious traditions remain distinct.
+Caste facts may be reported without stereotypes or collective guilt.
+Demographic change does not itself establish causation or intent.
+Historical controversies must preserve separate evidence domains.
+All external publication requires explicit human approval in the MVP.
+Sensitive/mandatory-review content always requires human review.
 ```
 
 ---
 
-# 104. Canonical Content Contract
+# 35. Documentation Relationship
 
-The complete system should enforce:
+This document owns editorial behavior and content-policy decisions.
 
-```text
-SOURCE
-  ↓
-CLAIM
-  ↓
-EVIDENCE
-  ↓
-FACT SHEET
-  ↓
-CONTENT
-  ↓
-QUALITY GATE
-  ↓
-REVIEW
-  ↓
-PUBLICATION
-```
+`CANONICAL_CONTRACTS.md` owns shared enums and cross-document lifecycle semantics.
 
-No production content should bypass this chain without an explicitly defined and audited exception.
+`DATA_MODEL.md` owns persistence.
 
----
+`EVENTS.md` owns event contracts.
 
-# 105. Source of Truth
+`AI_PLATFORM.md` owns provider/model/prompt architecture.
 
-This document is authoritative for:
+`SOCIAL_PUBLISHING.md` owns platform execution.
 
-```text
-editorial taxonomy
-editorial priorities
-fact-check labels
-evidence interpretation
-historical research policy
-sensitive-topic policy
-content formats
-editorial scoring
-human review rules
-content quality gates
-```
-
-If another document conflicts with this document on editorial behavior, the conflict must be resolved explicitly and the canonical documents updated together.
-
-No competing editorial policy should exist in hidden prompts, application code, or undocumented configuration.
-
----
-
-# 106. Final Architecture Relationship
-
-The editorial layer sits between evidence and content:
-
-```text
-                 ┌─────────────────────┐
-                 │     RAW SOURCES     │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │   EVIDENCE ENGINE   │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │      FACT SHEET     │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │  EDITORIAL ENGINE   │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │   CONTENT ENGINE    │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │    QUALITY GATE     │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │   HUMAN APPROVAL    │
-                 └──────────┬──────────┘
-                            ↓
-                 ┌─────────────────────┐
-                 │  SOCIAL PUBLISHING  │
-                 └─────────────────────┘
-```
-
-This separation is mandatory.
-
-**Evidence determines what can be said.
-Editorial policy determines what deserves to be said.
-Content policy determines how it is said.
-Human review determines whether high-risk material is published.**
+No document should redefine another document's owned concepts with alternate semantics.
