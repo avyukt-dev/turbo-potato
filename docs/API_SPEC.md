@@ -5,7 +5,7 @@
 **Status:** Canonical
 **Document Role:** Source of truth for the HTTP API boundary, endpoint behavior, authorization expectations, asynchronous orchestration, and API-level state validation.
 
-Shared enums and lifecycle semantics are defined by `CANONICAL_CONTRACTS.md`.
+Shared enums, configuration ownership, runtime semantics, and lifecycle contracts are defined by `CANONICAL_CONTRACTS.md`.
 
 Application payload contracts are defined by `CONTENT_SCHEMAS.md`.
 
@@ -15,7 +15,7 @@ Application payload contracts are defined by `CONTENT_SCHEMAS.md`.
 
 This document defines the FastAPI-facing contract for operator/admin clients and future integrations.
 
-The API is an orchestration boundary.
+The API is an orchestration boundary:
 
 ```text
 HTTP API
@@ -27,7 +27,7 @@ Domain Logic
 Repository / Event / Provider Abstraction
 ```
 
-Route handlers must remain thin.
+Route handlers remain thin.
 
 ---
 
@@ -37,33 +37,35 @@ The API may:
 
 ```text
 authenticate and authorize users
-read stories/claims/evidence/fact sheets
-request research and generation jobs
+read stories/claims/evidence/Fact Sheets
+request research/generation jobs
 manage review decisions
 manage publication scheduling/cancellation
-read job and publication state
-read effective configuration
-expose health/readiness
+read jobs/publication state
+read effective non-secret configuration
+expose health/readiness/metrics
 ```
 
 The API must not directly embed:
 
 ```text
 provider-specific LLM SDK calls
+provider-specific search SDK calls
 provider-specific social API calls
 long-running research
 long-running inference
 complex persistence logic
 platform retry logic
+host-specific service-manager commands
 ```
 
-Those belong behind services/adapters/workers.
+These belong behind services/adapters/workers/runtime abstractions.
 
 ---
 
 # 3. Base Paths
 
-Recommended versioned API:
+Recommended versioned business API:
 
 ```text
 /api/v1
@@ -83,9 +85,7 @@ Operational endpoints may remain outside the versioned business API:
 
 Administrative and mutation endpoints require authenticated access.
 
-Implementation may use secure session or JWT-based authentication according to deployment policy.
-
-Authorization must support role/permission checks appropriate to actions such as:
+Authorization should support capabilities such as:
 
 ```text
 view
@@ -98,9 +98,9 @@ configure
 administer
 ```
 
-Publishing permission must remain distinct from ordinary content-edit permission.
+Publishing permission remains distinct from ordinary editing.
 
-Secrets and credentials must never be returned by ordinary API responses.
+Secrets and credentials must never be returned through ordinary API responses.
 
 ---
 
@@ -115,17 +115,15 @@ actor identity
 timestamp
 ```
 
-Long-running work should return a durable `job_id`.
+Long-running operations return durable `job_id` values.
 
 ---
 
-# 6. Health
+# 6. Health and Readiness
 
 ## GET /health
 
-Basic process liveness.
-
-Example:
+Lightweight process liveness.
 
 ```json
 {
@@ -133,17 +131,9 @@ Example:
 }
 ```
 
-This endpoint should be lightweight.
-
----
-
-# 7. Readiness
-
 ## GET /ready
 
-Reports whether required dependencies are ready for the API's current role.
-
-Example:
+Dependency readiness.
 
 ```json
 {
@@ -154,7 +144,19 @@ Example:
 }
 ```
 
-Readiness must not expose secrets or sensitive configuration.
+Readiness must not expose secrets or raw host/runtime command details.
+
+---
+
+# 7. Runtime Boundary
+
+Host/service-manager control is not part of the ordinary HTTP application API.
+
+The canonical host-control surface is `newsctl`/`RuntimeController` as defined by infrastructure/operations documents.
+
+This prevents the web API from becoming a privileged remote shell or embedding `systemctl`, `rc-service`, `launchctl`, or other native commands.
+
+A future secure runtime-status API may expose read-only normalized health metadata, but native command execution must remain behind the runtime abstraction and strict authorization.
 
 ---
 
@@ -164,12 +166,11 @@ Readiness must not expose secrets or sensitive configuration.
 
 List stories with bounded pagination.
 
-Supported filters may include:
+Useful filters:
 
 ```text
 status
-category
-topic
+category/topic
 risk_level
 sensitive_topic
 created_after
@@ -179,11 +180,9 @@ review_state
 minimum_confidence
 ```
 
-Do not return unbounded result sets.
-
 ## GET /api/v1/stories/{story_id}
 
-Returns the canonical story view plus linked summaries/references such as:
+Returns story state plus linked summaries/references:
 
 ```text
 claims
@@ -205,19 +204,17 @@ The response must not imply that `story.verified` means every claim is true.
 
 ## POST /api/v1/stories/{story_id}/research
 
-Requests research.
-
-The endpoint should:
+Requests research asynchronously.
 
 ```text
 validate current state
 create/reuse durable job
 persist request
-emit evidence.requested through the normal service/outbox path
-return quickly
+write outbox/event intent
+return 202 quickly
 ```
 
-Example response:
+Example:
 
 ```json
 {
@@ -227,7 +224,7 @@ Example response:
 }
 ```
 
-Do not block the HTTP request until research completes.
+Do not block until research completes.
 
 ---
 
@@ -235,7 +232,7 @@ Do not block the HTTP request until research completes.
 
 ## GET /api/v1/stories/{story_id}/claims
 
-Returns claims using the `Claim` contract from `CONTENT_SCHEMAS.md`.
+Returns `Claim` contracts.
 
 ## GET /api/v1/claims/{claim_id}
 
@@ -245,12 +242,11 @@ Returns:
 claim
 ClaimVerificationStatus
 confidence assessment
-supporting evidence references
-contradictory evidence references
+supporting/contradicting evidence references
 fact-check references where present
 ```
 
-Fact-check verdict labels must not be substituted into `Claim.status`.
+Fact-check labels must never be substituted into `Claim.status`.
 
 ---
 
@@ -258,13 +254,13 @@ Fact-check verdict labels must not be substituted into `Claim.status`.
 
 ## GET /api/v1/claims/{claim_id}/evidence
 
-Returns evidence relationships for a claim.
+Returns evidence relationships.
 
 ## POST /api/v1/claims/{claim_id}/research
 
 Requests additional claim-specific research.
 
-The API must not present AI-generated prose as evidence unless it refers to an actual persisted source/evidence item.
+The API must not present AI-generated prose as evidence unless it refers to actual persisted source/evidence records.
 
 ---
 
@@ -272,51 +268,75 @@ The API must not present AI-generated prose as evidence unless it refers to an a
 
 ## GET /api/v1/sources
 
-Lists configured source records.
+Lists source-registry records from the `config/sources/`/database domain.
 
 Filters may include:
 
 ```text
-level
+source level/role
 country
 language
 enabled
 source type/domain
+collection method
 ```
 
 ## GET /api/v1/sources/{source_id}
 
-Returns source registry metadata and effective policy.
+Returns source identity, collection metadata, and non-secret source-registry state.
+
+Evidence-policy interpretation belongs to the research domain and should not be presented as an intrinsic truth property of the source record.
 
 ## POST /api/v1/sources/{source_id}/disable
 
-Disables the source according to authorization/policy.
-
 ## POST /api/v1/sources/{source_id}/enable
 
-Re-enables it.
-
-All administrative source changes must be audited.
+Administrative source changes are audited.
 
 ---
 
-# 13. Fact Checks
+# 13. Research Policy View
+
+Authorized read-only endpoints may expose effective research/evidence policy separately from source registry metadata.
+
+Recommended:
+
+```text
+GET /api/v1/config/research
+```
+
+This may expose safe effective values derived from:
+
+```text
+config/research/source-policy.yaml
+config/research/search-policy.yaml
+config/research/corroboration.yaml
+config/research/fact-check.yaml
+config/research/historical-research.yaml
+```
+
+Do not expose secrets/provider credentials.
+
+---
+
+# 14. Fact Checks
 
 ## GET /api/v1/stories/{story_id}/fact-checks
 
-Returns fact checks using `FactCheckLabel`.
-
 ## GET /api/v1/fact-checks/{fact_check_id}
 
-Returns:
+Fact-check responses use `FactCheckLabel`:
 
 ```text
-label
-summary
-confidence assessment
-evidence references
-review state
-AI provenance reference where applicable
+TRUE
+MOSTLY_TRUE
+PARTIALLY_TRUE
+MISLEADING
+OUT_OF_CONTEXT
+UNVERIFIED
+FALSE
+FABRICATED
+SATIRE
 ```
 
 Critical invariant:
@@ -327,7 +347,7 @@ UNVERIFIED != FALSE
 
 ---
 
-# 14. Fact Sheets
+# 15. Fact Sheets
 
 ## GET /api/v1/stories/{story_id}/fact-sheets
 
@@ -335,34 +355,23 @@ Lists versions.
 
 ## GET /api/v1/stories/{story_id}/fact-sheet
 
-Returns the current eligible/current version according to application policy.
+Returns the current application-selected version.
 
 ## GET /api/v1/fact-sheets/{fact_sheet_id}
 
-Returns the exact immutable Fact Sheet version.
+Returns one exact immutable version.
 
 ## POST /api/v1/stories/{story_id}/fact-sheet/generate
 
-Queues Fact Sheet generation from current research/evidence state.
+Queues generation from current claim/evidence state.
 
-Example response:
-
-```json
-{
-  "job_id": "uuid",
-  "status": "QUEUED"
-}
-```
-
-A Fact Sheet must not be generated by bypassing the claim/evidence layer.
+A Fact Sheet must not bypass the claim/evidence layer.
 
 ---
 
-# 15. Content Generation
+# 16. Content Generation
 
 ## POST /api/v1/stories/{story_id}/content
-
-Requests platform variants from a valid Fact Sheet.
 
 Example request:
 
@@ -375,34 +384,24 @@ Example request:
 }
 ```
 
-Response:
+Returns `202 + job_id`.
 
-```json
-{
-  "job_id": "uuid",
-  "status": "QUEUED"
-}
-```
-
-The API must reject requests that cannot resolve to a valid Fact Sheet version.
+Requests without a valid Fact Sheet version are rejected.
 
 ---
 
-# 16. Content Retrieval
+# 17. Content Retrieval
 
 ## GET /api/v1/stories/{story_id}/content
 
-Lists content drafts/variants.
-
 ## GET /api/v1/content/{content_variant_id}
 
-Returns:
+Return:
 
 ```text
 content payload
 Fact Sheet reference/version
-claim IDs used
-source IDs used
+claim/source IDs used
 quality state
 review state
 risk/sensitivity
@@ -411,31 +410,27 @@ AI provenance references
 
 ---
 
-# 17. Quality Checks
+# 18. Quality Checks
 
 ## POST /api/v1/content/{content_variant_id}/quality-check
 
-Queues a quality check.
+Queues a check.
 
 ## GET /api/v1/content/{content_variant_id}/quality-check
 
-Returns the `QualityCheck` contract from `CONTENT_SCHEMAS.md`.
+Returns `QualityCheck`.
 
-For the MVP:
+MVP invariant:
 
 ```text
 quality passed != publication approved
 ```
 
-A passing automated check does not authorize an external post.
-
 ---
 
-# 18. Review Queue
+# 19. Review Queue
 
 ## GET /api/v1/review/queue
-
-Returns reviewable artifacts.
 
 Useful filters:
 
@@ -448,71 +443,71 @@ publication deadline
 breaking-news priority
 ```
 
-Ordering may consider risk, priority, age, and scheduled intent, but must not change factual confidence.
+Ordering may consider editorial priority and urgency but must not alter factual confidence.
 
 ---
 
-# 19. Review Detail
+# 20. Review Detail
 
 ## GET /api/v1/review/{artifact_type}/{artifact_id}
 
-Returns the reviewable artifact together with the evidence packet and exact version.
+Returns the exact reviewable artifact/version with:
 
-Review UI should expose evidence, contradictions, Fact Sheet, content, quality results, and provenance—not only the final caption.
+```text
+Fact Sheet
+claims/evidence
+contradictions
+quality results
+content
+risk/sensitivity
+AI provenance
+```
 
----
-
-# 20. Review Actions
-
-## POST /api/v1/review/{artifact_type}/{artifact_id}/approve
-
-Approves the exact version supplied/loaded.
-
-## POST /api/v1/review/{artifact_type}/{artifact_id}/reject
-
-Rejects it.
-
-## POST /api/v1/review/{artifact_type}/{artifact_id}/request-changes
-
-Returns it for editing/regeneration.
-
-## POST /api/v1/review/{artifact_type}/{artifact_id}/request-research
-
-Requests additional research.
-
-Every decision must be audited with actor, artifact/version, decision, timestamp, and reason where applicable.
+Reviewers should not receive only the final caption without evidence context.
 
 ---
 
-# 21. MVP Approval Invariant
+# 21. Review Actions
 
-For the MVP/current brainstorming implementation phase:
+```text
+POST /api/v1/review/{artifact_type}/{artifact_id}/approve
+POST /api/v1/review/{artifact_type}/{artifact_id}/reject
+POST /api/v1/review/{artifact_type}/{artifact_id}/request-changes
+POST /api/v1/review/{artifact_type}/{artifact_id}/request-research
+```
+
+Every decision is audited with actor, artifact/version, decision, timestamp, and reason where applicable.
+
+---
+
+# 22. MVP Approval Invariant
+
+For the MVP:
 
 ```text
 ALL external social publication requires explicit human approval.
 ```
 
-Therefore API mutation paths must not permit:
+Invalid transitions:
 
 ```text
 DRAFT → publish
 QUALITY_CHECKED → publish
 READY_FOR_REVIEW → publish
+LOW risk without approval → publish
 ```
 
-without an explicit approved human review state.
-
-Future low-risk automation may be introduced only under `CANONICAL_CONTRACTS.md` and is disabled by default.
+Future low-risk automation may exist only under `CANONICAL_CONTRACTS.md` and is disabled by default.
 
 ---
 
-# 22. Publications
+# 23. Publications
 
 ## POST /api/v1/publications
 
-Creates a publication record/request for approved content.
+Creates a publication request for approved content.
 
-Example request:
+Example:
 
 ```json
 {
@@ -524,69 +519,61 @@ Example request:
 }
 ```
 
-The service must re-check:
+Service re-checks:
 
 ```text
 content exists
 Fact Sheet version exists
-human approval is valid for this content version
-account is eligible
-risk policy permits scheduling
-publication duplicate does not exist
+human approval valid for exact content version
+account eligible
+risk/policy permits scheduling
+no conflicting publication operation
 ```
 
 ---
 
-# 23. Publication Retrieval
+# 24. Publication Retrieval and Attempts
 
-## GET /api/v1/publications/{publication_id}
+```text
+GET /api/v1/publications/{publication_id}
+GET /api/v1/publications/{publication_id}/attempts
+```
 
-Returns current durable publication state and attempt summary.
-
-## GET /api/v1/publications/{publication_id}/attempts
-
-Returns immutable publication attempts.
+Attempt history is immutable/auditable.
 
 ---
 
-# 24. Publication Cancellation
+# 25. Publication Cancellation
 
 ## POST /api/v1/publications/{publication_id}/cancel
 
-Cancels only when current state permits.
+Cancels only when the current durable state permits.
 
-Do not claim cancellation of an already externalized post merely because the internal record changed.
+Internal cancellation does not imply an already externalized social post disappeared.
 
 ---
 
-# 25. Publication Retry
+# 26. Publication Retry
 
 ## POST /api/v1/publications/{publication_id}/retry
 
-Manual retry is permitted only when safe.
+Retry is permitted only when safe.
 
-For ambiguous external outcomes:
-
-```text
-verify platform state first
-```
-
-Do not blindly create a duplicate external post.
+Ambiguous external outcomes require platform verification before retry.
 
 ---
 
-# 26. Publish Now
+# 27. Publish Now
 
 ## POST /api/v1/publications/{publication_id}/publish-now
 
-This endpoint may enqueue immediate execution for an already eligible and human-approved publication.
+Enqueues immediate execution for an already eligible and human-approved publication.
 
-It must not bypass:
+It does not bypass:
 
 ```text
 approval
-platform validation
-account validation
+account/platform validation
 idempotency
 duplicate protection
 kill switch
@@ -594,21 +581,20 @@ kill switch
 
 ---
 
-# 27. Social Accounts
+# 28. Social Accounts
 
-## GET /api/v1/social-accounts
+```text
+GET /api/v1/social-accounts
+GET /api/v1/social-accounts/{account_id}
+```
 
-Returns non-secret account metadata/capabilities.
+Return non-secret state/capability metadata only.
 
-## GET /api/v1/social-accounts/{account_id}
-
-Returns account state without raw credentials.
-
-Administrative connect/reauth flows should use secure credential mechanisms and platform-specific adapters.
+Credential connection/reauth uses secure platform-specific mechanisms.
 
 ---
 
-# 28. Jobs
+# 29. Jobs
 
 ## GET /api/v1/jobs/{job_id}
 
@@ -619,29 +605,28 @@ job type
 status
 priority
 attempt count
-created/start/completion timestamps
+timestamps
 safe error summary
 result references
 ```
 
-Do not expose secrets, raw credentials, or unnecessary provider internals.
+Do not expose raw credentials or unnecessary provider internals.
 
 ---
 
-# 29. AI Operations
+# 30. AI Operations
 
-## GET /api/v1/ai/models
+```text
+GET /api/v1/ai/models
+GET /api/v1/ai/runs/{ai_run_id}
+```
 
-Lists configured model capabilities and enablement state where authorized.
-
-## GET /api/v1/ai/runs/{ai_run_id}
-
-Returns safe provenance metadata such as:
+Safe provenance may include:
 
 ```text
 provider
 model
-task type
+task
 prompt version
 latency
 usage where available
@@ -653,30 +638,31 @@ Raw prompts/outputs may require additional authorization and retention/privacy c
 
 ---
 
-# 30. Configuration
+# 31. Configuration Endpoints
 
-Read-only administrative endpoints may expose effective configuration:
+Authorized read-only effective configuration may expose:
 
 ```text
-GET /api/v1/config/editorial
 GET /api/v1/config/sources
+GET /api/v1/config/research
+GET /api/v1/config/editorial
 GET /api/v1/config/models
 GET /api/v1/config/platforms
 ```
 
-Runtime mutation should be restricted, audited, and must not create a second configuration truth source that conflicts with versioned configuration policy.
+These domains must preserve the ownership defined by `CANONICAL_CONTRACTS.md`.
+
+Runtime mutation is restricted/audited and must not create a competing configuration source of truth.
+
+Secrets are excluded.
 
 ---
 
-# 31. Metrics
+# 32. Metrics
 
-Recommended operational endpoint:
+## GET /metrics
 
-```text
-GET /metrics
-```
-
-Metrics may include:
+Possible metrics:
 
 ```text
 articles_collected_total
@@ -693,13 +679,11 @@ publication_failures_total
 queue_depth
 ```
 
-Do not expose secrets or sensitive source content through metrics labels.
+Do not put secrets or high-cardinality sensitive source content in metric labels.
 
 ---
 
-# 32. Error Contract
-
-Use a consistent envelope.
+# 33. Error Contract
 
 ```json
 {
@@ -711,54 +695,46 @@ Use a consistent envelope.
 }
 ```
 
-Do not expose stack traces, filesystem paths, credentials, tokens, or database secrets to ordinary clients.
+Never expose stack traces, filesystem paths, tokens, credentials, or database secrets to ordinary clients.
 
 ---
 
-# 33. HTTP Status Semantics
+# 34. HTTP Status Semantics
 
-Suggested general use:
+Suggested:
 
 ```text
-200 / 201   success
-202         asynchronous work accepted
-400         malformed/invalid request
-401         unauthenticated
-403         unauthorized/policy blocked
-404         resource not found
-409         state/version/idempotency conflict
-422         schema/domain validation error
-429         application-level rate limit where applicable
-5xx         server/dependency failure
+200 / 201 success
+202       asynchronous work accepted
+400       malformed request
+401       unauthenticated
+403       unauthorized/policy blocked
+404       not found
+409       state/version/idempotency conflict
+422       schema/domain validation error
+429       application rate limit where appropriate
+5xx       server/dependency failure
 ```
 
-Provider-specific errors should be normalized behind adapters.
+Provider-specific failures should be normalized behind adapters.
 
 ---
 
-# 34. Optimistic Concurrency
+# 35. Optimistic Concurrency
 
-Mutation endpoints for versioned editorial artifacts should accept an expected version or equivalent precondition.
+Versioned editorial artifacts should accept an expected version/precondition.
 
-If the artifact has changed:
-
-```text
-409 CONFLICT
-```
-
-rather than silently overwriting another reviewer/editor's work.
+Stale edits produce a conflict rather than silently overwriting reviewed material.
 
 ---
 
-# 35. Idempotency
+# 36. Idempotency
 
-Requests that can produce duplicate durable work or external side effects should support idempotency.
-
-Especially:
+Support idempotency for operations that can duplicate durable work or side effects, especially:
 
 ```text
 research requests
-content generation requests
+content generation
 publication creation
 publish-now execution
 ```
@@ -767,47 +743,45 @@ Publication idempotency is mandatory.
 
 ---
 
-# 36. Long-Running Work
+# 37. Long-Running Work
 
 Canonical pattern:
 
 ```text
-POST request
-    ↓
+POST
+ ↓
 validate
-    ↓
+ ↓
 persist job/request
-    ↓
+ ↓
 transaction/outbox
-    ↓
+ ↓
 event
-    ↓
-return 202 + job_id
+ ↓
+202 + job_id
 ```
 
 Worker:
 
 ```text
-consume event
-    ↓
+consume
+ ↓
 load PostgreSQL state
-    ↓
+ ↓
 process
-    ↓
+ ↓
 persist result
-    ↓
+ ↓
 emit next event
 ```
 
-The API should not hold open long requests for research, inference, media generation, or social publishing.
+The HTTP request does not remain open for research, inference, media generation, or social publishing.
 
 ---
 
-# 37. Event Integration
+# 38. Event Integration
 
-Use the event names owned by `EVENTS.md`.
-
-Core event family:
+Use event names owned by `EVENTS.md`:
 
 ```text
 article.discovered
@@ -829,153 +803,86 @@ analytics.requested
 analytics.collected
 ```
 
-Do not invent alternate event names for the same lifecycle step inside API code.
+Do not invent alternate names for the same lifecycle step.
 
 ---
 
-# 38. State Validation Examples
+# 39. State Validation
 
-Invalid:
+Invalid examples:
 
 ```text
 unresearched story → factual publication
-unapproved content → publication execution
-rejected artifact → schedule
+unapproved content → external execution
+rejected artifact → scheduling
 stale approval → publish modified version
-ambiguous timeout → blind retry
+ambiguous external timeout → blind retry
 ```
 
-Valid state transitions are enforced by domain services, not only UI controls.
+Domain services enforce transitions; UI controls are not the security boundary.
 
 ---
 
-# 39. Sensitive Topics
+# 40. Sensitive Topics
 
-The API may expose sensitive-topic metadata to authorized reviewers.
+Sensitive/high-risk categories receive no API shortcut around evidence or review requirements.
 
-Sensitive/high-risk categories must not receive an endpoint-specific shortcut around evidence or review requirements.
-
-MVP approval requirements apply to all external publication regardless of risk.
+MVP approval applies to all external publication regardless of risk.
 
 ---
 
-# 40. Pagination
+# 41. Pagination
 
-Collection endpoints must use bounded pagination consistently.
+Collection endpoints use bounded pagination.
 
-Cursor pagination is preferred for high-volume timelines/feeds, but the implementation may use page-based pagination initially if consistent and tested.
-
----
-
-# 41. Sorting and Filtering
-
-Sort fields should be allowlisted.
-
-Do not expose arbitrary database-column or raw SQL ordering/filter expressions from client input.
+Cursor pagination is preferred for high-volume timelines/feeds where practical.
 
 ---
 
 # 42. Audit Logging
 
-Audit significant mutations:
+Audit significant API mutations:
 
 ```text
-source enable/disable
-editorial/config changes
 review decisions
-content edits
-publication creation
-schedule changes
-cancellation
-manual retry
-kill-switch changes
-credential/account state changes
+source enable/disable
+configuration overrides
+publication create/cancel/retry/publish-now
+account administrative actions
 ```
+
+Audit actor, action, target, exact version/state, timestamp, and result.
 
 ---
 
 # 43. Security
 
-API security must include:
+The API must not become a privileged host-control shell.
+
+Host/service-manager commands remain behind `RuntimeController/newsctl` and the runtime adapter layer.
+
+The API also must not expose:
 
 ```text
-authentication
-authorization
-input validation
-rate limiting where needed
-CSRF/session protections where applicable
-secret isolation
-audit logging
-secure headers/TLS at public boundary
-least privilege
-```
-
-Admin endpoints should not be exposed publicly merely for convenience.
-
----
-
-# 44. API Versioning
-
-Breaking HTTP contract changes require a new API version or an explicitly managed compatibility transition.
-
-Event schema versions and application artifact schema versions are separate from HTTP API versioning.
-
----
-
-# 45. Contract Testing
-
-`TESTING_AND_EVALUATION.md` owns testing strategy.
-
-API contract tests should cover:
-
-```text
-authentication/authorization
-payload validation
-enum validation
-pagination
-optimistic concurrency
-idempotency
-state-transition rejection
-MVP human-approval enforcement
-job creation
-safe error responses
-no-secret leakage
+provider secrets
+social tokens
+private keys
+internal database credentials
+raw authorization headers
 ```
 
 ---
 
-# 46. Final API Rules
+# 44. Final API Rules
 
 ```text
-The API orchestrates; it does not become the business logic layer.
-Long-running work is asynchronous.
-PostgreSQL remains authoritative.
-Redis messages are not API truth.
-Claim status is not a fact-check verdict.
+FastAPI is an orchestration boundary, not a provider SDK dumping ground.
+Long-running work is asynchronous and durable.
+Claim status and fact-check labels remain separate.
 Fact Sheet is required before normal content generation.
-Quality pass is not publication approval.
+Research config is a first-class separate domain.
+Source registry metadata is not itself evidence policy.
 All external MVP publication requires explicit human approval.
-Publication retries must be idempotent and ambiguity-aware.
-Provider details stay behind adapters.
-Secrets never appear in ordinary responses.
+Publication retries are idempotency/ambiguity safe.
+Host-specific service commands are not exposed through business API routes.
 ```
-
----
-
-# 47. Documentation Relationship
-
-This document owns the HTTP API boundary.
-
-`CANONICAL_CONTRACTS.md` owns shared enums and lifecycle semantics.
-
-`CONTENT_SCHEMAS.md` owns structured payload contracts.
-
-`DATA_MODEL.md` owns persistence.
-
-`EVENTS.md` owns event contracts.
-
-`SOURCE_AND_RESEARCH.md` owns research behavior.
-
-`AI_PLATFORM.md` owns AI routing/execution.
-
-`SOCIAL_PUBLISHING.md` owns platform execution and publication safety.
