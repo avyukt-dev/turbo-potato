@@ -3,9 +3,9 @@
 # SOURCE_AND_RESEARCH.md
 
 **Status:** Canonical
-**Document Role:** Source of truth for source registration, discovery, research planning, evidence acquisition, corroboration, contradiction handling, historical research, and research provenance.
+**Document Role:** Source of truth for source registration, research planning, evidence acquisition, corroboration, contradiction handling, historical research, source independence, and research provenance.
 
-Shared enums and cross-document semantics are defined by `CANONICAL_CONTRACTS.md`.
+Shared enums, configuration ownership, and cross-document semantics are defined by `CANONICAL_CONTRACTS.md`.
 
 ---
 
@@ -18,9 +18,9 @@ It does not redefine:
 ```text
 persistent database structures      → DATA_MODEL.md
 event envelopes and delivery        → EVENTS.md
-AI providers and model routing       → AI_PLATFORM.md
-editorial priorities and content     → CONTENT_AND_EDITORIAL.md
-social publication execution         → SOCIAL_PUBLISHING.md
+AI providers and model routing      → AI_PLATFORM.md
+editorial priorities and content    → CONTENT_AND_EDITORIAL.md
+social publication execution        → SOCIAL_PUBLISHING.md
 test strategy                        → TESTING_AND_EVALUATION.md
 shared enums/lifecycle semantics     → CANONICAL_CONTRACTS.md
 ```
@@ -31,8 +31,6 @@ shared enums/lifecycle semantics     → CANONICAL_CONTRACTS.md
 
 The system is claim-driven, not article-summary-driven.
 
-Required flow:
-
 ```text
 DISCOVERY
    ↓
@@ -42,7 +40,7 @@ CLAIMS
    ↓
 RESEARCH PLAN
    ↓
-SOURCE SEARCH
+SEARCH / SOURCE ACQUISITION
    ↓
 EVIDENCE
    ↓
@@ -57,35 +55,90 @@ The system must not ask an AI model to read a pile of articles and decide what h
 
 ---
 
-# 3. Source Registry
+# 3. Source Registry vs Source Policy
 
-Every configured source should have a stable source record where practical.
+Source identity/collection and evidence policy are deliberately separated.
 
-The registry should capture:
+## 3.1 Source registry and collection mechanics
+
+Owned by:
 
 ```text
-identity
-publisher/domain
-source role
-country/region
-language
-collection method
-default authority level
-topical coverage
-enabled/disabled status
-access metadata
-policy metadata
+config/sources/
+├── registry.yaml
+├── feeds.yaml
+└── collection.yaml
 ```
 
-Persistence belongs to `sources` and `source_feeds` as defined by `DATA_MODEL.md`.
+This configuration describes:
 
-Source behavior should be configuration-driven under `config/sources/` rather than scattered through collector code.
+```text
+source identity
+publisher/domain
+country/region
+language
+feed/API endpoints
+collection method
+poll interval
+parser/collector settings
+enabled/disabled state
+technical credential references
+technical rate-limit settings
+```
+
+It answers:
+
+```text
+Where and how do we collect this source?
+```
+
+It does NOT answer:
+
+```text
+Is this source sufficient evidence for a claim?
+```
+
+## 3.2 Research/evidence policy
+
+Owned by:
+
+```text
+config/research/
+├── source-policy.yaml
+├── search-policy.yaml
+├── corroboration.yaml
+├── fact-check.yaml
+└── historical-research.yaml
+```
+
+This configuration describes:
+
+```text
+source hierarchy and role rules
+minimum corroboration expectations
+primary-source requirements
+source-independence evaluation
+contradiction-search requirements
+research budgets/timeouts
+fact-check methodology
+historical evidence-domain methodology
+```
+
+It answers:
+
+```text
+How do we evaluate and research evidence?
+```
+
+## 3.3 Editorial configuration
+
+`config/editorial/` does not own evidence methodology.
+
+Editorial configuration may choose which stories receive attention and which content/review policies apply, but it must not redefine source truth rules.
 
 ---
 
 # 4. Source Hierarchy
-
-The canonical source hierarchy remains compatible with `CONTENT_AND_EDITORIAL.md`.
 
 ## Level 1 — Primary
 
@@ -93,12 +146,12 @@ Examples:
 
 ```text
 court judgments and orders
-government notifications and documents
+government notifications/documents
 parliamentary records
 official statistics
 official diplomatic statements
 official military statements
-police documents and statements
+police documents/statements
 original research papers
 original datasets
 treaties
@@ -157,8 +210,6 @@ Discovery sources may reveal claims, eyewitness material, leads, documents, or e
 
 A discovery source and an evidence source are different roles.
 
-Example:
-
 ```text
 social post reports alleged court order
         ↓
@@ -177,9 +228,9 @@ A single source may play different roles for different claims.
 
 ---
 
-# 6. Source Authority, Reliability, and Relevance
+# 6. Source Evaluation Dimensions
 
-Source evaluation should keep separate dimensions:
+Keep separate:
 
 ```text
 authority
@@ -192,17 +243,15 @@ independence
 provenance quality
 ```
 
-Do not compress these into a single notion of “trusted source.”
+Do not compress these into one simplistic “trusted source” flag.
 
-A Level 1 source can be incomplete, mistaken, self-interested, preliminary, or later corrected.
+A Level 1 source can still be preliminary, self-interested, incomplete, mistaken, or later corrected.
 
-A Level 4 source can occasionally contain authentic first-hand material, but it still requires provenance and verification.
+A Level 4 source can contain authentic first-hand material, but that material still requires provenance and verification.
 
 ---
 
 # 7. Source Independence
-
-Article count is not confirmation count.
 
 Canonical invariant:
 
@@ -212,13 +261,13 @@ Canonical invariant:
 10 independent confirmations
 ```
 
-The research layer should identify, where possible:
+Research should identify, where possible:
 
 ```text
 original reporting source
 wire/agency origin
 syndication
-copying / republication
+copying/republication
 citation dependency
 shared primary document
 shared eyewitness
@@ -226,23 +275,11 @@ independent field reporting
 independent primary evidence
 ```
 
-The system should model source lineage heuristically rather than pretend it can always prove statistical independence.
+Source independence is often heuristic. The system must not claim statistical independence where it has only inferred lineage.
 
 ---
 
-# 8. Story Clustering and Research Boundary
-
-Clustering determines which articles belong to one story.
-
-Research begins after or during clustering when material claims emerge.
-
-Research must not assume that every article inside a story cluster supports every claim.
-
-Evidence is linked claim-by-claim.
-
----
-
-# 9. Claim Extraction Requirements
+# 8. Claim Extraction Requirements
 
 Claims should be atomic enough to evaluate independently.
 
@@ -277,9 +314,9 @@ historical interpretations
 
 ---
 
-# 10. Claim Verification Status
+# 9. Claim Verification Status
 
-Research uses the canonical `ClaimVerificationStatus` from `CANONICAL_CONTRACTS.md`:
+Use only canonical `ClaimVerificationStatus`:
 
 ```text
 UNASSESSED
@@ -290,19 +327,19 @@ UNVERIFIED
 REFUTED
 ```
 
-These are not fact-check verdict labels.
-
 Critical distinction:
 
 ```text
 UNVERIFIED != REFUTED
 ```
 
+Fact-check verdict labels do not belong in this status.
+
 ---
 
-# 11. Fact-Check Verdicts
+# 10. Fact-Check Verdicts
 
-When the system performs a formal fact check, the verdict uses `FactCheckLabel` from `CANONICAL_CONTRACTS.md`:
+Formal fact checking uses `FactCheckLabel`:
 
 ```text
 TRUE
@@ -324,11 +361,13 @@ UNVERIFIED != FALSE
 
 Research insufficiency must not be converted into falsity.
 
+Methodology and thresholds belong in `config/research/fact-check.yaml`.
+
 ---
 
-# 12. Research Planning
+# 11. Research Planning
 
-For each material claim, research should generate a plan before broad searching.
+For each material claim, generate a research plan before broad searching.
 
 A plan may include:
 
@@ -353,11 +392,9 @@ The plan should be inspectable and versionable where material.
 
 ---
 
-# 13. Search Provider Abstraction
+# 12. Search Provider Abstraction
 
-Research/search is separate from AI-provider routing.
-
-Conceptual interface:
+Search is separate from AI-provider routing.
 
 ```text
 SearchProvider
@@ -367,17 +404,17 @@ SearchProvider
 └── FutureProvider
 ```
 
-Application services request research/search capabilities rather than hard-code provider SDKs.
+Application services request search capabilities rather than hard-code provider SDKs.
 
-Search providers may return candidate sources. They do not determine factual truth.
+Search providers return candidate sources. They do not determine factual truth.
 
 `AIProvider` remains owned by `AI_PLATFORM.md`.
 
 ---
 
-# 14. Query Planning
+# 13. Query Planning
 
-Query planning should use multiple query families where appropriate:
+Useful query families include:
 
 ```text
 exact claim query
@@ -397,7 +434,7 @@ Historical research may require separate queries per evidence domain.
 
 ---
 
-# 15. Temporal Correctness
+# 14. Temporal Correctness
 
 Research must distinguish:
 
@@ -413,13 +450,13 @@ A later article may describe an older event.
 
 A newer article is not automatically stronger evidence than an older primary source.
 
-For breaking stories, stale reporting must not override newer authoritative updates simply because it appears frequently in search results.
+For breaking stories, stale reporting must not override newer authoritative updates merely because it appears frequently in search results.
 
 ---
 
-# 16. Source Versioning and Preservation
+# 15. Source Versioning and Preservation
 
-Where a source can change after publication, preserve enough information to reconstruct what was reviewed.
+Where source material can change, preserve enough information to reconstruct what was reviewed.
 
 Use:
 
@@ -431,13 +468,13 @@ source metadata
 archive reference where lawful/available
 ```
 
-Do not silently replace a previously reviewed version with a later edited version.
+Do not silently replace a previously reviewed source version with a later edit.
 
 ---
 
-# 17. Evidence Acquisition
+# 16. Evidence Acquisition
 
-For each material claim, research should seek, in order appropriate to the claim:
+For each material claim, seek the sources appropriate to the proposition:
 
 ```text
 primary evidence
@@ -447,31 +484,33 @@ contradictory evidence
 counterclaims
 ```
 
-Primary evidence should be prioritized when it directly addresses the proposition.
+Primary evidence should be prioritized when it directly addresses the claim.
 
 The system must retain evidence that weakens the preferred editorial angle.
 
 ---
 
-# 18. Evidence Directness
+# 17. Evidence Relationships
 
-Evidence may be:
+Evidence may:
 
 ```text
-direct support
-indirect support
-contradiction
-qualification
-context
+DIRECT_SUPPORT
+INDIRECT_SUPPORT
+CONTRADICTS
+QUALIFIES
+CONTEXT
+PRIMARY_EVIDENCE
+SECONDARY_EVIDENCE
 ```
 
 A source merely discussing the same topic is not necessarily evidence for the claim.
 
-Evidence relationships are persisted through `claim_evidence` as defined by `DATA_MODEL.md`.
+Persistence belongs to `claim_evidence` as defined by `DATA_MODEL.md`.
 
 ---
 
-# 19. Evidence Strength
+# 18. Evidence Strength
 
 Evidence strength may consider:
 
@@ -491,33 +530,33 @@ A numeric score is an internal assessment unless calibrated. It must not be desc
 
 ---
 
-# 20. Contradictory Evidence
+# 19. Contradictory Evidence
 
-Contradictory evidence must remain first-class.
+Contradictory evidence remains first-class.
 
-The system should preserve whether evidence:
+Credible disagreement may produce:
 
 ```text
-supports
-contradicts
-qualifies
-contextualizes
+PARTIALLY_SUPPORTED
+DISPUTED
+UNVERIFIED
+REFUTED
 ```
 
-Credible disagreement should produce `DISPUTED`, `PARTIALLY_SUPPORTED`, or another evidence-appropriate state rather than being discarded.
+according to the evidence.
 
 A contradiction is not automatically sufficient to mark a claim `REFUTED`.
 
 ---
 
-# 21. Counterclaims
+# 20. Counterclaims
 
 Counterclaims should be researched as claims, not merely copied into a “both sides” field.
 
 Evaluate:
 
 ```text
-who made the counterclaim
+who made it
 what exactly it asserts
 its evidence
 its independence
@@ -529,33 +568,50 @@ A counterclaim is not automatically equally credible merely because it exists.
 
 ---
 
+# 21. Corroboration Policy
+
+Corroboration rules belong in:
+
+```text
+config/research/corroboration.yaml
+```
+
+The policy may vary by claim/risk type, but it must preserve these rules:
+
+```text
+source count != independent source count
+primary evidence can outweigh numerous derivative reports
+high-risk claims receive stricter minimum evidence
+lack of corroboration may mean UNVERIFIED rather than FALSE
+```
+
+Research budgets must never manufacture certainty merely because the configured budget is exhausted.
+
+---
+
 # 22. Breaking News Protocol
 
-Breaking news receives higher processing priority, not lower evidence standards.
-
-Recommended protocol:
+Breaking news receives higher processing priority, not lower factual standards.
 
 ```text
 collect rapidly
 extract provisional claims
-mark uncertain claims explicitly
+mark uncertainty explicitly
 seek primary/official updates
 seek independent reporting
 track contradictions
-re-run research as new evidence appears
+re-run research as evidence changes
 version the Fact Sheet
 require human approval before external publication in MVP
 ```
 
-Preliminary reports must remain labeled as preliminary.
-
-Do not convert “reports say” into established fact until evidence supports it.
+Preliminary reports remain preliminary.
 
 ---
 
 # 23. Sensitive Topic Enhanced Research
 
-Material claims involving the mandatory-review categories in `CANONICAL_CONTRACTS.md` require enhanced research.
+Material claims involving mandatory-review categories require enhanced research.
 
 At minimum:
 
@@ -570,13 +626,11 @@ risk assessment
 human review
 ```
 
-The research system may escalate additional categories through configuration.
-
 ---
 
 # 24. Legal and Criminal Allegations
 
-The system must preserve procedural status:
+Preserve:
 
 ```text
 allegation
@@ -605,7 +659,7 @@ Do not transform an accusation, FIR, arrest, or charge into proof of guilt.
 When the SC/ST Act is material:
 
 ```text
-identify the exact allegation
+identify exact allegation
 identify procedural status
 identify cited statutory provisions where available
 seek FIR/court/order/official record where lawful and available
@@ -621,14 +675,14 @@ Do not infer caste identity when not established by reliable sources.
 
 # 26. Communal and Religious Violence
 
-Research should distinguish:
+Distinguish:
 
 ```text
 confirmed event
 reported motive
 alleged motive
-identity of actors where established
-identity of victims where established
+actor identity where established
+victim identity where established
 official attribution
 independent attribution
 unverified social claims
@@ -642,7 +696,7 @@ Do not infer collective responsibility from the identity of individuals.
 
 # 27. Terrorism Attribution
 
-Terrorism attribution should distinguish:
+Distinguish:
 
 ```text
 claim of responsibility
@@ -653,24 +707,22 @@ court/legal finding
 independent corroboration
 ```
 
-A group's claim of responsibility is evidence of the claim, not automatically conclusive proof of operational responsibility.
+A group's claim of responsibility is evidence of that claim, not automatically conclusive proof of operational responsibility.
 
 ---
 
 # 28. War Casualties and Conflict Statistics
 
-Casualty and battlefield claims require explicit source attribution.
-
 Record:
 
 ```text
 who reported the number
-whether it is official/estimated/independently verified
+official/estimated/independently verified status
 civilian/combatant definition
 geographic scope
 time period
 methodology where known
-known conflicting counts
+conflicting counts
 ```
 
 Do not merge incompatible casualty definitions into one number.
@@ -679,14 +731,14 @@ Do not merge incompatible casualty definitions into one number.
 
 # 29. Demographic and Statistical Research
 
-Demographic claims must preserve:
+Preserve:
 
 ```text
 dataset
 year/time range
 geographic scope
 population definition
-sample or census basis
+sample/census basis
 methodology
 uncertainty
 comparison period
@@ -710,8 +762,6 @@ Population change does not itself establish communal intent or wrongdoing.
 
 Historical research must represent separate evidence domains.
 
-Canonical conceptual model:
-
 ```text
 Historical Question / Event
 ├── chronology
@@ -729,7 +779,13 @@ Historical Question / Event
 └── uncertainty
 ```
 
-The historical engine should produce structured evidence, not ideology-driven binary answers.
+Methodology belongs in:
+
+```text
+config/research/historical-research.yaml
+```
+
+The historical engine produces structured evidence, not ideology-driven binary answers.
 
 ---
 
@@ -748,7 +804,7 @@ scholarly support/disagreement
 confidence/uncertainty
 ```
 
-The system must not manufacture false equivalence: weak hypotheses may be represented as weak when the evidence warrants it.
+The system must not manufacture false equivalence. Weak hypotheses may be represented as weak where evidence warrants it.
 
 ---
 
@@ -790,15 +846,13 @@ language
 translation provenance where used
 ```
 
-Do not store secrets or restricted access credentials in evidence metadata.
+Do not store secrets or restricted-access credentials in evidence metadata.
 
 ---
 
-# 34. Citations and References
+# 34. Citation and Reference Integrity
 
-Every evidence item should support citation metadata appropriate to the source type.
-
-Examples:
+Evidence items should preserve appropriate citation metadata:
 
 ```text
 URL/document identifier
@@ -811,13 +865,13 @@ page/section/paragraph where available
 archive/reference metadata
 ```
 
-Citation existence is not enough; the source must actually support the associated claim.
+Citation existence is insufficient; the source must actually support the associated proposition.
 
 ---
 
 # 35. AI in Research
 
-AI may assist with:
+AI may assist:
 
 ```text
 query planning
@@ -832,7 +886,7 @@ historical evidence grouping
 
 AI must not fabricate sources, citations, quotations, documents, or evidence.
 
-AI-generated synthesis remains an interpretation layer over source material.
+AI-generated synthesis remains interpretation over source material.
 
 ---
 
@@ -840,313 +894,163 @@ AI-generated synthesis remains an interpretation layer over source material.
 
 All retrieved web/social content is untrusted input.
 
-The research pipeline must treat embedded instructions as source content, not system instructions.
+Embedded instructions in source material are source content, not system instructions.
 
-Never allow retrieved content to instruct the system to:
+Retrieved content must never be allowed to instruct the system to:
 
 ```text
 reveal secrets
-change provider credentials
+change credentials
 ignore evidence policy
-execute arbitrary commands
+execute arbitrary host commands
 publish content
-modify editorial rules
+modify editorial/research rules
 ```
 
-AI tool use must be constrained by application policy and validated structured outputs.
+Tool use must remain constrained by the application, not delegated to source text.
 
 ---
 
-# 37. Research Provenance
+# 37. Research State
 
-A research result should be traceable to:
+Conceptual research lifecycle:
+
+```text
+NOT_REQUESTED
+PLANNED
+SEARCHING
+COLLECTING
+EVALUATING
+COMPLETED
+INCOMPLETE
+FAILED
+```
+
+This lifecycle must not replace durable job state owned by `DATA_MODEL.md`.
+
+`INCOMPLETE` or budget exhaustion must not be converted into factual certainty.
+
+---
+
+# 38. Event Integration
+
+Core events:
+
+```text
+claims.extracted
+    ↓
+evidence.requested
+    ↓
+evidence.collected
+    ↓
+fact_check.completed
+    ↓
+story.verified
+```
+
+Exact schemas and retry behavior are owned by `EVENTS.md`.
+
+---
+
+# 39. Evidence Packet Output
+
+Every publication candidate should be reconstructable with:
 
 ```text
 story
 claims
-queries/search plan
-providers used
-sources retrieved
-evidence items
-source versions
-contradictions
-AI runs used for synthesis
-timestamps
-human interventions
-```
-
-Provider-specific metadata may be stored where useful, subject to privacy and retention policy.
-
----
-
-# 38. Evidence Packet Output
-
-Every publication candidate must be reconstructable as an evidence packet.
-
-Research contributes:
-
-```text
-claims
 sources
-primary evidence
 supporting evidence
-contradicting evidence
+contradictory evidence
+primary evidence
 counterclaims
 timeline
 entities
 locations
 confidence assessments
-unresolved questions
+risk/sensitivity
+editorial angle
+AI provenance
+human review
 ```
 
-Editorial angle and review state are added by their owning layers.
+PostgreSQL remains the durable source of truth for these records.
 
 ---
 
-# 39. Research Lifecycle
+# 40. Research Budgets and Caching
 
-Research is durable work represented through PostgreSQL jobs/attempts and claim/evidence state.
-
-Conceptual lifecycle:
+Research should support configurable:
 
 ```text
-claim UNASSESSED
-    ↓
-research requested
-    ↓
-queries executed
-    ↓
-evidence collected
-    ↓
-evidence evaluated
-    ↓
-claim status updated
-    ↓
-verification stage completed
+maximum query count
+maximum source fetch count
+provider budget
+per-source timeout
+overall job timeout
+cache TTL
+re-query interval
+breaking-news refresh interval
 ```
 
-Failure or insufficient evidence must remain explicit rather than being converted into certainty.
+These belong under `config/research/`, not editorial configuration.
+
+Caching must not prevent discovery of newer evidence in time-sensitive stories.
 
 ---
 
-# 40. Event Integration
-
-Use the canonical event contracts in `EVENTS.md`.
-
-Core research events:
-
-```text
-evidence.requested
-evidence.collected
-fact_check.completed
-story.verified
-```
-
-`story.verified` means the configured verification stage completed, not that every claim is true.
-
-Events reference durable PostgreSQL records rather than carrying large research payloads.
-
----
-
-# 41. Database Integration
-
-Research primarily uses:
-
-```text
-sources
-source_feeds
-articles
-article_versions
-stories
-story_sources
-claims
-claim_evidence
-evidence_items
-entities
-entity_mentions
-events
-historical_events
-historical_sources
-fact_checks
-fact_sheets
-ai_runs
-jobs
-job_attempts
-audit_log
-```
-
-The database remains authoritative.
-
----
-
-# 42. Research Budgets
-
-Research must support configurable budgets for:
-
-```text
-maximum search calls
-maximum sources per claim
-maximum AI synthesis calls
-time budget
-provider cost budget
-historical research depth
-breaking-news refresh frequency
-```
-
-Budget exhaustion means research stops or escalates. It does not imply truth/falsity.
-
----
-
-# 43. Caching
-
-Cache:
-
-```text
-search results where provider terms permit
-source fetch metadata
-content hashes
-unchanged documents
-entity resolution
-query results with freshness metadata
-```
-
-Do not allow cache freshness to override temporal correctness.
-
-Redis may provide short-lived caching, but PostgreSQL remains the durable source of truth for business state.
-
----
-
-# 44. Timeouts and Retries
-
-Search/fetch failures should be classified as transient or permanent.
-
-Use bounded retries with backoff.
-
-Do not retry indefinitely.
-
-A source being temporarily unavailable must not be silently treated as evidence against a claim.
-
----
-
-# 45. Human Escalation
+# 41. Human Escalation
 
 Escalate when:
 
 ```text
-credible sources materially conflict
-primary evidence cannot be authenticated sufficiently
-high-risk claim remains unverified
-legal status is ambiguous
-source provenance is unclear
-historical evidence is genuinely contested
-translation materially affects meaning
-breaking-news facts are changing rapidly
+material claims remain DISPUTED/UNVERIFIED
+primary evidence is inaccessible or ambiguous
+credible sources conflict materially
+legal status cannot be established
+source authenticity is uncertain
+high-risk claim lacks sufficient corroboration
+historical evidence is materially contested
 ```
 
-For the MVP, all external publication requires human approval regardless of risk.
+Research completion does not by itself authorize publication.
 
 ---
 
-# 46. Configuration
+# 42. Testing and Observability
 
-Research configuration belongs under:
+Detailed test strategy belongs to `TESTING_AND_EVALUATION.md`.
 
-```text
-config/sources/
-├── registry.yaml
-├── feeds.yaml
-├── source-policy.yaml
-└── search-policy.yaml
-
-config/editorial/
-├── source-policy.yaml
-├── fact-check.yaml
-├── historical-research.yaml
-└── risk-policy.yaml
-```
-
-Avoid duplicate configuration keys with conflicting authority. One deployed configuration should have an explicit precedence rule.
-
----
-
-# 47. Testing Relationship
-
-`TESTING_AND_EVALUATION.md` owns the full testing strategy.
-
-Research-specific tests should cover, at minimum:
+Research-specific observability should track:
 
 ```text
-source hierarchy
-source independence
-syndication detection
-claim/evidence linkage
-contradictions
-UNVERIFIED handling
-fact-check label separation
-temporal correctness
-legal-status preservation
-demographic causality guards
-historical evidence-domain separation
-prompt-injection resistance
-research budget behavior
-```
-
----
-
-# 48. Observability
-
-Research observability should expose:
-
-```text
-research jobs requested/completed/failed
-average sources per claim
-primary-source hit rate
-contradiction discovery rate
-search latency
+queries issued
+sources fetched
+primary sources found
+independent evidence groups
+contradictions found
+research latency
 provider failures
-research budget exhaustion
-claims by verification status
-stale-source detections
+budget exhaustion
+claim status distribution
 ```
-
-Metrics must not reveal secrets or sensitive provider credentials.
 
 ---
 
-# 49. Final Research Rules
+# 43. Final Rules
 
 ```text
-Research claims, not article counts.
-Discovery is not proof.
-Primary is not infallible.
-Ten copies are not ten confirmations.
+Discovery source != evidence source.
+Article count != independent confirmation count.
+Primary source != automatically true.
+AI synthesis != evidence.
+UNVERIFIED != REFUTED.
+UNVERIFIED != FALSE.
 Contradictory evidence must remain visible.
-AI synthesis is not evidence.
-UNVERIFIED is not FALSE.
-Claim verification state is not a fact-check verdict.
-Breaking news gets priority, not relaxed standards.
-Allegation is not conviction.
-Demographic correlation is not causation.
-Historical evidence domains must remain distinct.
-Editorial preference must not choose factual conclusions.
-PostgreSQL remains authoritative.
-All external MVP publication requires human approval.
+Research methodology lives in config/research/.
+Source collection mechanics live in config/sources/.
+Editorial preference must not redefine source/evidence policy.
+Breaking news gets higher priority, not lower standards.
+Historical questions preserve separate evidence domains.
+Research exhaustion must not manufacture certainty.
 ```
-
----
-
-# 50. Documentation Relationship
-
-This document owns source and research behavior.
-
-`CANONICAL_CONTRACTS.md` owns shared enums/invariants.
-
-`DATA_MODEL.md` owns persistence.
-
-`EVENTS.md` owns event contracts.
-
-`AI_PLATFORM.md` owns AI execution and provider routing.
-
-`CONTENT_AND_EDITORIAL.md` owns editorial priority, framing, and publication-review policy.
-
-No document should redefine these owned concepts with alternate semantics.
