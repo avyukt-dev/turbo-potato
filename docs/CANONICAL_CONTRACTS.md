@@ -3,7 +3,7 @@
 # CANONICAL_CONTRACTS.md
 
 **Status:** Canonical
-**Document Role:** Cross-document source of truth for shared terms, state machines, invariants, ownership boundaries, and precedence.
+**Document Role:** Cross-document source of truth for shared terms, state machines, invariants, ownership boundaries, configuration ownership, runtime portability, and precedence.
 **Last updated:** 2026-09-09
 
 ---
@@ -12,9 +12,9 @@
 
 This document prevents semantic drift between the domain documents in `docs/`.
 
-Each domain document remains authoritative for its own subject area. This document is authoritative for concepts that are shared by more than one domain document.
+Each domain document remains authoritative for its own subject area. This document is authoritative for concepts shared by more than one domain document.
 
-When an explanatory example in another document conflicts with a shared contract defined here, this document wins until the affected domain documents are updated together.
+If an illustrative example in another document conflicts with a shared contract here, this document wins. Domain documents should nevertheless be updated promptly so stale examples do not remain in the repository.
 
 ---
 
@@ -25,16 +25,16 @@ When an explanatory example in another document conflicts with a shared contract
 | Overall system boundaries and end-to-end architecture | `ARCHITECTURE.md` |
 | PostgreSQL entities, relationships, persistence, and durable state | `DATA_MODEL.md` |
 | Redis Streams events, envelopes, delivery, retries, and consumer contracts | `EVENTS.md` |
-| AI providers, routing, prompts, structured output execution, provenance, and model lifecycle | `AI_PLATFORM.md` |
+| AI providers, routing, prompts, structured output, provenance, and model lifecycle | `AI_PLATFORM.md` |
+| Source registry, research workflow, evidence acquisition, corroboration, source independence, and research provenance | `SOURCE_AND_RESEARCH.md` |
 | Editorial priorities, evidence-aware framing, sensitive-topic policy, and content rules | `CONTENT_AND_EDITORIAL.md` |
-| Source registry/roles, discovery, research planning, evidence acquisition, corroboration, contradictions, and historical research methodology | `SOURCE_AND_RESEARCH.md` |
-| Application-layer structured Pydantic/JSON contracts | `CONTENT_SCHEMAS.md` |
+| Cross-service Pydantic/JSON artifact contracts | `CONTENT_SCHEMAS.md` |
+| Infrastructure, runtime portability, deployment, networking, storage, backups, and platform adapters | `INFRASTRUCTURE_AND_DEPLOYMENT.md` |
 | Social adapters, publication state, scheduling, retries, and platform constraints | `SOCIAL_PUBLISHING.md` |
-| FastAPI HTTP boundary, endpoint behavior, authorization expectations, and API-level state validation | `API_SPEC.md` |
-| Infrastructure, POCO deployment, runtime, networking, storage, backups, and infrastructure design | `INFRASTRUCTURE_AND_DEPLOYMENT.md` |
-| Day-to-day operations, health checks, deployment execution, incident response, and recovery procedures | `OPERATIONS_RUNBOOK.md` |
+| HTTP API boundary and asynchronous orchestration | `API_SPEC.md` |
 | Test strategy, evaluation, release gates, and rollback criteria | `TESTING_AND_EVALUATION.md` |
-| Shared enums, cross-document state semantics, precedence, and invariants | `CANONICAL_CONTRACTS.md` |
+| Day-to-day operation, health, incidents, deployment execution, and recovery | `OPERATIONS_RUNBOOK.md` |
+| Shared enums, cross-document state semantics, precedence, configuration ownership, and invariants | `CANONICAL_CONTRACTS.md` |
 
 A document may repeat a concept for context, but repetition outside the canonical owner is non-normative unless explicitly stated otherwise.
 
@@ -103,8 +103,6 @@ These are separate concepts and MUST NOT share one enum.
 
 ## 5.1 ClaimVerificationStatus
 
-A claim's verification workflow status is:
-
 ```text
 UNASSESSED
 SUPPORTED
@@ -119,15 +117,19 @@ Meanings:
 - `UNASSESSED` — evidence evaluation has not completed.
 - `SUPPORTED` — the material proposition is supported by sufficient evidence under current policy.
 - `PARTIALLY_SUPPORTED` — a material portion is supported, but part remains unsupported, qualified, or contradicted.
-- `DISPUTED` — material credible evidence conflicts and the disagreement is unresolved.
+- `DISPUTED` — material credible evidence conflicts and the disagreement remains unresolved.
 - `UNVERIFIED` — current evidence is insufficient to establish or refute the proposition.
 - `REFUTED` — sufficient evidence establishes that the proposition, as stated, is not supported.
 
-`UNVERIFIED` is not `REFUTED`.
+Critical invariant:
+
+```text
+UNVERIFIED != REFUTED
+```
+
+Legacy labels such as `partially_confirmed` are prohibited in current schemas and examples.
 
 ## 5.2 FactCheckLabel
-
-A fact-check verdict is:
 
 ```text
 TRUE
@@ -141,13 +143,13 @@ FABRICATED
 SATIRE
 ```
 
-The critical invariant is:
+Critical invariant:
 
 ```text
 UNVERIFIED != FALSE
 ```
 
-A fact-check label may be assigned to a checked claim, statement, post, media item, or composite assertion after evaluation. It is not the same thing as the claim-processing state.
+A fact-check label may be assigned to a checked claim, statement, post, media item, or composite assertion after evaluation. It is not the same concept as the claim-processing state.
 
 ## 5.3 Event Field Semantics
 
@@ -173,13 +175,7 @@ It must not publish a `ClaimVerificationStatus` value in a field presented as th
 
 Confidence is an evidence assessment.
 
-A value such as:
-
-```text
-0.82
-```
-
-must not be described as an objective 82% probability of truth unless the score has been explicitly calibrated and validated for that interpretation.
+A value such as `0.82` must not be described as an objective 82% probability of truth unless the scoring system has been explicitly calibrated and validated for that interpretation.
 
 Model agreement alone does not increase factual confidence.
 
@@ -190,8 +186,6 @@ Model agreement alone does not increase factual confidence.
 Risk and topic sensitivity are separate dimensions.
 
 ## 7.1 RiskLevel
-
-The canonical risk enum is:
 
 ```text
 LOW
@@ -220,8 +214,6 @@ Risk must not be inferred from editorial importance.
 
 The publication system has an approval gate before external publication.
 
-Canonical model:
-
 ```text
 CONTENT
    ↓
@@ -234,7 +226,7 @@ SCHEDULE / PUBLISH
 
 ## 8.1 MVP policy
 
-For the MVP and brainstorming implementation phase:
+For the MVP and current implementation phase:
 
 ```text
 ALL external social publication requires explicit human approval.
@@ -242,7 +234,7 @@ ALL external social publication requires explicit human approval.
 
 This applies even to low-risk content.
 
-Quality checks may pass automatically, but passing quality checks does not itself authorize publication.
+Passing automated quality checks does not authorize publication.
 
 ## 8.2 Future low-risk automation
 
@@ -259,13 +251,13 @@ account policy permits it
 full audit trail is retained
 ```
 
-This future capability is disabled by default and is not part of the MVP publication policy.
+This capability is disabled by default and is not part of the MVP.
 
 ## 8.3 Mandatory human-review categories
 
 Sensitive/high-risk categories defined by editorial and risk policy must never use low-risk auto-approval.
 
-Examples include, at minimum, material claims involving:
+Examples include material claims involving:
 
 ```text
 communal violence
@@ -289,8 +281,6 @@ Review state and publication state are separate state machines.
 
 ## 9.1 ReviewState
 
-Canonical review states:
-
 ```text
 NOT_READY
 READY_FOR_REVIEW
@@ -300,13 +290,11 @@ REJECTED
 CHANGES_REQUESTED
 ```
 
-Approval must identify the reviewed artifact/version.
+Approval must identify the exact reviewed artifact/version.
 
-A later factual change that materially alters the artifact invalidates the previous approval and requires a new review under policy.
+A material factual/content change invalidates previous approval when policy requires it.
 
 ## 9.2 PublicationStatus
-
-Canonical publication states:
 
 ```text
 DRAFT
@@ -329,7 +317,7 @@ CORRECTED
 ARCHIVED
 ```
 
-These post-publication descriptors do not erase the original publication audit trail.
+These descriptors do not erase the original publication audit trail.
 
 ---
 
@@ -349,7 +337,7 @@ every claim in the story is true
 
 Each claim retains its own `ClaimVerificationStatus`.
 
-A verified story may therefore contain:
+A verification-completed story may contain:
 
 ```text
 SUPPORTED claims
@@ -367,8 +355,6 @@ The Fact Sheet must preserve material uncertainty and contradiction.
 
 The Fact Sheet is the canonical factual intermediate representation used for normal content generation.
 
-Normal path:
-
 ```text
 RAW SOURCES
     ↓
@@ -385,15 +371,13 @@ EDITORIAL BRIEF / ANGLE
 CONTENT
 ```
 
-The content engine must not normally bypass the Fact Sheet and ask a model to infer the final post directly from a pile of raw articles.
+The content engine must not normally bypass the Fact Sheet and ask a model to infer the final post directly from raw articles.
 
 ---
 
 # 12. AI Provider vs Search Provider
 
 AI model providers and research/search providers are separate abstractions.
-
-Canonical boundaries:
 
 ```text
 AIProvider
@@ -405,16 +389,15 @@ AIProvider
 └── FutureProvider
 ```
 
-and:
-
 ```text
 SearchProvider
-├── configured web/search provider
-├── specialist research provider
-└── future provider
+├── WebSearchProvider
+├── NewsSearchProvider
+├── SpecialistSearchProvider
+└── FutureProvider
 ```
 
-An orchestrator may use both, but a search provider is not an `AIProvider` merely because AI may be used during research.
+An orchestrator may use both. A search provider is not an `AIProvider` merely because AI may assist the research process.
 
 ---
 
@@ -520,7 +503,7 @@ Caste-related facts may be reported when relevant and verified, but caste identi
 
 Media persistence and public delivery are separate concerns.
 
-The MVP may store media locally on the POCO:
+The MVP may store media locally on the POCO, for example:
 
 ```text
 /opt/news-ai/media/
@@ -528,30 +511,199 @@ The MVP may store media locally on the POCO:
 
 If a platform requires a public URL, the selected asset must be made available through a deliberately exposed HTTPS media-delivery mechanism or object storage.
 
-The application must never expose the database, admin API, internal service ports, backups, credentials, or arbitrary filesystem paths merely to make social media ingestion work.
+The application must never expose the database, admin API, internal service ports, backups, credentials, or arbitrary filesystem paths merely to satisfy social-platform media ingestion.
 
 ---
 
-# 19. POCO Deployment Model
+# 19. Runtime and Platform Independence
 
-For the initial POCO production deployment:
+The application architecture is platform-independent.
+
+Business/domain/application code MUST NOT directly invoke or depend on host-specific service utilities such as:
 
 ```text
-native/OpenRC-managed services = default
-Docker/containers = optional where practical
+rc-service
+rc-update
+systemctl
+service
+launchctl
+sc.exe
+PowerShell service cmdlets
 ```
 
-Docker is not an MVP requirement on the POCO.
+Instead, runtime management uses a capability-based abstraction:
 
-Development environments may use containers when useful.
+```text
+newsctl / RuntimeController
+        ↓
+RuntimeDetector
+        ↓
+ServiceManager interface
+        ↓
+selected adapter based on available host capability
+```
 
-Application architecture must remain portable across both deployment styles.
+Conceptual adapters may include:
+
+```text
+OpenRCServiceManager
+SystemdServiceManager
+SysVServiceManager
+LaunchdServiceManager
+WindowsServiceManager
+UnsupportedServiceManager
+```
+
+Platform-specific commands are isolated inside infrastructure/runtime adapters. They must not leak into collectors, processors, AI workers, editorial logic, publishing logic, domain models, or API routes.
+
+Detection should use capabilities and runtime metadata rather than assuming a service manager solely from an OS name. Useful signals include:
+
+```text
+Python platform/os information
+/etc/os-release where available
+executable discovery such as shutil.which(...)
+container/runtime metadata
+explicit operator override
+```
+
+If no supported manager is detected, fail clearly or use an explicitly configured unmanaged/manual mode. Never guess and execute an arbitrary system command.
+
+The current POCO happens to use OpenRC. That is a deployment profile, not an application architecture assumption.
 
 ---
 
-# 20. Event and Database Relationship
+# 20. Deployment Portability
 
-Every worker should follow the durable-state pattern:
+For the initial POCO deployment:
+
+```text
+native services selected through runtime adapter = default
+containers = optional where useful
+```
+
+Docker is not an MVP requirement and must not become an application dependency.
+
+The same application must remain portable to other Linux distributions, macOS development hosts, Windows development hosts, containers, or future servers without rewriting business logic.
+
+---
+
+# 21. Configuration Ownership
+
+Configuration is divided by responsibility. The same policy must not be defined in multiple directories.
+
+## 21.1 `config/sources/` — source registry and collection mechanics
+
+Owns descriptive and operational collection configuration such as:
+
+```text
+registry.yaml
+feeds.yaml
+collection.yaml
+```
+
+Typical fields:
+
+```text
+source identity
+feed/API endpoints
+enabled state
+poll interval
+collection method
+parser/collector settings
+transport/auth credential references
+technical rate-limit handling
+```
+
+It does NOT determine whether a source is sufficient evidence for a claim.
+
+## 21.2 `config/research/` — research and evidence methodology
+
+Owns evidence/research policy such as:
+
+```text
+source-policy.yaml
+search-policy.yaml
+corroboration.yaml
+fact-check.yaml
+historical-research.yaml
+```
+
+Typical concerns:
+
+```text
+source hierarchy and role rules
+minimum corroboration rules
+source-independence evaluation
+primary-source requirements
+contradiction search requirements
+fact-check methodology
+historical evidence-domain methodology
+research budgets/timeouts
+```
+
+These rules determine evidence methodology, not editorial preference.
+
+## 21.3 `config/editorial/` — editorial preference and publication policy
+
+Owns:
+
+```text
+priorities.yaml
+taxonomy.yaml
+content-style.yaml
+risk-policy.yaml
+publishing-policy.yaml
+```
+
+Typical concerns:
+
+```text
+coverage priority
+editorial relevance
+content tone/style
+sensitive-topic routing
+publication/review policy
+```
+
+Editorial configuration must not redefine source truth/evidence methodology.
+
+## 21.4 Other configuration roots
+
+```text
+config/models/      → AI model/provider routing
+config/prompts/     → versioned AI prompts
+config/platforms/   → social-platform capabilities/constraints
+```
+
+Secrets remain outside ordinary versioned configuration and are referenced securely.
+
+---
+
+# 22. Configuration Precedence
+
+Recommended effective configuration precedence:
+
+```text
+code defaults
+  ↓
+versioned configuration
+  ↓
+environment-specific overrides
+  ↓
+secure secret references
+  ↓
+explicit audited runtime administrative override where allowed
+```
+
+Two different files must not independently define the same canonical policy key.
+
+A startup/config-validation check should reject ambiguous duplicate ownership where practical.
+
+---
+
+# 23. Event and Database Relationship
+
+Every worker should follow:
 
 ```text
 READ EVENT
@@ -571,17 +723,15 @@ EMIT NEXT EVENT
 ACK
 ```
 
-The transactional outbox pattern should be used where atomic state transition plus event emission is required.
+Use a transactional outbox where atomic state transition plus event emission is required.
 
 ---
 
-# 21. Publication Idempotency
+# 24. Publication Idempotency
 
 The social publishing layer must assume retries and ambiguous failures occur.
 
 A timeout after a publish request must not trigger a blind duplicate post.
-
-Canonical behavior:
 
 ```text
 ambiguous platform response
@@ -595,41 +745,7 @@ retry only when safe
 
 ---
 
-# 22. Structured Contract Boundary
-
-`CONTENT_SCHEMAS.md` owns application-layer Pydantic/JSON contracts.
-
-Schemas must use the shared enums in this document and must not redefine business truth, persistence ownership, or publication policy.
-
-`API_SPEC.md` may reference these schemas but must not create incompatible payload vocabularies.
-
----
-
-# 23. Research Boundary
-
-`SOURCE_AND_RESEARCH.md` owns source roles, research planning, search-provider abstraction, evidence acquisition, source independence, contradiction handling, and historical research methodology.
-
-Research output must preserve the shared evidence/editorial separation and must not treat AI synthesis as evidence.
-
----
-
-# 24. API Boundary
-
-`API_SPEC.md` owns HTTP endpoint semantics and API-level state validation.
-
-The API orchestrates domain services and asynchronous work. It does not become an alternate source of business-state truth or bypass the Fact Sheet/review/publication gates.
-
----
-
-# 25. Operations Boundary
-
-`OPERATIONS_RUNBOOK.md` owns operator procedures.
-
-It may describe how to inspect, pause, recover, deploy, or roll back the system, but it must not redefine infrastructure architecture or domain lifecycle semantics.
-
----
-
-# 26. Cross-Document Change Rule
+# 25. Cross-Document Change Rule
 
 Any change to a shared concept must update this file first or in the same change set.
 
@@ -646,9 +762,21 @@ story verification semantics
 PostgreSQL/Redis ownership
 Fact Sheet boundary
 AI/Search provider boundary
+runtime/platform abstraction
+configuration ownership
 ```
 
-A new domain document must reference these contracts rather than inventing alternate enums or lifecycle meanings.
+A domain document must reference these contracts rather than inventing alternate enums, lifecycle meanings, service-manager assumptions, or duplicate configuration owners.
+
+---
+
+# 26. No-Legacy-Example Rule
+
+Canonical documentation should not intentionally retain outdated illustrative examples after a contradiction has been identified.
+
+Examples must use current enums, current directory layout, current event sequence, current approval semantics, and current runtime abstraction.
+
+Historical Git commits provide the record of earlier designs; current docs should describe the current design only.
 
 ---
 
@@ -682,4 +810,4 @@ PUBLICATION
 ANALYTICS
 ```
 
-No subsystem may bypass the evidence boundary or publication approval policy by redefining a shared term locally.
+No subsystem may bypass the evidence boundary, publication approval policy, persistence boundary, configuration ownership, or runtime abstraction by redefining a shared term locally.
