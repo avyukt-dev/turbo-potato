@@ -3,22 +3,22 @@
 # OPERATIONS_RUNBOOK.md
 
 **Status:** Canonical
-**Document Role:** Source of truth for day-to-day operation, health checks, incident triage, deployment execution, backup/recovery, publication safety, and POCO server procedures.
+**Document Role:** Source of truth for day-to-day operation, health checks, incident triage, deployment execution, backup/recovery, publication safety, and runtime-independent service procedures.
 
-Infrastructure architecture remains owned by `INFRASTRUCTURE_AND_DEPLOYMENT.md`.
+Infrastructure architecture is owned by `INFRASTRUCTURE_AND_DEPLOYMENT.md`.
 
-Shared lifecycle semantics are defined by `CANONICAL_CONTRACTS.md`.
+Shared lifecycle/runtime semantics are defined by `CANONICAL_CONTRACTS.md`.
 
 ---
 
 # 1. Purpose
 
-This runbook defines how to operate the initial News AI deployment safely and predictably.
+This runbook defines how to operate the News AI deployment safely without assuming one operating system or service manager.
 
-The initial runtime philosophy is:
+Initial runtime philosophy:
 
 ```text
-ONE POCO
+ONE HOST
 ONE POSTGRESQL
 ONE REDIS
 ONE LOCAL AI SERVICE
@@ -26,11 +26,35 @@ ONE APPLICATION STACK
 CONTROLLED CLOUD PROVIDERS
 ```
 
-Native/OpenRC-managed services are the default on the POCO. Containers are optional where useful and are not an MVP requirement.
+The current POCO host uses OpenRC, but operator workflows target the platform-neutral runtime abstraction.
 
 ---
 
-# 2. Initial Server Profile
+# 2. Operator Interface
+
+Canonical operator surface:
+
+```text
+newsctl runtime detect
+newsctl service list
+newsctl service status <service>
+newsctl service start <service>
+newsctl service stop <service>
+newsctl service restart <service>
+newsctl service enable <service>
+newsctl service disable <service>
+newsctl health
+newsctl publish pause
+newsctl publish resume
+```
+
+`newsctl`/`RuntimeController` detects the supported host capability and delegates to the appropriate runtime adapter.
+
+Operational scripts should not directly assume `systemctl`, `rc-service`, `launchctl`, or another one host utility.
+
+---
+
+# 3. Initial Server Profile
 
 Current target:
 
@@ -39,34 +63,41 @@ Device: Xiaomi POCO F1
 Codename: beryllium
 Architecture: aarch64
 OS: postmarketOS
-Init: OpenRC
 Mode: headless CLI
+Current detected service manager: OpenRC
 Timezone: Asia/Kolkata
 Remote administration: Tailscale + SSH
 ```
 
-Hardware values such as RAM, storage, kernel version, addresses, and battery readings are deployment characteristics and must not become hard-coded application assumptions.
+These are deployment characteristics, not application assumptions.
 
 ---
 
-# 3. Operational Priorities
+# 4. Operational Priorities
 
-When something fails, prioritize:
+When something fails:
 
 ```text
-1. prevent unsafe/duplicate publication
+1. stop unsafe/duplicate publication
 2. protect PostgreSQL data
 3. preserve logs/audit evidence
 4. restore network/time/dependencies
-5. restore processing
-6. re-enable publication only after validation
+5. restore event processing
+6. restore AI/media/platform dependencies
+7. re-enable publication only after validation
 ```
 
 ---
 
-# 4. Global Publishing Kill Switch
+# 5. Global Publishing Kill Switch
 
-The system must support a global publication pause.
+Use:
+
+```text
+newsctl publish pause
+```
+
+when implemented by the operator tool.
 
 When active:
 
@@ -79,7 +110,7 @@ review may continue
 new external publication calls stop
 ```
 
-Use the kill switch during:
+Use during:
 
 ```text
 platform API incidents
@@ -92,19 +123,86 @@ major breaking-news uncertainty
 unexpected mass scheduling
 ```
 
-The kill switch must be auditable.
+The kill switch is an application-level safety control and must not depend on one service manager.
 
 ---
 
-# 5. Server Health Command
+# 6. Runtime Detection
 
-The existing operator command is:
+Before host-level service operations:
 
-```bash
-health
+```text
+newsctl runtime detect
 ```
 
-It should evolve toward whole-server coverage:
+Expected conceptual output:
+
+```text
+platform: linux
+service_manager: openrc
+adapter: OpenRCServiceManager
+status: supported
+```
+
+Detection should verify executable capability and runtime metadata.
+
+If no supported manager is detected:
+
+```text
+status: unsupported/manual
+```
+
+Do not guess a system command.
+
+---
+
+# 7. Service Health
+
+Use generic service commands:
+
+```text
+newsctl service list
+newsctl service status postgres
+newsctl service status redis
+newsctl service status api
+newsctl service status collector
+newsctl service status processor
+newsctl service status research-worker
+newsctl service status ai-worker
+newsctl service status publisher
+newsctl service status scheduler
+```
+
+Logical service names map to deployment-specific native names through configuration/runtime adapters.
+
+---
+
+# 8. Native Diagnostic Fallback
+
+When the generic operator utility itself is unavailable, a human operator may use the native utility **after detecting the host runtime**.
+
+Current POCO example only:
+
+```text
+OpenRC detected
+→ use OpenRC diagnostic utilities manually
+```
+
+Other hosts may use different tools.
+
+Native commands are fallback operational diagnostics, not application architecture and not commands that business code should execute directly.
+
+---
+
+# 9. Whole-System Health
+
+Canonical command:
+
+```text
+newsctl health
+```
+
+Health should cover:
 
 ```text
 SYSTEM
@@ -115,8 +213,8 @@ SYSTEM
 └── uptime
 
 NETWORK
-├── Wi-Fi
-├── Internet
+├── connectivity
+├── DNS
 └── Tailscale
 
 SERVICES
@@ -125,12 +223,13 @@ SERVICES
 ├── API
 ├── Collector
 ├── Processor
+├── Research Worker
 ├── AI Worker
 ├── Publisher
 └── Scheduler
 
 AI
-├── Local model
+├── local model
 ├── inference latency
 ├── queue depth
 └── failures
@@ -142,89 +241,16 @@ JOBS
 └── retrying
 
 SOCIAL
-├── Instagram
-├── X
-└── other configured adapters
+├── adapter/account health
+├── rate limits
+└── publishing errors
 ```
 
-The health command must not expose secrets.
+Do not expose secrets.
 
 ---
 
-# 6. Basic Host Checks
-
-Check uptime/kernel:
-
-```bash
-uname -a
-uptime
-```
-
-Check memory:
-
-```bash
-free -h
-```
-
-Check filesystem:
-
-```bash
-df -h
-```
-
-Check processes:
-
-```bash
-ps aux
-```
-
-Use deployment-appropriate thermal/battery sysfs paths rather than assuming one path across future hardware.
-
----
-
-# 7. OpenRC Service Checks
-
-List services:
-
-```bash
-rc-status
-```
-
-Check one service:
-
-```bash
-rc-service <service> status
-```
-
-Start:
-
-```bash
-sudo rc-service <service> start
-```
-
-Stop:
-
-```bash
-sudo rc-service <service> stop
-```
-
-Restart:
-
-```bash
-sudo rc-service <service> restart
-```
-
-Enable at boot:
-
-```bash
-sudo rc-update add <service> default
-```
-
-Actual application service names are implementation/deployment configuration and should be documented when created.
-
----
-
-# 8. Startup Dependency Order
+# 10. Startup Dependency Order
 
 Logical order:
 
@@ -239,187 +265,110 @@ Redis
   ↓
 local AI service
   ↓
-API
+API / workers
   ↓
-Collector / Processor / Workers
+scheduler
   ↓
-Scheduler
-  ↓
-Publisher eligibility
+publisher eligibility
 ```
 
-Only enforce necessary dependencies in OpenRC; avoid artificial coupling between independent workers.
+The runtime adapter should enforce only necessary dependencies.
 
 ---
 
-# 9. Time Synchronization
+# 11. Time Synchronization
 
-Accurate time is mandatory for:
+Accurate time is required for OAuth, TLS, scheduling, event timestamps, audit logs, analytics, and Tailscale.
+
+The health layer should detect available time-synchronization capability rather than hard-code one tool into application logic.
+
+Current POCO may use chrony, but future hosts may differ.
+
+Canonical database time remains UTC/`TIMESTAMPTZ`.
+
+---
+
+# 12. Network Checks
+
+Generic health should validate:
 
 ```text
-OAuth/token validation
-scheduled publication
-event timestamps
-audit logs
-TLS/API interactions
-analytics
-Tailscale
+interface up
+route available
+DNS works
+internet reachability where required
+Tailscale/private-management reachability
 ```
 
-Check chrony:
+Native diagnostic tools may vary by platform and belong to operator troubleshooting, not business code.
 
-```bash
-chronyc tracking
-chronyc sources -v
-```
-
-If system time is wrong, repair time synchronization before debugging authentication/token failures.
-
-Canonical database timestamps use UTC/TIMESTAMPTZ even though the server/operator timezone is Asia/Kolkata.
+Successful Wi-Fi association is not proof that DNS/internet is healthy.
 
 ---
 
-# 10. Network Checks
+# 13. Tailscale and SSH
 
-Interfaces:
+Prefer private/Tailscale access over public SSH exposure.
 
-```bash
-ip addr
-```
-
-Routing:
-
-```bash
-ip route
-```
-
-DNS resolver state:
-
-```bash
-cat /etc/resolv.conf
-```
-
-Internet reachability:
-
-```bash
-ping -c 3 1.1.1.1
-```
-
-DNS resolution:
-
-```bash
-getent hosts example.com
-```
-
-Successful Wi-Fi association is not proof that DNS/internet connectivity is healthy.
-
----
-
-# 11. Tailscale
-
-Check:
-
-```bash
-tailscale status
-tailscale ip
-```
-
-Check daemon:
-
-```bash
-sudo rc-service tailscale status
-```
-
-Restart if needed:
-
-```bash
-sudo rc-service tailscale restart
-```
-
-Do not place Tailscale authentication keys or reusable enrollment credentials in docs/logs.
-
----
-
-# 12. SSH
-
-Prefer Tailscale/private management access rather than exposing SSH directly to the public Internet.
-
-If SSH fails, check:
+If remote access fails, check:
 
 ```text
-network
-Tailscale
-sshd OpenRC state
-firewall
-host key/configuration
-user permissions
+host network
+DNS/time
+Tailscale daemon/session
+SSH service
+firewall/access policy
+credentials/keys
 ```
+
+Do not store reusable Tailscale authentication keys in docs/logs.
 
 ---
 
-# 13. PostgreSQL Health
+# 14. PostgreSQL Health
 
-PostgreSQL is the durable source of truth.
+PostgreSQL is durable truth.
 
-Check service using the deployed OpenRC service name.
-
-Basic query:
-
-```bash
-psql -c "SELECT now();"
-```
-
-Application readiness should verify the configured application database connection, not only that a local process exists.
+Application-level health should verify an actual configured database query/transaction capability, not merely process existence.
 
 If PostgreSQL is unavailable:
 
 ```text
-external publication must stop
-business-state mutation must stop safely
-workers must not invent state from Redis
+external publication stops
+business-state mutation stops safely
+workers do not invent state from Redis
 ```
+
+Do not continue publication based on queued messages alone.
 
 ---
 
-# 14. Redis Health
+# 15. Redis Health
 
-Redis is event/work transport and short-lived coordination, not durable business truth.
+Redis is event/work transport and short-lived coordination.
 
-Check:
-
-```bash
-redis-cli ping
-```
-
-Expected:
+Health should verify:
 
 ```text
-PONG
+connection
+ping/readiness
+stream access
+consumer-group state
+pending age
 ```
-
-Inspect queue/stream health with `SCAN`/stream commands appropriate to the implementation.
-
-Avoid production-wide `KEYS *` once data volume grows.
-
----
-
-# 15. Redis Failure
 
 If Redis is unavailable:
 
 ```text
-PostgreSQL durable state remains authoritative
+PostgreSQL remains authoritative
+outbox remains durable
 new async delivery pauses/fails safely
-outbox records remain pending
-workers should not lose durable job/result state
-external publication should not bypass normal scheduling
+publication must not bypass scheduling
 ```
-
-After Redis recovery, restore/verify consumer groups and outbox delivery before resuming normal throughput.
 
 ---
 
-# 16. Event Queue Health
+# 16. Queue Health
 
 Monitor:
 
@@ -438,16 +387,17 @@ A growing queue is a capacity/dependency signal, not a reason to discard events.
 
 ---
 
-# 17. Stuck Pending Events
+# 17. Stale/Pending Events
 
-For stale pending entries:
+For stale work:
 
 ```text
-identify consumer/idle time
+identify event/job
 load current PostgreSQL state
+verify transition still valid
 claim/retry only when safe
 preserve idempotency
-record failures
+record result
 ```
 
 Never replay publication side effects blindly.
@@ -455,10 +405,6 @@ Never replay publication side effects blindly.
 ---
 
 # 18. Dead-Letter Handling
-
-Dead-letter work should remain inspectable.
-
-Operational steps:
 
 ```text
 inspect original event/job
@@ -468,38 +414,37 @@ fix dependency/data/policy issue
 requeue only when transition remains valid
 ```
 
-Do not mass-replay dead-letter publication events without individual safety checks.
+Do not mass-replay publication dead letters without safety checks.
 
 ---
 
 # 19. API Health
 
-Check:
+Use:
 
 ```text
 GET /health
 GET /ready
 ```
 
-`/health` confirms process liveness.
+`/health` = process liveness.
 
-`/ready` confirms required dependencies for current API operation.
+`/ready` = required dependency readiness.
 
-A healthy API process with an unhealthy database is not production-ready.
+A live API with an unavailable database is not production-ready.
 
 ---
 
 # 20. Collector Health
 
-Check:
+Monitor:
 
 ```text
 last successful poll
-sources degraded/disabled
+source degradation/disablement
 articles discovered rate
-HTTP/DNS failures
-feed parse failures
-queue depth
+fetch/parse failures
+queue lag
 ```
 
 One broken source must not stop all collection.
@@ -508,62 +453,81 @@ One broken source must not stop all collection.
 
 # 21. Processor Health
 
-Check:
+Monitor:
 
 ```text
 normalization throughput
 deduplication failures
-story clustering latency
+story-clustering latency
 entity/classification failures
 article queue lag
 ```
 
-Stale processors should not be allowed to act on invalid historical state without reloading PostgreSQL.
+Workers always reload current PostgreSQL state before material transitions.
 
 ---
 
-# 22. AI Service Health
+# 22. Research Worker Health
 
-Local AI health should cover:
+Monitor:
 
 ```text
-process alive
+research queue depth
+queries per job
+primary-source discovery rate
+provider errors
+source-fetch failures
+contradictions found
+budget exhaustion
+research latency
+```
+
+Budget exhaustion must not become factual certainty.
+
+---
+
+# 23. AI Health
+
+Monitor:
+
+```text
+process/endpoint alive
 model loaded
-inference request succeeds
-recent latency
-tokens/sec where measurable
+inference succeeds
+latency
+tokens/sec where available
 queue depth
 failure rate
 RAM/CPU/thermal behavior
 ```
 
-The local model is a processing component, never the factual source of truth.
+Local/cloud model availability never changes the evidence rules.
 
 ---
 
-# 23. AI Failure
+# 24. AI Failure
 
 If local AI fails:
 
 ```text
-retry boundedly
-use allowed router fallback where policy permits
-otherwise queue/fail job safely
+bounded retry
+allowed fallback according to AI routing policy
+otherwise queue/fail safely
 ```
 
-If a cloud provider fails:
+If cloud AI fails:
 
 ```text
 bounded retry
 allowed provider fallback
-preserve job/provenance
+preserve provenance/job state
 ```
 
-Do not route sensitive material to arbitrary providers outside configured policy.
+Do not route sensitive material to arbitrary providers.
 
 ---
 
-# 24. POCO Resource Policy
+# 25. POCO Resource Policy
 
 Monitor:
 
@@ -571,53 +535,23 @@ Monitor:
 RAM
 CPU
 storage
-battery
-battery temperature
-CPU/thermal sensors where available
+battery/power
+temperature
 inference latency
 queue depth
 ```
 
-The POCO must not be assumed to have usable NPU/GPU acceleration until measured.
-
-If sustained local inference destabilizes the server:
+If sustained local inference destabilizes the host:
 
 ```text
 reduce concurrency
 reduce model size
 reduce context length
-slow background work
+delay optional work
 route allowed work to cloud
-pause optional jobs
 ```
 
-Stability takes priority over maximizing local inference throughput.
-
----
-
-# 25. Battery and Thermal Operation
-
-The POCO is a mobile device used as a server.
-
-Track:
-
-```text
-capacity
-charging state
-temperature
-voltage/current where exposed
-thermal throttling
-```
-
-Thresholds should be configuration-driven.
-
-When unsafe/high temperatures occur:
-
-```text
-pause expensive optional work
-reduce AI concurrency
-preserve core API/database functions where safe
-```
+Stability takes priority over local inference throughput.
 
 ---
 
@@ -634,69 +568,51 @@ backups
 temporary files
 ```
 
-Low disk space can corrupt normal operation before the filesystem reaches 100%.
-
-Temporary media and logs require cleanup/rotation policies.
-
-Never delete provenance/evidence/publication history merely to free space without an explicit retention decision.
+Do not delete provenance/evidence/publication history merely to free space without an explicit retention decision.
 
 ---
 
-# 27. Media Storage
+# 27. Media Storage and Delivery
 
-Initial persistence may use local storage such as:
+Local media persistence does not imply public accessibility.
+
+If a platform needs a public URL, validate:
 
 ```text
-/opt/news-ai/media/
+asset exists
+intended public-delivery mechanism is active
+HTTPS/DNS works
+MIME type is correct
+URL expiry permits ingestion
+platform can reach it
 ```
 
-Local persistence does not imply public accessibility.
-
-When a platform requires a fetchable URL, provide the selected asset through the deliberately configured HTTPS media-delivery mechanism/object storage defined by infrastructure/publishing policy.
-
-Do not expose arbitrary filesystem paths, the admin API, database, backups, or internal services to satisfy media ingestion.
+Do not expose unrelated internal services.
 
 ---
 
-# 28. Public Media Delivery Failure
-
-If a social platform cannot fetch media:
-
-```text
-verify asset exists
-verify public URL is intended/current
-verify HTTPS/DNS
-verify MIME type
-verify expiration policy
-verify platform reachability
-```
-
-Do not weaken network security by exposing unrelated internal services.
-
----
-
-# 29. Publisher Health
+# 28. Publisher Health
 
 Monitor:
 
 ```text
-publishing queue depth
+queue depth
 running attempts
 stuck PUBLISHING state
 retrying attempts
 platform auth failures
-rate-limit events
+rate limits
 media failures
 duplicate-prevention events
 ```
 
-Publisher health should be separate per platform/account where useful.
+Health should be visible per platform/account where useful.
 
 ---
 
-# 30. MVP Approval Check
+# 29. MVP Approval Check
 
-Before any external publication:
+Before every external publication:
 
 ```text
 Fact Sheet valid
@@ -710,11 +626,11 @@ platform validation passes
 idempotency check passes
 ```
 
-For the MVP, every external publication requires explicit human approval.
+No low-risk exception exists in the MVP.
 
 ---
 
-# 31. Ambiguous Publication Outcome
+# 30. Ambiguous Publication Outcome
 
 If a platform call times out after transmission:
 
@@ -726,50 +642,35 @@ Instead:
 
 ```text
 record ambiguous attempt
-query/verify external state where possible
-if published → persist external ID and mark PUBLISHED
-if definitely not published → retry according to policy
-if uncertain → BLOCK and require human intervention
+verify external state where possible
+if published → persist ID and mark PUBLISHED
+if definitely not published → retry under policy
+if uncertain → BLOCK / human intervention
 ```
 
 Duplicate avoidance is more important than fast retry.
 
 ---
 
-# 32. Platform Authentication Failure
+# 31. Platform Authentication Failure
 
-On authentication/permission failure:
+On non-transient authentication/permission failure:
 
 ```text
-stop automatic retries when non-transient
-mark account AUTH_ERROR / REAUTH_REQUIRED as appropriate
+stop automatic retries
+mark account AUTH_ERROR / REAUTH_REQUIRED
 pause affected publication jobs
 preserve other platform processing
 reauthenticate securely
-verify account capability
+verify capabilities
 resume
 ```
 
-Do not log tokens.
+Never log tokens.
 
 ---
 
-# 33. Rate Limiting
-
-When a platform or provider rate-limits:
-
-```text
-respect retry-after/reset when supplied
-otherwise use bounded backoff
-preserve queued work
-do not hammer provider
-```
-
-Rate-limit state should be visible operationally.
-
----
-
-# 34. Logs
+# 32. Logs
 
 Structured logs should include:
 
@@ -779,100 +680,85 @@ level
 service
 event/action
 request_id
-job_id where relevant
+job_id
 story_id where relevant
 publication_id where relevant
 error_code
 duration
+runtime adapter where operationally relevant
 ```
 
-Never log:
-
-```text
-passwords
-API keys
-OAuth tokens
-refresh tokens
-cookies
-private keys
-authorization headers
-unnecessary personal data
-```
+Never log secrets, credentials, private keys, authorization headers, or unnecessary personal data.
 
 ---
 
-# 35. Incident Triage Order
-
-Use this order:
+# 33. Incident Triage
 
 ```text
 1. Is unsafe publication occurring?
 2. Is the host alive?
-3. Is network available?
-4. Is system time correct?
-5. Is PostgreSQL healthy?
-6. Is Redis healthy?
-7. Is the API healthy?
-8. Are workers consuming?
-9. Is local/cloud AI healthy?
-10. Are media delivery and external platform APIs healthy?
+3. Is network/time healthy?
+4. Is PostgreSQL healthy?
+5. Is Redis healthy?
+6. Is API ready?
+7. Are workers consuming?
+8. Is research functioning?
+9. Is AI functioning?
+10. Is media delivery healthy?
+11. Are external platform APIs healthy?
 ```
-
-This prevents debugging application symptoms before lower-level causes.
 
 ---
 
-# 36. Incident Severity
+# 34. Incident Severity
 
-Suggested operational severity:
+Operational severity is distinct from editorial `RiskLevel`.
+
+Suggested:
 
 ```text
-SEV-1: unsafe/duplicate mass publication, credential compromise, data corruption
-SEV-2: publication unavailable, database/major pipeline outage
-SEV-3: one worker/provider/platform degraded with safe fallback/queueing
-SEV-4: minor source or non-critical background failure
+SEV-1 unsafe/duplicate mass publication, credential compromise, data corruption
+SEV-2 publication unavailable, database/major pipeline outage
+SEV-3 one worker/provider/platform degraded with safe queueing/fallback
+SEV-4 minor source/background failure
 ```
-
-Operational severity is not the same concept as editorial `RiskLevel`.
 
 ---
 
-# 37. SEV-1 Immediate Actions
+# 35. SEV-1 Immediate Actions
 
 ```text
-activate global publication kill switch
+activate publication kill switch
 preserve logs/state
 disable compromised credentials/accounts if applicable
-stop affected workers if needed
+stop affected workers through runtime abstraction if necessary
 protect PostgreSQL
 identify scope
 avoid destructive cleanup
 ```
 
-Resume publication only after root cause and safety checks.
+Resume publication only after safety validation.
 
 ---
 
-# 38. Deployment Flow
-
-Canonical deployment sequence:
+# 36. Deployment Flow
 
 ```text
 approved code
    ↓
-run tests
+tests
    ↓
-dependency/install step
+dependency/build preparation
    ↓
 migration check
    ↓
-backup where migration warrants
+backup when warranted
    ↓
 apply migration
    ↓
 deploy code/config
    ↓
-restart affected services
+restart affected services via RuntimeController/newsctl
    ↓
 health/readiness
    ↓
@@ -881,402 +767,138 @@ smoke test
 resume normal processing/publication
 ```
 
-Do not deploy an untested documentation-to-implementation semantic change silently.
-
 ---
 
-# 39. Database Migrations
+# 37. Migration Safety
 
-Every schema change requires a versioned migration.
+Every schema change uses a versioned migration.
 
-Before a production migration:
+Before production migration:
 
 ```text
 review migration
-backup as appropriate
-verify backup strategy
-test migration on representative data
+backup when appropriate
+test against representative data
 apply
-run integrity/readiness checks
+validate constraints/readiness
+smoke test
 ```
 
-Do not perform routine manual production-table edits outside migration history.
+Do not blindly roll database schema backward when data compatibility is uncertain.
 
 ---
 
-# 40. Backups
+# 38. Backup
 
-Back up at minimum:
+Back up:
 
 ```text
 PostgreSQL
 versioned configuration
-important media needed for publication/audit
-operational deployment metadata needed for recovery
+required media/assets according to retention policy
+deployment/runtime configuration
 ```
 
-Secrets require a separate secure backup/recovery approach and must not be committed to Git.
+Do not place secrets in unsecured backups.
+
+A backup is not verified until a restore has been tested.
 
 ---
 
-# 41. Backup Verification
+# 39. Recovery
 
-A backup is not considered operationally verified until restore has been tested.
-
-Periodically:
+General recovery order:
 
 ```text
-create backup
-restore into isolated test database
-run integrity checks
-verify critical record counts/relationships
+1. pause publication
+2. protect/preserve current state and logs
+3. restore/verify PostgreSQL
+4. restore configuration/assets as required
+5. restore Redis/event delivery
+6. restore runtime-managed services
+7. run health/readiness checks
+8. run smoke pipeline
+9. re-enable publication only after validation
 ```
 
 ---
 
-# 42. Recovery Order
+# 40. Smoke Test
 
-General recovery:
-
-```text
-1. pause publishing
-2. protect/preserve current data and logs
-3. restore network/time
-4. restore/verify PostgreSQL
-5. restore/verify Redis
-6. restore API/workers
-7. restore AI/media services
-8. verify external platform credentials/capabilities
-9. run smoke tests
-10. resume processing
-11. re-enable publication last
-```
-
----
-
-# 43. Redis Loss Recovery
-
-Redis loss must not imply loss of durable business state.
-
-Recovery should use PostgreSQL jobs/outbox/current state to rebuild pending work where necessary.
-
-Do not reconstruct publication truth from assumptions about missing Redis messages.
-
----
-
-# 44. PostgreSQL Restore
-
-After database restore:
-
-```text
-verify migrations/schema version
-verify FK/integrity checks
-verify recent publication states
-verify audit records
-verify pending jobs/outbox
-verify external publication IDs for recent attempts
-```
-
-A restored database snapshot may be older than external platform state; ambiguous recent publications require reconciliation before retry.
-
----
-
-# 45. Credential Rotation
-
-Canonical rotation:
-
-```text
-obtain replacement credential securely
-validate new credential
-update secret mechanism/reference
-restart/reload affected service if necessary
-run controlled access check
-revoke old credential
-```
-
-Never place credentials in Git, docs, prompts, ordinary database fields, or logs.
-
----
-
-# 46. Configuration Changes
-
-Versioned configuration changes should be reviewed and auditable.
-
-Shared semantic changes require synchronized documentation updates according to `CANONICAL_CONTRACTS.md`.
-
-Do not introduce an undocumented runtime override that creates a second conflicting policy source.
-
----
-
-# 47. Smoke Test After Deployment
-
-Recommended non-publishing smoke test:
+After deployment/recovery:
 
 ```text
 1. /health
 2. /ready
-3. PostgreSQL query
-4. Redis ping/stream check
-5. local AI health
-6. ingest one controlled test article
-7. normalize/cluster
-8. extract claims
-9. request research
-10. collect/evaluate evidence
-11. generate Fact Sheet
+3. PostgreSQL read/write test
+4. Redis/event test
+5. runtime/service-manager detection test
+6. local AI health
+7. ingest one test article
+8. cluster story
+9. extract claims
+10. run research/evidence
+11. build Fact Sheet
 12. generate test content
 13. run quality check
-14. verify READY_FOR_REVIEW
-15. verify no external publication occurs without explicit human approval
-```
-
-Use mock/sandbox social mode unless a deliberate live publication test is authorized.
-
----
-
-# 48. Release Gate
-
-Before normal production operation:
-
-```text
-unit tests
-integration tests
-contract tests
-schema/event tests
-AI regression tests
-evidence tests
-editorial/sensitive-topic tests
-social idempotency tests
-security checks
-migration checks
-health/readiness
-smoke test
-```
-
-`TESTING_AND_EVALUATION.md` owns detailed gates.
-
----
-
-# 49. Rollback Triggers
-
-Consider rollback/pause for:
-
-```text
-factual drift
-unexpected claim-status behavior
-FactCheckLabel confusion
-duplicate publication
-broken approval gate
-broken evidence linkage
-database migration failure
-worker retry loop
-severe performance/thermal regression
-social adapter regression
+14. verify review gate
+15. ensure real publication is not accidentally triggered
 ```
 
 ---
 
-# 50. Rollback Procedure
+# 41. Runtime Adapter Failure
+
+If runtime detection or service control fails:
 
 ```text
-activate publication kill switch
-stop affected workers if necessary
-preserve logs/state
-identify last known-good application/config/model/prompt
-rollback application/config where safe
-handle database compatibility deliberately
+record detected signals
+fail clearly
+use explicit manual/unsupported mode if configured
+require operator intervention
+```
+
+Never execute a guessed fallback command.
+
+Application-level publication safety should remain controllable even if host service management is unavailable.
+
+---
+
+# 42. Runtime Adapter Testing
+
+Before supporting a new service manager, verify:
+
+```text
+detection
+status
+start
+stop
 restart
-run health/readiness
-run smoke test
-re-enable processing
-re-enable publication last
+enable
+disable
+permission failure
+missing executable
+command timeout
+unexpected output
+explicit override
+unsupported mode
 ```
 
-Do not blindly reverse a database migration when data compatibility is unclear.
+Ordinary application tests should use a fake service manager.
 
 ---
 
-# 51. AI Model/Prompt Rollback
-
-Models and prompts are separately versioned.
-
-If regression occurs:
+# 43. Final Operational Rules
 
 ```text
-disable bad model/prompt
-route to previous approved version
-run regression checks
-preserve affected ai_run provenance
-```
-
-No model change may bypass evidence or human-approval policy.
-
----
-
-# 52. Research Failure
-
-If research cannot reach adequate evidence:
-
-```text
-preserve UNVERIFIED/DISPUTED state as appropriate
-record unresolved questions
-surface for human review
-```
-
-Do not publish certainty merely because the retry/time budget ended.
-
----
-
-# 53. Breaking News Operations
-
-For rapidly changing stories:
-
-```text
-increase collection/research priority
-refresh evidence more frequently
-version Fact Sheets
-invalidate stale approval when material facts change
-require human approval before every MVP external publication
-```
-
-Speed does not lower factual standards.
-
----
-
-# 54. Approval Invalidation
-
-Human approval applies to an exact artifact/version.
-
-If material facts/content change:
-
-```text
-approval becomes invalid
-artifact returns to review
-```
-
-Do not reuse a stale approval for materially changed content.
-
----
-
-# 55. Correction Operations
-
-For factual correction:
-
-```text
-research correction
-create new Fact Sheet version
-create corrected content version
-human review
-publish correction/update according to platform capability
-retain original publication/audit trail
-```
-
-Do not rewrite history by deleting the original evidence trail from the database.
-
----
-
-# 56. Operational States
-
-For whole-system operational state, use descriptive states such as:
-
-```text
-HEALTHY
-DEGRADED
-PAUSED
-FAILED
-MAINTENANCE
-```
-
-These are operational health labels and must not replace domain `RiskLevel`, `ReviewState`, or `PublicationStatus`.
-
----
-
-# 57. Routine Daily Checks
-
-A lightweight daily check should include:
-
-```text
-health command
-PostgreSQL status/free space
-Redis queue/dead-letter health
-AI latency/failures
-source failure count
-pending review queue
-scheduled publications
-publisher/account auth status
-backup recency
-thermal/battery anomalies
-```
-
----
-
-# 58. Routine Weekly Checks
-
-Recommended:
-
-```text
-review failed/dead-letter jobs
-review source degradation
-review disk/log growth
-verify backup creation
-inspect publication failure patterns
-inspect AI regression/latency trends
-review credential expiration warnings
-```
-
----
-
-# 59. Periodic Recovery Test
-
-Periodically test:
-
-```text
-PostgreSQL restore
-Redis/work rebuild from durable state
-application restart after host reboot
-kill switch
-mock publication idempotency
-credential rotation procedure
-```
-
-Recovery behavior is part of system correctness.
-
----
-
-# 60. Final Operational Rules
-
-```text
-PostgreSQL is durable truth.
-Redis can be rebuilt; business state must survive.
-Unsafe publication is stopped before troubleshooting continues.
+Use platform-neutral operator commands as the canonical surface.
+Detect host capability before native service operations.
+Do not place OS/service-manager commands in business code.
+PostgreSQL remains authoritative.
+Redis failure must not invent/erase durable state.
+Unsafe publication takes priority over throughput.
+Ambiguous publish outcome is not a blind-retry condition.
 All external MVP publication requires explicit human approval.
-Ambiguous publication outcomes are verified before retry.
-Backups must be restore-tested.
-Secrets never enter Git/logs/prompts.
-POCO thermal/resource stability takes priority over local AI throughput.
-Breaking news gets priority, not relaxed standards.
-AI failure must not become factual invention.
-Publication is re-enabled last after incidents/recovery.
+Backups require restore testing.
+Runtime detection failure must fail safely rather than guess.
 ```
-
----
-
-# 61. Documentation Relationship
-
-This document owns operational procedures.
-
-`INFRASTRUCTURE_AND_DEPLOYMENT.md` owns infrastructure design.
-
-`CANONICAL_CONTRACTS.md` owns shared lifecycle semantics.
-
-`EVENTS.md` owns event delivery/retry contracts.
-
-`DATA_MODEL.md` owns persistence.
-
-`AI_PLATFORM.md` owns AI routing/model policy.
-
-`SOURCE_AND_RESEARCH.md` owns research methodology.
-
-`SOCIAL_PUBLISHING.md` owns social-platform execution semantics.
-
-`TESTING_AND_EVALUATION.md` owns detailed release/evaluation criteria.
