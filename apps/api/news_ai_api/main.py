@@ -19,8 +19,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @application.get("/ready")
-    async def ready() -> dict[str, object] | JSONResponse:
+    @application.get("/ready", response_model=None)
+    async def ready() -> JSONResponse:
         config_ready = resolved_settings.config_dir.is_dir()
         runtime = RuntimeDetector().inspect()
         payload: dict[str, object] = {
@@ -30,9 +30,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
                 "runtime_service_manager": runtime.service_manager,
             },
         }
-        if config_ready:
-            return payload
-        return JSONResponse(status_code=503, content=payload)
+        return JSONResponse(status_code=200 if config_ready else 503, content=payload)
 
     return application
 
