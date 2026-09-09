@@ -22,7 +22,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @application.get("/ready", response_model=None)
     async def ready() -> JSONResponse:
         config_ready = resolved_settings.config_dir.is_dir()
-        runtime = RuntimeDetector().inspect()
+        runtime = RuntimeDetector(override=resolved_settings.service_manager).inspect()
         payload: dict[str, object] = {
             "status": "ready" if config_ready else "not_ready",
             "checks": {

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import platform
+import subprocess
 from typing import Iterable
 
 from .base import ServiceManager
@@ -69,7 +70,7 @@ class RuntimeDetector:
             try:
                 if manager.probe():
                     return manager
-            except (OSError, RuntimeError, TimeoutError):
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
                 continue
         return ManualServiceManager()
 

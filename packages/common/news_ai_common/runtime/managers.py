@@ -14,7 +14,7 @@ def _state_from_text(text: str, returncode: int) -> ServiceState:
     normalized = text.lower()
     if returncode == 0 and any(word in normalized for word in ("started", "running", "active")):
         return ServiceState.ACTIVE
-    if any(word in normalized for word in ("stopped", "inactive", "not running")):
+    if any(word in normalized for word in ("stopped", "inactive", "not running", "not started")):
         return ServiceState.INACTIVE
     if any(word in normalized for word in ("failed", "crashed")):
         return ServiceState.FAILED
@@ -48,15 +48,18 @@ class OpenRCServiceManager(ServiceManager):
     def restart(self, service: str) -> ServiceResult:
         return self._call(service, "restart")
 
-    def enable(self, service: str) -> ServiceResult:
+    def _boot_registration(self, service: str, action: str) -> ServiceResult:
+        if not shutil.which("rc-update"):
+            raise UnsupportedOperation("OpenRC boot registration requires rc-update")
         name = validate_service_name(service)
-        result = self.runner.run(["rc-update", "add", name, "default"])
+        result = self.runner.run(["rc-update", action, name, "default"])
         return ServiceResult(ServiceState.UNKNOWN, result.returncode, result.stdout, result.stderr)
 
+    def enable(self, service: str) -> ServiceResult:
+        return self._boot_registration(service, "add")
+
     def disable(self, service: str) -> ServiceResult:
-        name = validate_service_name(service)
-        result = self.runner.run(["rc-update", "del", name, "default"])
-        return ServiceResult(ServiceState.UNKNOWN, result.returncode, result.stdout, result.stderr)
+        return self._boot_registration(service, "del")
 
 
 class SystemdServiceManager(ServiceManager):

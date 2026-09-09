@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from news_ai_common.runtime import RuntimeDetector, ServiceManager, ServiceResult, ServiceState
@@ -20,6 +22,11 @@ class FakeManager(ServiceManager):
     status = start = stop = _result
 
 
+class TimeoutManager(FakeManager):
+    def probe(self) -> bool:
+        raise subprocess.TimeoutExpired(["probe"], 5)
+
+
 def test_detector_selects_first_verified_capability() -> None:
     detector = RuntimeDetector(
         candidates=[FakeManager("first", False), FakeManager("second", True)],
@@ -39,6 +46,14 @@ def test_detector_falls_back_to_manual() -> None:
     detector = RuntimeDetector(candidates=[FakeManager("none", False)])
 
     assert detector.detect_service_manager().name == "manual"
+
+
+def test_probe_timeout_does_not_break_runtime_detection() -> None:
+    detector = RuntimeDetector(
+        candidates=[TimeoutManager("slow", True), FakeManager("usable", True)],
+    )
+
+    assert detector.detect_service_manager().name == "usable"
 
 
 @pytest.mark.parametrize("name", ["-bad", "bad name", "bad/thing", ""])
