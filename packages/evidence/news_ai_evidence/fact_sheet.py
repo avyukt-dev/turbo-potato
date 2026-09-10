@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -49,8 +50,8 @@ class FactSheetClaimSnapshot(BaseModel):
     sensitive_topics: tuple[str, ...] = ()
     evidence_ids: tuple[UUID, ...] = ()
     contradictory_evidence_ids: tuple[UUID, ...] = ()
-    temporal_start: Any | None = None
-    temporal_end: Any | None = None
+    temporal_start: datetime | None = None
+    temporal_end: datetime | None = None
     location_ids: tuple[UUID, ...] = ()
 
 
@@ -77,8 +78,8 @@ class FactSheetEvidenceSnapshot(BaseModel):
     source_id: UUID | None = None
     title: str | None = None
     url: str | None = None
-    published_at: Any | None = None
-    retrieved_at: Any | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
     relation: str
     strength_score: float | None = None
     excerpt: str | None = None
@@ -93,8 +94,8 @@ class FactSheetSourceSnapshot(BaseModel):
     source_level: int
     url: str | None = None
     publisher: str | None = None
-    published_at: Any | None = None
-    retrieved_at: Any | None = None
+    published_at: datetime | None = None
+    retrieved_at: datetime | None = None
     language: str | None = None
 
 
@@ -245,7 +246,9 @@ class FactSheetGenerator:
             version=row.version,
             headline=row.headline,
             summary=row.summary,
-            claims=tuple(FactSheetClaimSnapshot.model_validate(item) for item in row.claims_snapshot),
+            claims=tuple(
+                FactSheetClaimSnapshot.model_validate(item) for item in row.claims_snapshot
+            ),
             fact_checks=tuple(
                 FactSheetFactCheckSnapshot.model_validate(item)
                 for item in row.fact_checks_snapshot
@@ -264,13 +267,17 @@ class FactSheetGenerator:
                 FactSheetClaimSnapshot.model_validate(item) for item in row.counterclaims
             ),
             unresolved_questions=tuple(row.unresolved_questions or []),
-            confidence_score=(float(row.confidence_score) if row.confidence_score is not None else None),
+            confidence_score=(
+                float(row.confidence_score) if row.confidence_score is not None else None
+            ),
             risk_level=row.risk_level,
             sensitive_topics=tuple(row.sensitive_topics or []),
         )
 
     @staticmethod
-    def _validate_verified_event(event: EventEnvelope) -> tuple[UUID, tuple[UUID, ...], tuple[UUID, ...]]:
+    def _validate_verified_event(
+        event: EventEnvelope,
+    ) -> tuple[UUID, tuple[UUID, ...], tuple[UUID, ...]]:
         if event.event_type != EventType.STORY_VERIFIED:
             raise ValueError("Fact Sheet generation requires story.verified")
         if event.aggregate_type != "story":
@@ -287,7 +294,11 @@ class FactSheetGenerator:
         return story_id, claim_ids, fact_check_ids
 
     @staticmethod
-    def _load_claims(session: Session, story_id: UUID, claim_ids: tuple[UUID, ...]) -> list[Claim]:
+    def _load_claims(
+        session: Session,
+        story_id: UUID,
+        claim_ids: tuple[UUID, ...],
+    ) -> list[Claim]:
         claims = list(session.scalars(select(Claim).where(Claim.id.in_(claim_ids))))
         by_id = {claim.id: claim for claim in claims}
         if set(by_id) != set(claim_ids):
@@ -423,8 +434,6 @@ class FactSheetGenerator:
                 in {
                     EvidenceRelation.DIRECT_SUPPORT.value,
                     EvidenceRelation.INDIRECT_SUPPORT.value,
-                    EvidenceRelation.PRIMARY_EVIDENCE.value,
-                    EvidenceRelation.SECONDARY_EVIDENCE.value,
                 }
             )
             contradicting = tuple(
@@ -463,7 +472,9 @@ class FactSheetGenerator:
             )
         )
         source_ids = {article.source_id for article in articles}
-        source_ids.update(item.source_id for item in evidence.values() if item.source_id is not None)
+        source_ids.update(
+            item.source_id for item in evidence.values() if item.source_id is not None
+        )
         if not source_ids:
             return ()
         sources = list(session.scalars(select(Source).where(Source.id.in_(source_ids))))
