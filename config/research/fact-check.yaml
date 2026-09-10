@@ -1,14 +1,14 @@
 schema_version: 1
 labels:
-  - TRUE
-  - MOSTLY_TRUE
-  - PARTIALLY_TRUE
-  - MISLEADING
-  - OUT_OF_CONTEXT
-  - UNVERIFIED
-  - FALSE
-  - FABRICATED
-  - SATIRE
+  - "TRUE"
+  - "MOSTLY_TRUE"
+  - "PARTIALLY_TRUE"
+  - "MISLEADING"
+  - "OUT_OF_CONTEXT"
+  - "UNVERIFIED"
+  - "FALSE"
+  - "FABRICATED"
+  - "SATIRE"
 invariants:
   unverified_is_false: false
   verdict_is_separate_from_claim_verification_status: true
