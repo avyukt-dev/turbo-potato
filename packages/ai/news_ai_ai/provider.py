@@ -82,7 +82,11 @@ def require_provider_compatibility(
             f"{capabilities.provider_id!r} does not support response format "
             f"{request.response_format.value!r}"
         )
-    if request.model is not None and capabilities.models and request.model not in capabilities.models:
+    if (
+        request.model is not None
+        and capabilities.models
+        and request.model not in capabilities.models
+    ):
         raise AICapabilityError(
             f"provider {capabilities.provider_id!r} does not expose model {request.model!r}"
         )
