@@ -259,9 +259,7 @@ class SourceRegistryService:
                     timeout_seconds=(
                         config.request_timeout_seconds or defaults.request_timeout_seconds
                     ),
-                    max_response_bytes=(
-                        config.max_response_bytes or defaults.max_response_bytes
-                    ),
+                    max_response_bytes=(config.max_response_bytes or defaults.max_response_bytes),
                     etag=feed.etag,
                     last_modified=feed.last_modified,
                 )
