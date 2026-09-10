@@ -80,9 +80,7 @@ class AIRoutingConfig(BaseModel):
     schema_version: int = Field(ge=1)
     mode: AIRoutingMode = AIRoutingMode.HYBRID
     routes: dict[AITaskType, TaskRoutingPolicy]
-    sensitivity_provider_allowlists: dict[str, frozenset[ProviderId]] = Field(
-        default_factory=dict
-    )
+    sensitivity_provider_allowlists: dict[str, frozenset[ProviderId]] = Field(default_factory=dict)
 
     @field_validator("routes")
     @classmethod
