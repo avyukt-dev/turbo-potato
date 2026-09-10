@@ -32,12 +32,9 @@ def _article(**overrides: object) -> ArticleNormalizationInput:
 
 
 def test_canonicalize_url_removes_fragment_tracking_and_default_port() -> None:
-    assert (
-        canonicalize_url(
-            "HTTPS://Example.COM:443/news/../news/item/?utm_source=x&b=2&a=1#section"
-        )
-        == "https://example.com/news/item/?a=1&b=2"
-    )
+    url = "HTTPS://Example.COM:443/news/../news/item/?utm_source=x&b=2&a=1#section"
+
+    assert canonicalize_url(url) == "https://example.com/news/item/?a=1&b=2"
 
 
 def test_canonicalize_url_preserves_semantic_query_parameters() -> None:
