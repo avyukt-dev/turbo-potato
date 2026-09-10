@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from news_ai_database import Base
 from news_ai_database.models import EventOutbox, OutboxStatus
 from news_ai_events import EventEnvelope, EventType
@@ -47,6 +48,24 @@ def _insert_event(factory: sessionmaker[Session]) -> EventOutbox:
     return record
 
 
+def test_retry_policy_rejects_invalid_configuration() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        RetryPolicy(delays_seconds=())
+    with pytest.raises(ValueError, match="positive"):
+        RetryPolicy(delays_seconds=(30, 0))
+    with pytest.raises(ValueError, match="jitter_ratio"):
+        RetryPolicy(jitter_ratio=1.1)
+
+
+def test_retry_policy_applies_bounded_jitter() -> None:
+    now = datetime(2026, 9, 10, 2, 0, tzinfo=UTC)
+    policy = RetryPolicy(delays_seconds=(100,), jitter_ratio=0.2)
+
+    retry_at = policy.next_attempt_at(1, now=now)
+
+    assert now + timedelta(seconds=80) <= retry_at <= now + timedelta(seconds=120)
+
+
 def test_dispatch_preserves_original_event_provenance() -> None:
     factory = _factory()
     record = _insert_event(factory)
@@ -72,9 +91,14 @@ def test_dispatch_preserves_original_event_provenance() -> None:
 def test_failed_publish_is_retried_with_backoff() -> None:
     factory = _factory()
     record = _insert_event(factory)
-    dispatcher = OutboxDispatcher(factory, FakePublisher(fail=True))
+    now = datetime(2026, 9, 10, 2, 0, tzinfo=UTC)
+    dispatcher = OutboxDispatcher(
+        factory,
+        FakePublisher(fail=True),
+        retry_policy=RetryPolicy(jitter_ratio=0),
+    )
 
-    stats = asyncio.run(dispatcher.dispatch_once(now=datetime(2026, 9, 10, 2, 0, tzinfo=UTC)))
+    stats = asyncio.run(dispatcher.dispatch_once(now=now))
 
     assert stats.retried == 1
     with factory() as session:
@@ -83,6 +107,7 @@ def test_failed_publish_is_retried_with_backoff() -> None:
         assert persisted.status == OutboxStatus.PENDING
         assert persisted.attempt_count == 1
         assert persisted.next_attempt_at is not None
+        assert persisted.next_attempt_at >= now + timedelta(seconds=30)
         assert "redis unavailable" in (persisted.last_error or "")
 
 
@@ -92,7 +117,7 @@ def test_retry_budget_exhaustion_marks_failed() -> None:
     dispatcher = OutboxDispatcher(
         factory,
         FakePublisher(fail=True),
-        retry_policy=RetryPolicy(delays_seconds=(1,)),
+        retry_policy=RetryPolicy(delays_seconds=(1,), jitter_ratio=0),
     )
 
     stats = asyncio.run(dispatcher.dispatch_once())
