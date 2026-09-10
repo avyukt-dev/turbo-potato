@@ -66,7 +66,9 @@ class FactCheckPolicy(BaseModel):
         if self.invariants.unverified_is_false:
             raise ValueError("UNVERIFIED must never be configured as FALSE")
         if not self.invariants.verdict_is_separate_from_claim_verification_status:
-            raise ValueError("fact-check verdict must remain separate from claim verification status")
+            raise ValueError(
+                "fact-check verdict must remain separate from claim verification status"
+            )
         if not self.invariants.count_independent_groups_not_articles:
             raise ValueError("corroboration must count independent groups, not article count")
         if set(self.thresholds) != set(RiskLevel):
@@ -453,7 +455,8 @@ class FactCheckEngine:
 
 def _uuid_tuple(value: Any, name: str, *, allow_empty: bool = False) -> tuple[UUID, ...]:
     if not isinstance(value, list) or (not value and not allow_empty):
-        raise ValueError(f"{name} must be a {'possibly empty' if allow_empty else 'non-empty'} list")
+        qualifier = "possibly empty" if allow_empty else "non-empty"
+        raise ValueError(f"{name} must be a {qualifier} list")
     parsed = tuple(UUID(str(item)) for item in value)
     if len(parsed) != len(set(parsed)):
         raise ValueError(f"{name} must not contain duplicates")
