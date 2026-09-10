@@ -1,7 +1,7 @@
 """Typed configuration and persistence for config-managed collection sources.
 
 `config/sources/` owns collection identity and mechanics only. Research authority or evidentiary
-policy is deliberately not represented here and existing research-owned source metadata is preserved.
+policy is deliberately not represented here. Existing research-owned source metadata is preserved.
 """
 
 from __future__ import annotations
