@@ -263,9 +263,7 @@ def test_generator_rejects_unassessed_claim_even_when_event_claims_verified() ->
         assert claim is not None
         claim.status = ClaimVerificationStatus.UNASSESSED
 
-    with factory() as session, session.begin(), pytest.raises(
-        ValueError, match="UNASSESSED"
-    ):
+    with factory() as session, session.begin(), pytest.raises(ValueError, match="UNASSESSED"):
         FactSheetGenerator().generate(session, event)
 
 
@@ -280,7 +278,9 @@ def test_generator_rejects_fact_check_claim_mismatch() -> None:
         }
     )
 
-    with factory() as session, session.begin(), pytest.raises(
-        ValueError, match="mismatched fact check"
+    with (
+        factory() as session,
+        session.begin(),
+        pytest.raises(ValueError, match="mismatched fact check"),
     ):
         FactSheetGenerator().generate(session, bad_event)
