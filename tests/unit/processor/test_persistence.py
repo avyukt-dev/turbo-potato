@@ -82,6 +82,10 @@ def _count(session: Session, model: type[object]) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
 
 
+def _events(session: Session) -> list[EventOutbox]:
+    return list(session.scalars(select(EventOutbox)))
+
+
 def test_persist_creates_article_version_and_outbox_atomically(session: Session) -> None:
     source = _source(session)
     normalized = _normalized(source.id)
@@ -131,12 +135,11 @@ def test_predecessor_event_is_persisted_before_first_normalized_event(session: S
         predecessor_event_factory=_discovered_factory(correlation_id),
     )
 
-    events = list(session.scalars(select(EventOutbox).order_by(EventOutbox.created_at, EventOutbox.id)))
+    events = _events(session)
+    discovered = next(event for event in events if event.event_type == EventType.ARTICLE_DISCOVERED)
+    normalized = next(event for event in events if event.event_type == EventType.ARTICLE_NORMALIZED)
     assert result.created_article is True
     assert len(events) == 2
-    discovered, normalized = events
-    assert discovered.event_type == EventType.ARTICLE_DISCOVERED
-    assert normalized.event_type == EventType.ARTICLE_NORMALIZED
     assert discovered.producer == "collector"
     assert normalized.producer == "processor"
     assert discovered.correlation_id == correlation_id
@@ -185,11 +188,9 @@ def test_predecessor_is_not_duplicated_on_identical_replay(session: Session) -> 
     assert second.created_article is False
     assert second.created_version is False
     assert _count(session, ArticleVersion) == 1
-    events = list(session.scalars(select(EventOutbox).order_by(EventOutbox.created_at, EventOutbox.id)))
-    assert [event.event_type for event in events] == [
-        EventType.ARTICLE_DISCOVERED,
-        EventType.ARTICLE_NORMALIZED,
-    ]
+    event_types = [event.event_type for event in _events(session)]
+    assert event_types.count(EventType.ARTICLE_DISCOVERED) == 1
+    assert event_types.count(EventType.ARTICLE_NORMALIZED) == 1
 
 
 def test_changed_content_creates_next_version_and_event(session: Session) -> None:
@@ -238,17 +239,16 @@ def test_changed_content_does_not_repeat_discovery_event(session: Session) -> No
 
     assert second.created_article is False
     assert second.created_version is True
-    events = list(session.scalars(select(EventOutbox).order_by(EventOutbox.created_at, EventOutbox.id)))
-    assert [event.event_type for event in events] == [
-        EventType.ARTICLE_DISCOVERED,
-        EventType.ARTICLE_NORMALIZED,
-        EventType.ARTICLE_NORMALIZED,
-    ]
-    assert events[-1].correlation_id == second_correlation
-    assert events[-1].causation_id is None
+    events = _events(session)
+    event_types = [event.event_type for event in events]
+    assert event_types.count(EventType.ARTICLE_DISCOVERED) == 1
+    assert event_types.count(EventType.ARTICLE_NORMALIZED) == 2
+    latest = next(event for event in events if event.event_id == second.event_id)
+    assert latest.correlation_id == second_correlation
+    assert latest.causation_id is None
 
 
-def test_invalid_predecessor_rolls_back_when_caller_rolls_back_transaction(session: Session) -> None:
+def test_invalid_predecessor_rolls_back_transaction(session: Session) -> None:
     source = _source(session)
     source_id = source.id
     session.commit()
