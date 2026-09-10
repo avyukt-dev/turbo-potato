@@ -9,6 +9,7 @@ from uuid import uuid4
 from news_ai_database import Base, Claim, EventOutbox, Story
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
 from news_ai_events import EventEnvelope, EventType, StreamMessage
+from news_ai_events.outbox import envelope_from_outbox
 from news_ai_evidence import (
     EvidenceAssessment,
     EvidenceEngine,
@@ -161,20 +162,7 @@ def test_planning_then_collection_workers_ack_only_after_durable_processing() ->
             select(EventOutbox).where(EventOutbox.event_type == EventType.EVIDENCE_REQUESTED.value)
         )
         assert requested_outbox is not None
-        requested_event = EventEnvelope(
-            event_id=requested_outbox.event_id,
-            event_type=EventType.EVIDENCE_REQUESTED,
-            schema_version=requested_outbox.schema_version,
-            occurred_at=requested_outbox.occurred_at,
-            producer=requested_outbox.producer,
-            producer_version=requested_outbox.producer_version,
-            aggregate_type=requested_outbox.aggregate_type,
-            aggregate_id=requested_outbox.aggregate_id,
-            correlation_id=requested_outbox.correlation_id,
-            causation_id=requested_outbox.causation_id,
-            idempotency_key=requested_outbox.idempotency_key,
-            payload=requested_outbox.payload,
-        )
+        requested_event = envelope_from_outbox(requested_outbox)
 
     collection_consumer = FakeConsumer(
         stream="news:evidence",
