@@ -14,7 +14,6 @@ from news_ai_database import Article, ArticleVersion
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import build_outbox_record
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import NormalizedArticle
@@ -132,15 +131,8 @@ class ArticlePersistenceService:
             source_id=normalized.source_id,
             canonical_url=normalized.canonical_url,
         )
-        try:
-            with self.session.begin_nested():
-                self.session.add(article)
-                self.session.flush()
-        except IntegrityError:
-            article = self.session.scalar(lookup)
-            if article is None:
-                raise
-            return article, False
+        self.session.add(article)
+        self.session.flush()
         return article, True
 
     @staticmethod
