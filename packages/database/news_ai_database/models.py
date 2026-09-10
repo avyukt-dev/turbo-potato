@@ -6,13 +6,15 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
+from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Enum as SAEnum,
     ForeignKey,
+    Index,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
@@ -22,8 +24,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-
-from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
 
 from .base import Base
 
@@ -80,7 +80,13 @@ class SourceFeed(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "articles"
-    __table_args__ = (UniqueConstraint("source_id", "canonical_url"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "canonical_url",
+            name="uq_articles_source_id_canonical_url",
+        ),
+    )
 
     source_id: Mapped[UUID] = mapped_column(ForeignKey("sources.id"), nullable=False, index=True)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -92,7 +98,13 @@ class Article(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class ArticleVersion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "article_versions"
-    __table_args__ = (UniqueConstraint("article_id", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "version_number",
+            name="uq_article_versions_article_id_version_number",
+        ),
+    )
 
     article_id: Mapped[UUID] = mapped_column(ForeignKey("articles.id"), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -115,7 +127,9 @@ class Story(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     evidence_strength: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     controversy_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     risk_level: Mapped[RiskLevel] = mapped_column(
-        SAEnum(RiskLevel, native_enum=False, length=16), nullable=False, default=RiskLevel.LOW
+        SAEnum(RiskLevel, native_enum=False, length=16),
+        nullable=False,
+        default=RiskLevel.LOW,
     )
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     cluster_key: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -146,7 +160,9 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     importance_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     risk_level: Mapped[RiskLevel] = mapped_column(
-        SAEnum(RiskLevel, native_enum=False, length=16), nullable=False, default=RiskLevel.LOW
+        SAEnum(RiskLevel, native_enum=False, length=16),
+        nullable=False,
+        default=RiskLevel.LOW,
     )
     temporal_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     temporal_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -198,7 +214,13 @@ class FactCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class FactSheet(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "fact_sheets"
-    __table_args__ = (UniqueConstraint("story_id", "version"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "story_id",
+            "version",
+            name="uq_fact_sheets_story_id_version",
+        ),
+    )
 
     story_id: Mapped[UUID] = mapped_column(ForeignKey("stories.id"), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -234,7 +256,13 @@ class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class JobAttempt(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "job_attempts"
-    __table_args__ = (UniqueConstraint("job_id", "attempt_number"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "attempt_number",
+            name="uq_job_attempts_job_id_attempt_number",
+        ),
+    )
 
     job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id"), nullable=False, index=True)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -247,8 +275,17 @@ class JobAttempt(UUIDPrimaryKeyMixin, Base):
 
 class EventOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "event_outbox"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_event_outbox_event_id"),
+        Index(
+            "ix_event_outbox_dispatch_ready",
+            "status",
+            "next_attempt_at",
+            "created_at",
+        ),
+    )
 
-    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, unique=True, index=True)
+    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
