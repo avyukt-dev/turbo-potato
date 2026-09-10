@@ -11,7 +11,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from news_ai_database import Article, ArticleVersion
-from news_ai_events import EventEnvelope, EventType, build_outbox_record
+from news_ai_events import EventEnvelope, EventType
+from news_ai_events.outbox import build_outbox_record
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
