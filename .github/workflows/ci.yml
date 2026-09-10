@@ -64,7 +64,7 @@ jobs:
         run: python -m pip install -e '.[dev]'
 
       - name: Ruff lint
-        run: ruff check .
+        run: ruff check --diff .
 
       - name: Ruff format
         run: ruff format --check apps packages migrations tests
