@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from news_ai_common.config import AppSettings
 from news_ai_database.session import create_database_engine
@@ -26,25 +27,25 @@ async def _check_database(database_url: str, *, timeout_seconds: float) -> bool:
 
     try:
         return await asyncio.wait_for(asyncio.to_thread(ping), timeout=timeout_seconds)
-    except (OSError, RuntimeError, TimeoutError, Exception):
+    except (SQLAlchemyError, OSError, TimeoutError):
         return False
 
 
 async def _check_redis(redis_url: str, *, timeout_seconds: float) -> bool:
-    try:
-        from redis.asyncio import Redis
+    from redis.asyncio import Redis
+    from redis.exceptions import RedisError
 
-        client = Redis.from_url(
-            redis_url,
-            socket_connect_timeout=timeout_seconds,
-            socket_timeout=timeout_seconds,
-        )
-        try:
-            return bool(await asyncio.wait_for(client.ping(), timeout=timeout_seconds))
-        finally:
-            await client.aclose()
-    except Exception:
+    client = Redis.from_url(
+        redis_url,
+        socket_connect_timeout=timeout_seconds,
+        socket_timeout=timeout_seconds,
+    )
+    try:
+        return bool(await asyncio.wait_for(client.ping(), timeout=timeout_seconds))
+    except (RedisError, OSError, TimeoutError):
         return False
+    finally:
+        await client.aclose()
 
 
 async def run_dependency_checks(settings: AppSettings) -> dict[str, bool]:
