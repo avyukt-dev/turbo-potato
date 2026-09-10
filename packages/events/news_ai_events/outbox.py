@@ -12,6 +12,12 @@ from .envelope import EventEnvelope
 from .types import EventType
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def build_outbox_record(event: EventEnvelope) -> EventOutbox:
     return EventOutbox(
         event_id=event.event_id,
@@ -34,7 +40,7 @@ def envelope_from_outbox(record: EventOutbox) -> EventEnvelope:
         event_id=record.event_id,
         event_type=EventType(record.event_type),
         schema_version=record.schema_version,
-        occurred_at=record.occurred_at,
+        occurred_at=_as_utc(record.occurred_at),
         producer=record.producer,
         producer_version=record.producer_version,
         aggregate_type=record.aggregate_type,
