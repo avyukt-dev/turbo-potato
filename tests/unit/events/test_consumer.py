@@ -45,9 +45,7 @@ class FakeConsumerRedis:
         **kwargs: Any,
     ) -> list[Any]:
         count = int(kwargs.get("count", 10))
-        self.claim_calls.append(
-            (name, groupname, consumername, min_idle_time, start_id, count)
-        )
+        self.claim_calls.append((name, groupname, consumername, min_idle_time, start_id, count))
         return [
             b"0-0",
             [(b"2-0", {b"event": self.event.model_dump_json().encode("utf-8")})],
@@ -135,6 +133,4 @@ def test_stale_pending_messages_can_be_claimed() -> None:
     assert len(messages) == 1
     assert messages[0].message_id == "2-0"
     assert messages[0].event.event_id == client.event.event_id
-    assert client.claim_calls == [
-        ("news:articles", "processor", "worker-1", 60_000, "0-0", 5)
-    ]
+    assert client.claim_calls == [("news:articles", "processor", "worker-1", 60_000, "0-0", 5)]
