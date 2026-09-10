@@ -1,9 +1,9 @@
 """Portable operator CLI for runtime inspection and service control."""
 
 import argparse
-from dataclasses import asdict
 import json
 import sys
+from dataclasses import asdict
 
 from .base import UnsupportedOperation
 from .detector import RuntimeDetector
@@ -15,8 +15,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("runtime", help="inspect detected runtime capabilities")
 
-    service = subparsers.add_parser("service", help="control a service through the detected adapter")
-    service.add_argument("action", choices=["status", "start", "stop", "restart", "enable", "disable"])
+    service = subparsers.add_parser(
+        "service",
+        help="control a service through the detected adapter",
+    )
+    service.add_argument(
+        "action",
+        choices=["status", "start", "stop", "restart", "enable", "disable"],
+    )
     service.add_argument("name")
     return parser
 
