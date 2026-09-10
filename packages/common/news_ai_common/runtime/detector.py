@@ -1,14 +1,19 @@
 """Capability-based runtime detection."""
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import platform
 import subprocess
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
 
 from .base import ServiceManager
-from .managers import ManualServiceManager, OpenRCServiceManager, SysVServiceManager, SystemdServiceManager
+from .managers import (
+    ManualServiceManager,
+    OpenRCServiceManager,
+    SystemdServiceManager,
+    SysVServiceManager,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +42,7 @@ def _read_os_release() -> dict[str, str]:
 
 
 class RuntimeDetector:
-    """Selects the first verified service-manager capability.
+    """Select the first verified service-manager capability.
 
     OS identity may be reported as metadata but is not used as proof that a native utility works.
     """
