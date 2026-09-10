@@ -45,7 +45,7 @@ class ArticleNormalizedWorkItem(BaseModel):
 
 
 ArticleNormalizedHandler = Callable[
-    [Session, ArticleNormalizedWorkItem],
+    [Session, EventEnvelope, ArticleNormalizedWorkItem],
     dict[str, Any] | None,
 ]
 
@@ -149,7 +149,7 @@ class ProcessorEventWorker:
             ):
                 return True
 
-            result = self.handler(session, work_item)
+            result = self.handler(session, event, work_item)
             mark_processed(
                 session,
                 event_id=event.event_id,
