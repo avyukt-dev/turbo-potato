@@ -135,9 +135,7 @@ class ProcessorEventWorker:
 
     def _process_event(self, event: EventEnvelope) -> bool:
         if event.event_type != EventType.ARTICLE_NORMALIZED:
-            raise ValueError(
-                f"processor worker does not handle event type {event.event_type!s}"
-            )
+            raise ValueError(f"processor worker does not handle event type {event.event_type!s}")
 
         work_item = ArticleNormalizedWorkItem.model_validate(event.payload)
         if work_item.article_id != event.aggregate_id:
