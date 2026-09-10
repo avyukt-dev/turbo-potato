@@ -1,11 +1,11 @@
 """Runtime service-manager contracts and safe subprocess execution."""
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from enum import StrEnum
 import re
 import subprocess
-from typing import Sequence
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 
 _SERVICE_NAME = re.compile(r"^[A-Za-z0-9_.@:+-]+$")
 
