@@ -1,6 +1,6 @@
 """Typed contracts for feed collection."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
@@ -11,6 +11,8 @@ class FeedDefinition(BaseModel):
     source_feed_id: UUID
     name: str = Field(min_length=1, max_length=255)
     url: AnyHttpUrl
+    poll_interval_seconds: int = Field(default=900, ge=60, le=86_400)
+    last_polled_at: datetime | None = None
     timeout_seconds: float = Field(default=15.0, gt=0, le=60)
     max_response_bytes: int = Field(default=2_000_000, ge=1_024, le=20_000_000)
     etag: str | None = None
@@ -22,6 +24,13 @@ class FeedDefinition(BaseModel):
         if value.username or value.password:
             raise ValueError("feed URL must not contain embedded credentials")
         return value
+
+    @field_validator("last_polled_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("feed timestamps must be timezone-aware")
+        return value.astimezone(UTC) if value is not None else None
 
 
 class CollectedArticle(BaseModel):
