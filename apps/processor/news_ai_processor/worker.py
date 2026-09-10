@@ -15,7 +15,7 @@ from uuid import UUID
 from news_ai_events import EventEnvelope, EventType, RedisStreamConsumer, StreamMessage
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
 PROCESSOR_CONSUMER_GROUP = "processor"
@@ -32,9 +32,16 @@ class ArticleNormalizedWorkItem(BaseModel):
     source_id: UUID
     source_feed_id: UUID | None = None
     canonical_url: str = Field(min_length=1)
-    content_hash: str = Field(min_length=64, max_length=64)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     published_at: datetime | None = None
     retrieved_at: datetime
+
+    @field_validator("published_at", "retrieved_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("event timestamps must be timezone-aware")
+        return value
 
 
 ArticleNormalizedHandler = Callable[
@@ -107,8 +114,8 @@ class ProcessorEventWorker:
         for message in messages:
             try:
                 duplicate = self._process_event(message.event)
-            except (ValueError, ValidationError, RuntimeError, Exception):
-                # The message deliberately remains pending. Recovery/retry policy owns the next attempt.
+            except Exception:
+                # Keep the message pending. Recovery/retry policy owns the next attempt.
                 failed_ids.append(message.message_id)
                 continue
 
@@ -133,6 +140,8 @@ class ProcessorEventWorker:
             )
 
         work_item = ArticleNormalizedWorkItem.model_validate(event.payload)
+        if work_item.article_id != event.aggregate_id:
+            raise ValueError("article.normalized payload article_id must match aggregate_id")
 
         with self.session_factory() as session, session.begin():
             if was_processed(
