@@ -32,9 +32,12 @@ def _article(**overrides: object) -> ArticleNormalizationInput:
 
 
 def test_canonicalize_url_removes_fragment_tracking_and_default_port() -> None:
-    assert canonicalize_url(
-        "HTTPS://Example.COM:443/news/../news/item/?utm_source=x&b=2&a=1#section"
-    ) == "https://example.com/news/item/?a=1&b=2"
+    assert (
+        canonicalize_url(
+            "HTTPS://Example.COM:443/news/../news/item/?utm_source=x&b=2&a=1#section"
+        )
+        == "https://example.com/news/item/?a=1&b=2"
+    )
 
 
 def test_canonicalize_url_preserves_semantic_query_parameters() -> None:
@@ -51,6 +54,10 @@ def test_canonicalize_url_preserves_existing_percent_encoding() -> None:
     assert canonicalize_url("https://example.com/a%20b?q=x%20y") == (
         "https://example.com/a%20b?q=x+y"
     )
+
+
+def test_canonicalize_url_preserves_duplicate_path_slashes() -> None:
+    assert canonicalize_url("https://example.com/a//b/./c") == "https://example.com/a//b/c"
 
 
 def test_normalizer_cleans_text_language_and_timestamps() -> None:
