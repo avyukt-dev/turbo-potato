@@ -97,6 +97,4 @@ def test_provider_capabilities_check_filters_limits_and_language() -> None:
     )
     assert capabilities.supports(_request(language="en-IN", include_domains=("example.com",)))
     assert not capabilities.supports(_request(language="fr"))
-    assert not capabilities.supports(
-        _request(published_after=datetime(2026, 9, 10, tzinfo=UTC))
-    )
+    assert not capabilities.supports(_request(published_after=datetime(2026, 9, 10, tzinfo=UTC)))

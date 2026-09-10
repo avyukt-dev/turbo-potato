@@ -88,10 +88,14 @@ class SearchPolicyEnforcer:
         if rules.claim_driven and request.claim_id is None:
             raise SearchProviderPolicyError("claim-driven search requires claim_id")
 
-        if request.query_family in {
-            SearchQueryFamily.OFFICIAL_SOURCE,
-            SearchQueryFamily.PRIMARY_DOCUMENT,
-        } and not rules.search_primary_sources:
+        if (
+            request.query_family
+            in {
+                SearchQueryFamily.OFFICIAL_SOURCE,
+                SearchQueryFamily.PRIMARY_DOCUMENT,
+            }
+            and not rules.search_primary_sources
+        ):
             raise SearchProviderPolicyError("primary-source search is disabled by research policy")
 
         if (
