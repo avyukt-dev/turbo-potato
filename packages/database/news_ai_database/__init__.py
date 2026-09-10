@@ -18,6 +18,7 @@ from .models import (
     Story,
     StorySource,
 )
+from .registry_models import SourceFeedRegistryEntry, SourceRegistryEntry
 
 __all__ = [
     "Article",
@@ -34,6 +35,8 @@ __all__ = [
     "ProcessedEvent",
     "Source",
     "SourceFeed",
+    "SourceFeedRegistryEntry",
+    "SourceRegistryEntry",
     "Story",
     "StorySource",
 ]
