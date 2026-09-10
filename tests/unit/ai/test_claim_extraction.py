@@ -219,9 +219,7 @@ def test_persist_creates_unassessed_claim_ai_provenance_and_event(tmp_path: Path
         claim = session.get(Claim, result.claim_ids[0])
         ai_run = session.get(AIRun, result.ai_run_id)
         model = session.get(AIModel, result.model_id)
-        outbox = session.scalar(
-            select(EventOutbox).where(EventOutbox.event_id == result.event_id)
-        )
+        outbox = session.scalar(select(EventOutbox).where(EventOutbox.event_id == result.event_id))
 
     assert claim is not None
     assert claim.status is ClaimVerificationStatus.UNASSESSED
