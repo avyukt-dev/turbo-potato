@@ -252,9 +252,7 @@ def test_resync_updates_owned_fields_preserves_identity_research_metadata_and_po
     )
     session.flush()
 
-    result = service.sync(
-        _snapshot(source_name="Renamed News", feed_name="Renamed RSS")
-    )
+    result = service.sync(_snapshot(source_name="Renamed News", feed_name="Renamed RSS"))
 
     assert result.sources_created == 0
     assert result.sources_updated == 1
