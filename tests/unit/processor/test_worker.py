@@ -93,7 +93,7 @@ def test_worker_rejects_wrong_stream(session_factory: Callable[[], Session]) -> 
     consumer.stream = "news:stories"
 
     with pytest.raises(ValueError, match="must read"):
-        ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+        ProcessorEventWorker(consumer, session_factory, lambda session, event, item: None)
 
 
 def test_worker_rejects_wrong_group(session_factory: Callable[[], Session]) -> None:
@@ -101,12 +101,16 @@ def test_worker_rejects_wrong_group(session_factory: Callable[[], Session]) -> N
     consumer.group = "other"
 
     with pytest.raises(ValueError, match="consumer group"):
-        ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+        ProcessorEventWorker(consumer, session_factory, lambda session, event, item: None)
 
 
 def test_ensure_ready_creates_consumer_group(session_factory: Callable[[], Session]) -> None:
     consumer = FakeConsumer()
-    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+    worker = ProcessorEventWorker(
+        consumer,
+        session_factory,
+        lambda session, event, item: None,
+    )
 
     asyncio.run(worker.ensure_ready())
 
@@ -116,11 +120,15 @@ def test_ensure_ready_creates_consumer_group(session_factory: Callable[[], Sessi
 def test_success_commits_marker_before_ack(session_factory: Callable[[], Session]) -> None:
     event = _event()
     consumer = FakeConsumer([_message(event)])
-    seen: list[ArticleNormalizedWorkItem] = []
+    seen: list[tuple[EventEnvelope, ArticleNormalizedWorkItem]] = []
 
-    def handler(session: Session, item: ArticleNormalizedWorkItem) -> dict[str, Any]:
+    def handler(
+        session: Session,
+        triggering_event: EventEnvelope,
+        item: ArticleNormalizedWorkItem,
+    ) -> dict[str, Any]:
         assert session.in_transaction()
-        seen.append(item)
+        seen.append((triggering_event, item))
         return {"handoff": "story-clustering"}
 
     worker = ProcessorEventWorker(consumer, session_factory, handler)
@@ -132,7 +140,8 @@ def test_success_commits_marker_before_ack(session_factory: Callable[[], Session
     assert result.failed == 0
     assert consumer.acked == ["1-0"]
     assert len(seen) == 1
-    assert seen[0].article_id == event.aggregate_id
+    assert seen[0][0].event_id == event.event_id
+    assert seen[0][1].article_id == event.aggregate_id
 
     with session_factory() as session:
         marker = session.get(ProcessedEvent, (event.event_id, "processor"))
@@ -146,7 +155,11 @@ def test_duplicate_event_is_acked_without_reinvoking_handler(
     event = _event()
     calls = 0
 
-    def handler(session: Session, item: ArticleNormalizedWorkItem) -> None:
+    def handler(
+        session: Session,
+        triggering_event: EventEnvelope,
+        item: ArticleNormalizedWorkItem,
+    ) -> None:
         nonlocal calls
         calls += 1
 
@@ -171,7 +184,11 @@ def test_handler_failure_rolls_back_marker_and_leaves_message_pending(
     event = _event()
     consumer = FakeConsumer([_message(event)])
 
-    def handler(session: Session, item: ArticleNormalizedWorkItem) -> None:
+    def handler(
+        session: Session,
+        triggering_event: EventEnvelope,
+        item: ArticleNormalizedWorkItem,
+    ) -> None:
         raise RuntimeError("clustering unavailable")
 
     worker = ProcessorEventWorker(consumer, session_factory, handler)
@@ -191,7 +208,11 @@ def test_invalid_payload_remains_pending(session_factory: Callable[[], Session])
     consumer = FakeConsumer([_message(event)])
     called = False
 
-    def handler(session: Session, item: ArticleNormalizedWorkItem) -> None:
+    def handler(
+        session: Session,
+        triggering_event: EventEnvelope,
+        item: ArticleNormalizedWorkItem,
+    ) -> None:
         nonlocal called
         called = True
 
@@ -209,7 +230,11 @@ def test_payload_article_id_must_match_event_aggregate(
     event = _event()
     event.payload["article_id"] = str(uuid4())
     consumer = FakeConsumer([_message(event)])
-    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+    worker = ProcessorEventWorker(
+        consumer,
+        session_factory,
+        lambda session, triggering_event, item: None,
+    )
 
     result = asyncio.run(worker.run_once())
 
@@ -222,7 +247,11 @@ def test_naive_event_timestamp_remains_pending(session_factory: Callable[[], Ses
     event = _event()
     event.payload["retrieved_at"] = "2026-09-10T03:05:00"
     consumer = FakeConsumer([_message(event)])
-    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+    worker = ProcessorEventWorker(
+        consumer,
+        session_factory,
+        lambda session, triggering_event, item: None,
+    )
 
     result = asyncio.run(worker.run_once())
 
@@ -233,7 +262,11 @@ def test_naive_event_timestamp_remains_pending(session_factory: Callable[[], Ses
 def test_wrong_event_type_remains_pending(session_factory: Callable[[], Session]) -> None:
     event = _event(event_type=EventType.STORY_CREATED)
     consumer = FakeConsumer([_message(event)])
-    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+    worker = ProcessorEventWorker(
+        consumer,
+        session_factory,
+        lambda session, triggering_event, item: None,
+    )
 
     result = asyncio.run(worker.run_once())
 
@@ -248,7 +281,11 @@ def test_stale_pending_message_can_be_recovered(session_factory: Callable[[], Se
     consumer.stale_messages = [_message(event, "9-0")]
     seen: list[datetime] = []
 
-    def handler(session: Session, item: ArticleNormalizedWorkItem) -> None:
+    def handler(
+        session: Session,
+        triggering_event: EventEnvelope,
+        item: ArticleNormalizedWorkItem,
+    ) -> None:
         seen.append(item.retrieved_at)
 
     worker = ProcessorEventWorker(consumer, session_factory, handler)
