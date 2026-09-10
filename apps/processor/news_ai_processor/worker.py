@@ -8,12 +8,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from news_ai_events import EventEnvelope, EventType, RedisStreamConsumer, StreamMessage
+from news_ai_database import Article, ArticleVersion
+from news_ai_events import (
+    EventEnvelope,
+    EventType,
+    RedisStreamConsumer,
+    StreamMessage,
+)
 from news_ai_events.idempotency import mark_processed, was_processed
+from news_ai_events.payloads import ArticleNormalizedV1
 from news_ai_events.streams import stream_for_event
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
@@ -137,8 +144,8 @@ class ProcessorEventWorker:
         if event.event_type != EventType.ARTICLE_NORMALIZED:
             raise ValueError(f"processor worker does not handle event type {event.event_type!s}")
 
-        work_item = ArticleNormalizedWorkItem.model_validate(event.payload)
-        if work_item.article_id != event.aggregate_id:
+        payload = ArticleNormalizedV1.model_validate(event.payload)
+        if payload.article_id != event.aggregate_id:
             raise ValueError("article.normalized payload article_id must match aggregate_id")
 
         with self.session_factory() as session, session.begin():
@@ -149,6 +156,7 @@ class ProcessorEventWorker:
             ):
                 return True
 
+            work_item = _load_work_item(session, payload)
             result = self.handler(session, event, work_item)
             mark_processed(
                 session,
@@ -158,3 +166,37 @@ class ProcessorEventWorker:
             )
 
         return False
+
+
+def _load_work_item(session: Session, payload: ArticleNormalizedV1) -> ArticleNormalizedWorkItem:
+    article = session.get(Article, payload.article_id)
+    version = session.get(ArticleVersion, payload.article_version_id)
+    if article is None or version is None or version.article_id != payload.article_id:
+        raise ValueError(
+            "article.normalized references missing or mismatched durable article state"
+        )
+    if version.content_hash != payload.content_hash:
+        raise ValueError("article.normalized content_hash does not match durable article version")
+    if article.title != payload.title or article.language != payload.language:
+        raise ValueError("article.normalized metadata does not match durable article state")
+    metadata = dict(version.version_metadata or {})
+    source_feed_id = metadata.get("source_feed_id")
+    return ArticleNormalizedWorkItem(
+        article_id=article.id,
+        article_version_id=version.id,
+        version_number=version.version_number,
+        source_id=article.source_id,
+        source_feed_id=UUID(str(source_feed_id)) if source_feed_id is not None else None,
+        canonical_url=article.canonical_url,
+        content_hash=version.content_hash,
+        published_at=_as_utc(article.published_at),
+        retrieved_at=_as_utc(version.retrieved_at),
+    )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

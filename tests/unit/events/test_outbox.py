@@ -14,14 +14,20 @@ from news_ai_events.outbox import (
 
 
 def _record():
+    story_id = uuid4()
+    article_id = uuid4()
     event = EventEnvelope(
         event_type=EventType.STORY_CREATED,
         producer="processor",
         producer_version="0.1.0",
         aggregate_type="story",
-        aggregate_id=uuid4(),
+        aggregate_id=story_id,
         idempotency_key="story:example",
-        payload={"story_id": "example"},
+        payload={
+            "story_id": str(story_id),
+            "article_id": str(article_id),
+            "cluster_key": "example",
+        },
     )
     return event, build_outbox_record(event)
 
@@ -33,7 +39,7 @@ def test_event_converts_to_outbox_and_back() -> None:
 
     assert restored.event_id == event.event_id
     assert restored.event_type == EventType.STORY_CREATED
-    assert restored.payload == {"story_id": "example"}
+    assert restored.payload == event.payload
 
 
 def test_outbox_lifecycle_helpers() -> None:

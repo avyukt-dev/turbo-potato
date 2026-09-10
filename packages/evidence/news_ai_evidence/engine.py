@@ -12,8 +12,8 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from news_ai_database import Claim, ClaimEvidence, EvidenceItem, Job, Story
-from news_ai_events import EventEnvelope, EventType
+from news_ai_database import Claim, ClaimEvidence, EventOutbox, EvidenceItem, Job, Story
+from news_ai_events import ClaimsExtractedV1, EventEnvelope, EventType, parse_event_payload
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
@@ -23,6 +23,7 @@ from .contracts import SearchCapability, SearchQueryFamily, SearchRequest, Searc
 from .policy import SearchPolicy, SearchPolicyEnforcer
 from .provider import SearchProviderError, SearchProviderPolicyError
 from .registry import SearchProviderRegistry
+from .semantic import semantic_key
 
 
 class ResearchTargetRole(StrEnum):
@@ -138,12 +139,14 @@ class ResearchRequestResult:
     research_run_id: UUID
     event_id: UUID
     claim_ids: tuple[UUID, ...]
+    created: bool
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
             "research_run_id": str(self.research_run_id),
             "event_id": str(self.event_id),
             "claim_ids": [str(item) for item in self.claim_ids],
+            "created": self.created,
         }
 
 
@@ -204,7 +207,40 @@ class EvidenceEngine:
         *,
         breaking_news: bool = False,
     ) -> ResearchRequestResult:
-        story, claims = self._claims_from_extracted_event(session, triggering_event)
+        story, claims = self._claims_from_extracted_event(session, triggering_event, lock=True)
+        payload = parse_event_payload(
+            triggering_event.event_type,
+            triggering_event.schema_version,
+            triggering_event.payload,
+            ClaimsExtractedV1,
+        )
+        operation_key = semantic_key(
+            "research",
+            {
+                "story_id": story.id,
+                "claim_ids": sorted(payload.claim_ids, key=str),
+                "ai_run_id": payload.ai_run_id,
+                "model_id": payload.model_id,
+                "breaking_news": breaking_news,
+                "language": story.language,
+                "search_policy": self.search_policy.model_dump(mode="json"),
+                "claims": [
+                    {
+                        "id": claim.id,
+                        "text": claim.claim_text,
+                        "normalized": claim.normalized_claim,
+                        "extraction_context_hash": (claim.claim_metadata or {}).get(
+                            "extraction_context_hash"
+                        ),
+                    }
+                    for claim in sorted(claims, key=lambda item: str(item.id))
+                ],
+            },
+        )
+        existing = session.scalar(select(Job).where(Job.semantic_key == operation_key))
+        if existing is not None:
+            return self._existing_research_request(session, existing, operation_key)
+
         research_run_id = uuid4()
         plan = self._build_plan(
             research_run_id=research_run_id,
@@ -222,6 +258,7 @@ class EvidenceEngine:
                     "plan": plan.model_dump(mode="json"),
                     "triggering_event_id": str(triggering_event.event_id),
                 },
+                semantic_key=operation_key,
             )
         )
         event = EventEnvelope(
@@ -232,11 +269,15 @@ class EvidenceEngine:
             aggregate_id=research_run_id,
             correlation_id=triggering_event.correlation_id,
             causation_id=triggering_event.event_id,
-            idempotency_key=f"evidence.requested:{triggering_event.event_id}",
+            idempotency_key=f"evidence.requested:{operation_key}",
             payload={
                 "story_id": str(story.id),
                 "claim_ids": [str(claim.id) for claim in claims],
-                "research_scope": plan.research_scope,
+                "research_scope": {
+                    "primary_sources": plan.research_scope["primary_sources"],
+                    "independent_corroboration": plan.research_scope["independent_corroboration"],
+                    "contradiction_search": plan.research_scope["contradiction_search"],
+                },
             },
         )
         session.add(build_outbox_record(event))
@@ -245,6 +286,33 @@ class EvidenceEngine:
             research_run_id=research_run_id,
             event_id=event.event_id,
             claim_ids=tuple(claim.id for claim in claims),
+            created=True,
+        )
+
+    @staticmethod
+    def _existing_research_request(
+        session: Session,
+        job: Job,
+        operation_key: str,
+    ) -> ResearchRequestResult:
+        outbox = session.scalar(
+            select(EventOutbox).where(
+                EventOutbox.event_type == EventType.EVIDENCE_REQUESTED.value,
+                EventOutbox.aggregate_id == job.id,
+                EventOutbox.idempotency_key == f"evidence.requested:{operation_key}",
+            )
+        )
+        if outbox is None:
+            raise ValueError("semantic research job is missing its outbox event")
+        raw_plan = job.payload.get("plan")
+        if raw_plan is None:
+            raise ValueError("semantic research job is missing its persisted plan")
+        plan = ResearchPlan.model_validate(raw_plan)
+        return ResearchRequestResult(
+            research_run_id=job.id,
+            event_id=outbox.event_id,
+            claim_ids=plan.claim_ids,
+            created=False,
         )
 
     def load_collection_task(
@@ -558,6 +626,8 @@ class EvidenceEngine:
     def _claims_from_extracted_event(
         session: Session,
         event: EventEnvelope,
+        *,
+        lock: bool = False,
     ) -> tuple[Story, list[Claim]]:
         if event.event_type != EventType.CLAIMS_EXTRACTED:
             raise ValueError("research planning requires claims.extracted")
@@ -570,7 +640,10 @@ class EvidenceEngine:
         if not isinstance(raw_claim_ids, list) or not raw_claim_ids:
             raise ValueError("claims.extracted must contain non-empty claim_ids")
         claim_ids = tuple(UUID(str(item)) for item in raw_claim_ids)
-        story = session.get(Story, story_id)
+        statement = select(Story).where(Story.id == story_id)
+        if lock:
+            statement = statement.with_for_update()
+        story = session.scalar(statement)
         if story is None:
             raise ValueError("research story does not exist")
         return story, EvidenceEngine._load_claims(session, story_id, claim_ids)

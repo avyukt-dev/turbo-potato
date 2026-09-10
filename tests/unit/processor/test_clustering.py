@@ -90,7 +90,13 @@ def _article(
         aggregate_id=article.id,
         correlation_id=uuid4(),
         idempotency_key=f"article.normalized:{article.id}:{version_number}",
-        payload=work_item.model_dump(mode="json"),
+        payload={
+            "article_id": str(article.id),
+            "article_version_id": str(version.id),
+            "content_hash": content_hash,
+            "language": language,
+            "title": title or "Unavailable headline",
+        },
     )
     return article, version, work_item, event
 

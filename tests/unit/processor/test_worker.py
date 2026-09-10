@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from news_ai_database import Base, ProcessedEvent
+from news_ai_database import Article, ArticleVersion, Base, ProcessedEvent, Source
 from news_ai_events import EventEnvelope, EventType, StreamMessage
 from news_ai_events.streams import stream_for_event
 from news_ai_processor import ArticleNormalizedWorkItem, ProcessorEventWorker
@@ -56,8 +56,51 @@ def session_factory() -> Callable[[], Session]:
     engine.dispose()
 
 
-def _event(*, event_type: EventType = EventType.ARTICLE_NORMALIZED) -> EventEnvelope:
+def _event(
+    session_factory: Callable[[], Session],
+    *,
+    event_type: EventType = EventType.ARTICLE_NORMALIZED,
+) -> EventEnvelope:
+    if event_type is not EventType.ARTICLE_NORMALIZED:
+        story_id = uuid4()
+        return EventEnvelope(
+            event_type=event_type,
+            producer="processor",
+            producer_version="0.1.0",
+            aggregate_type="story",
+            aggregate_id=story_id,
+            idempotency_key=f"{event_type.value}:{story_id}",
+            payload={
+                "story_id": str(story_id),
+                "article_id": str(uuid4()),
+                "cluster_key": "wrong-event",
+            },
+        )
     article_id = uuid4()
+    version_id = uuid4()
+    source_id = uuid4()
+    with session_factory() as session, session.begin():
+        session.add(Source(id=source_id, name="Example", source_type="NEWS"))
+        session.add(
+            Article(
+                id=article_id,
+                source_id=source_id,
+                canonical_url="https://example.com/news/item",
+                title="Example headline",
+                language="en",
+                published_at=datetime(2026, 9, 10, 3, 0, tzinfo=UTC),
+            )
+        )
+        session.add(
+            ArticleVersion(
+                id=version_id,
+                article_id=article_id,
+                version_number=1,
+                content_hash="a" * 64,
+                retrieved_at=datetime(2026, 9, 10, 3, 5, tzinfo=UTC),
+                version_metadata={"source_feed_id": str(uuid4())},
+            )
+        )
     return EventEnvelope(
         event_type=event_type,
         producer="processor",
@@ -67,14 +110,10 @@ def _event(*, event_type: EventType = EventType.ARTICLE_NORMALIZED) -> EventEnve
         idempotency_key=f"article.normalized:{article_id}:1",
         payload={
             "article_id": str(article_id),
-            "article_version_id": str(uuid4()),
-            "version_number": 1,
-            "source_id": str(uuid4()),
-            "source_feed_id": str(uuid4()),
-            "canonical_url": "https://example.com/news/item",
+            "article_version_id": str(version_id),
             "content_hash": "a" * 64,
-            "published_at": "2026-09-10T03:00:00+00:00",
-            "retrieved_at": "2026-09-10T03:05:00+00:00",
+            "language": "en",
+            "title": "Example headline",
         },
     )
 
@@ -118,7 +157,7 @@ def test_ensure_ready_creates_consumer_group(session_factory: Callable[[], Sessi
 
 
 def test_success_commits_marker_before_ack(session_factory: Callable[[], Session]) -> None:
-    event = _event()
+    event = _event(session_factory)
     consumer = FakeConsumer([_message(event)])
     seen: list[tuple[EventEnvelope, ArticleNormalizedWorkItem]] = []
 
@@ -152,7 +191,7 @@ def test_success_commits_marker_before_ack(session_factory: Callable[[], Session
 def test_duplicate_event_is_acked_without_reinvoking_handler(
     session_factory: Callable[[], Session],
 ) -> None:
-    event = _event()
+    event = _event(session_factory)
     calls = 0
 
     def handler(
@@ -181,7 +220,7 @@ def test_duplicate_event_is_acked_without_reinvoking_handler(
 def test_handler_failure_rolls_back_marker_and_leaves_message_pending(
     session_factory: Callable[[], Session],
 ) -> None:
-    event = _event()
+    event = _event(session_factory)
     consumer = FakeConsumer([_message(event)])
 
     def handler(
@@ -203,7 +242,7 @@ def test_handler_failure_rolls_back_marker_and_leaves_message_pending(
 
 
 def test_invalid_payload_remains_pending(session_factory: Callable[[], Session]) -> None:
-    event = _event()
+    event = _event(session_factory)
     event.payload["content_hash"] = "too-short"
     consumer = FakeConsumer([_message(event)])
     called = False
@@ -227,7 +266,7 @@ def test_invalid_payload_remains_pending(session_factory: Callable[[], Session])
 def test_payload_article_id_must_match_event_aggregate(
     session_factory: Callable[[], Session],
 ) -> None:
-    event = _event()
+    event = _event(session_factory)
     event.payload["article_id"] = str(uuid4())
     consumer = FakeConsumer([_message(event)])
     worker = ProcessorEventWorker(
@@ -243,9 +282,11 @@ def test_payload_article_id_must_match_event_aggregate(
     assert _processed_count(session_factory) == 0
 
 
-def test_naive_event_timestamp_remains_pending(session_factory: Callable[[], Session]) -> None:
-    event = _event()
-    event.payload["retrieved_at"] = "2026-09-10T03:05:00"
+def test_legacy_extra_event_field_remains_pending(
+    session_factory: Callable[[], Session],
+) -> None:
+    event = _event(session_factory)
+    event.payload["retrieved_at"] = "2026-09-10T03:05:00+00:00"
     consumer = FakeConsumer([_message(event)])
     worker = ProcessorEventWorker(
         consumer,
@@ -260,7 +301,7 @@ def test_naive_event_timestamp_remains_pending(session_factory: Callable[[], Ses
 
 
 def test_wrong_event_type_remains_pending(session_factory: Callable[[], Session]) -> None:
-    event = _event(event_type=EventType.STORY_CREATED)
+    event = _event(session_factory, event_type=EventType.STORY_CREATED)
     consumer = FakeConsumer([_message(event)])
     worker = ProcessorEventWorker(
         consumer,
@@ -276,7 +317,7 @@ def test_wrong_event_type_remains_pending(session_factory: Callable[[], Session]
 
 
 def test_stale_pending_message_can_be_recovered(session_factory: Callable[[], Session]) -> None:
-    event = _event()
+    event = _event(session_factory)
     consumer = FakeConsumer()
     consumer.stale_messages = [_message(event, "9-0")]
     seen: list[datetime] = []

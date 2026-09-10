@@ -1,7 +1,7 @@
 """Canonical editorial taxonomy and priority-signal contracts.
 
-This module validates editorial relevance only. It deliberately does not contain evidence,
-claim-verification, fact-check, or publication-approval semantics.
+This module validates editorial relevance and editorial-owned risk routing. It deliberately does
+not contain evidence, claim-verification, fact-check, or publication-approval semantics.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Annotated
 
 from news_ai_common.config import ConfigDomain, ConfigLoader
+from news_ai_domain import RiskLevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RelevanceScore = Annotated[float, Field(ge=0.0, le=1.0)]
@@ -34,6 +35,57 @@ class EditorialCategory(StrEnum):
     ECONOMY = "ECONOMY"
     SCIENCE_TECH = "SCIENCE_TECH"
     FACT_CHECK = "FACT_CHECK"
+
+
+class MandatoryReviewCategory(StrEnum):
+    """Canonical sensitive-topic identifiers requiring human review."""
+
+    COMMUNAL_VIOLENCE = "COMMUNAL_VIOLENCE"
+    RELIGIOUS_ACCUSATION = "RELIGIOUS_ACCUSATION"
+    RELIGIOUS_VIOLENCE = "RELIGIOUS_VIOLENCE"
+    CRIMINAL_ALLEGATION = "CRIMINAL_ALLEGATION"
+    SEXUAL_ASSAULT = "SEXUAL_ASSAULT"
+    TERRORISM = "TERRORISM"
+    WAR_CASUALTIES = "WAR_CASUALTIES"
+    ELECTION_FRAUD = "ELECTION_FRAUD"
+    SC_ST_ALLEGATION = "SC_ST_ALLEGATION"
+    CASTE_RELATED_ACCUSATION = "CASTE_RELATED_ACCUSATION"
+    BLASPHEMY_ALLEGATION = "BLASPHEMY_ALLEGATION"
+    UNVERIFIED_BREAKING_NEWS = "UNVERIFIED_BREAKING_NEWS"
+
+
+class EditorialRiskPolicy(BaseModel):
+    """Closed editorial risk policy with canonical mandatory-review coverage."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(ge=1)
+    risk_levels: tuple[RiskLevel, ...]
+    mandatory_review_categories: tuple[MandatoryReviewCategory, ...]
+
+    @model_validator(mode="after")
+    def require_canonical_policy(self) -> EditorialRiskPolicy:
+        if set(self.risk_levels) != set(RiskLevel) or len(self.risk_levels) != len(RiskLevel):
+            raise ValueError("risk policy must contain each canonical risk level exactly once")
+        expected = set(MandatoryReviewCategory)
+        configured = set(self.mandatory_review_categories)
+        if configured != expected or len(self.mandatory_review_categories) != len(expected):
+            missing = sorted(item.value for item in expected - configured)
+            extra = sorted(item.value for item in configured - expected)
+            details = []
+            if missing:
+                details.append(f"missing: {', '.join(missing)}")
+            if extra:
+                details.append(f"unexpected: {', '.join(extra)}")
+            raise ValueError(
+                "risk policy must contain each canonical mandatory-review category exactly once"
+                + (f" ({'; '.join(details)})" if details else "")
+            )
+        return self
+
+    def requires_review(self, sensitive_topics: set[str] | frozenset[str]) -> bool:
+        mandatory = {category.value for category in self.mandatory_review_categories}
+        return bool(mandatory.intersection(sensitive_topics))
 
 
 class TaxonomyConfig(BaseModel):
@@ -84,6 +136,7 @@ class EditorialPrioritiesConfig(BaseModel):
 class EditorialConfigSnapshot:
     taxonomy: TaxonomyConfig
     priorities: EditorialPrioritiesConfig
+    risk_policy: EditorialRiskPolicy
 
 
 class EditorialConfigLoader:
@@ -103,6 +156,11 @@ class EditorialConfigLoader:
                 ConfigDomain.EDITORIAL,
                 "priorities.yaml",
                 EditorialPrioritiesConfig,
+            ),
+            risk_policy=self.loader.load_domain_file(
+                ConfigDomain.EDITORIAL,
+                "risk-policy.yaml",
+                EditorialRiskPolicy,
             ),
         )
 

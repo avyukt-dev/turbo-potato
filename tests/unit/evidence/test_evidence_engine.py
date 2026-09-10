@@ -167,7 +167,12 @@ def _claims_event(story: Story, claim: Claim) -> EventEnvelope:
         aggregate_type="story",
         aggregate_id=story.id,
         idempotency_key=f"claims.extracted:{uuid4()}",
-        payload={"story_id": str(story.id), "claim_ids": [str(claim.id)]},
+        payload={
+            "story_id": str(story.id),
+            "claim_ids": [str(claim.id)],
+            "ai_run_id": str(uuid4()),
+            "model_id": str(uuid4()),
+        },
     )
 
 
@@ -225,6 +230,48 @@ def test_research_request_persists_plan_and_requested_event_without_verifying_cl
     assert requested.correlation_id == trigger.correlation_id
     assert stored_claim is not None
     assert stored_claim.status is ClaimVerificationStatus.UNASSESSED
+
+
+def test_research_request_reuses_semantic_operation_for_new_event_id() -> None:
+    factory = _factory()
+    engine = _engine()
+    _, _, trigger, _, _, first = _prepare(factory, engine)
+    replay_data = trigger.model_dump()
+    replay_data["event_id"] = uuid4()
+    replay_data["idempotency_key"] = f"claims.extracted:{uuid4()}"
+    replay = EventEnvelope.model_validate(replay_data)
+
+    with factory() as session, session.begin():
+        second = engine.request_research(session, replay)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Job)) == 1
+        assert session.scalar(select(func.count()).select_from(EventOutbox)) == 1
+    assert second.created is False
+    assert second.research_run_id == first.research_run_id
+    assert second.event_id == first.event_id
+
+
+def test_research_request_allows_materially_changed_claim_input() -> None:
+    factory = _factory()
+    engine = _engine()
+    _, claim, trigger, _, _, first = _prepare(factory, engine)
+    with factory() as session, session.begin():
+        stored = session.get(Claim, claim.id)
+        assert stored is not None
+        stored.claim_text = "Materially corrected claim text."
+    changed_data = trigger.model_dump()
+    changed_data["event_id"] = uuid4()
+    changed_data["idempotency_key"] = f"claims.extracted:{uuid4()}"
+    changed = EventEnvelope.model_validate(changed_data)
+
+    with factory() as session, session.begin():
+        second = engine.request_research(session, changed)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Job)) == 2
+    assert second.created is True
+    assert second.research_run_id != first.research_run_id
 
 
 def test_collection_persists_explicit_relations_and_contradictions() -> None:

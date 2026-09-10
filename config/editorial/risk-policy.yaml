@@ -7,6 +7,7 @@ risk_levels:
 mandatory_review_categories:
   - COMMUNAL_VIOLENCE
   - RELIGIOUS_ACCUSATION
+  - RELIGIOUS_VIOLENCE
   - CRIMINAL_ALLEGATION
   - SEXUAL_ASSAULT
   - TERRORISM

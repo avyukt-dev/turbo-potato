@@ -8,6 +8,7 @@ from uuid import uuid4
 from news_ai_common.config import ConfigLoader
 from news_ai_database import Base, Claim, EventOutbox, Job, ProcessedEvent, Story
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
+from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import EventEnvelope, EventType, StreamMessage
 from news_ai_events.outbox import envelope_from_outbox
 from news_ai_evidence import FactCheckEngine, FactCheckPolicyLoader
@@ -48,8 +49,11 @@ def _factory() -> sessionmaker[Session]:
 
 
 def _engine() -> FactCheckEngine:
-    policy = FactCheckPolicyLoader(ConfigLoader(Path("config"))).load()
-    return FactCheckEngine(policy)
+    loader = ConfigLoader(Path("config"))
+    return FactCheckEngine(
+        FactCheckPolicyLoader(loader).load(),
+        EditorialConfigLoader(loader).load().risk_policy,
+    )
 
 
 def _evidence_event(factory: sessionmaker[Session]) -> EventEnvelope:

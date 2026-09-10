@@ -33,14 +33,23 @@ def _factory() -> sessionmaker[Session]:
 
 def _insert_event(factory: sessionmaker[Session]) -> EventOutbox:
     occurred_at = datetime(2026, 9, 10, 1, 2, tzinfo=UTC)
+    article_id = uuid4()
     event = EventEnvelope(
         event_type=EventType.ARTICLE_DISCOVERED,
         occurred_at=occurred_at,
         producer="collector",
         producer_version="0.1.0",
         aggregate_type="article",
-        aggregate_id=uuid4(),
+        aggregate_id=article_id,
         idempotency_key="article:test",
+        payload={
+            "article_id": str(article_id),
+            "source_id": str(uuid4()),
+            "source_feed_id": str(uuid4()),
+            "canonical_url": "https://example.com/article",
+            "title": "Example",
+            "published_at": None,
+        },
     )
     record = build_outbox_record(event)
     with factory() as session, session.begin():

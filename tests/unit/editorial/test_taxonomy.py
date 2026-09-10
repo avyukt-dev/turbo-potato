@@ -4,19 +4,31 @@ from pathlib import Path
 
 import pytest
 from news_ai_common.config import ConfigLoader
+from news_ai_domain import RiskLevel
 from news_ai_editorial import (
     CategoryAssignment,
     EditorialCategory,
     EditorialConfigLoader,
     EditorialConfigSnapshot,
     EditorialPrioritiesConfig,
+    EditorialRiskPolicy,
     EditorialTaxonomyEngine,
     EditorialTaxonomyInput,
+    MandatoryReviewCategory,
     TaxonomyConfig,
 )
 from pydantic import ValidationError
 
 CANONICAL_CATEGORIES = tuple(EditorialCategory)
+CANONICAL_REVIEW_CATEGORIES = tuple(MandatoryReviewCategory)
+
+
+def _risk_policy() -> EditorialRiskPolicy:
+    return EditorialRiskPolicy(
+        schema_version=1,
+        risk_levels=tuple(RiskLevel),
+        mandatory_review_categories=CANONICAL_REVIEW_CATEGORIES,
+    )
 
 
 def _snapshot() -> EditorialConfigSnapshot:
@@ -33,6 +45,7 @@ def _snapshot() -> EditorialConfigSnapshot:
                 "geopolitics": 0.9,
             },
         ),
+        risk_policy=_risk_policy(),
     )
 
 
@@ -53,11 +66,35 @@ topics:
 """.strip(),
         encoding="utf-8",
     )
+    (editorial / "risk-policy.yaml").write_text(
+        "schema_version: 1\nrisk_levels:\n"
+        + "".join(f"  - {level.value}\n" for level in RiskLevel)
+        + "mandatory_review_categories:\n"
+        + "".join(f"  - {category.value}\n" for category in CANONICAL_REVIEW_CATEGORIES),
+        encoding="utf-8",
+    )
 
     snapshot = EditorialConfigLoader(ConfigLoader(tmp_path)).load()
 
     assert snapshot.taxonomy.categories == CANONICAL_CATEGORIES
     assert snapshot.priorities.topics["india_governance"] == 1.0
+    assert MandatoryReviewCategory.RELIGIOUS_VIOLENCE in (
+        snapshot.risk_policy.mandatory_review_categories
+    )
+
+
+def test_risk_policy_rejects_missing_religious_violence() -> None:
+    categories = tuple(
+        item
+        for item in CANONICAL_REVIEW_CATEGORIES
+        if item is not MandatoryReviewCategory.RELIGIOUS_VIOLENCE
+    )
+    with pytest.raises(ValidationError, match="RELIGIOUS_VIOLENCE"):
+        EditorialRiskPolicy(
+            schema_version=1,
+            risk_levels=tuple(RiskLevel),
+            mandatory_review_categories=categories,
+        )
 
 
 def test_taxonomy_requires_every_canonical_category() -> None:

@@ -185,15 +185,7 @@ class ArticlePersistenceService:
         return {
             "article_id": str(article.id),
             "article_version_id": str(version.id),
-            "version_number": version.version_number,
-            "source_id": str(normalized.source_id),
-            "source_feed_id": (
-                str(normalized.source_feed_id) if normalized.source_feed_id is not None else None
-            ),
-            "canonical_url": normalized.canonical_url,
             "content_hash": normalized.content_hash,
-            "published_at": (
-                normalized.published_at.isoformat() if normalized.published_at is not None else None
-            ),
-            "retrieved_at": normalized.retrieved_at.isoformat(),
+            "language": normalized.language,
+            "title": normalized.title,
         }

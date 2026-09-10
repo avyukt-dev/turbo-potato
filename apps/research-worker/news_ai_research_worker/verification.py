@@ -97,7 +97,7 @@ class FactCheckWorker:
                 consumer_group=FACT_CHECK_CONSUMER_GROUP,
                 result=result.as_handler_result(),
             )
-        return False
+        return result.created_count == 0
 
 
 class StoryVerificationWorker:
@@ -181,4 +181,4 @@ class StoryVerificationWorker:
                 consumer_group=STORY_VERIFICATION_CONSUMER_GROUP,
                 result=result.as_handler_result(),
             )
-        return False
+        return result.ready and not result.created

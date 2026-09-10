@@ -96,4 +96,4 @@ class FactSheetWorker:
                 consumer_group=FACT_SHEET_CONSUMER_GROUP,
                 result=result.as_handler_result(),
             )
-        return False
+        return not result.created

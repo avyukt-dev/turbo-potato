@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -21,7 +22,7 @@ from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState,
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import envelope_from_outbox
 from news_ai_evidence import EvidenceRelation, FactSheetGenerator
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 _STATUS_LABELS = (
@@ -175,9 +176,10 @@ def _seed_verified_story(
         idempotency_key=f"story.verified:{uuid4()}",
         payload={
             "story_id": str(story_id),
-            "claim_ids": [str(item) for item in claim_ids],
             "fact_check_ids": [str(item) for item in fact_check_ids],
-            "verification_stage_complete": True,
+            "confidence_score": 0.82,
+            "risk_level": "HIGH",
+            "review_required": True,
         },
     )
     return event, story_id, claim_ids, fact_check_ids
@@ -206,18 +208,19 @@ def test_generator_preserves_complete_verified_snapshot_and_emits_content_reques
 
     assert artifact.story_id == story_id
     assert artifact.version == 1
-    assert tuple(item.claim_id for item in artifact.claims) == claim_ids
-    assert tuple(item.status for item in artifact.claims) == tuple(
-        status for status, _ in _STATUS_LABELS
+    assert {item.claim_id for item in artifact.claims} == set(claim_ids)
+    assert sorted(item.status.value for item in artifact.claims) == sorted(
+        status.value for status, _ in _STATUS_LABELS
     )
-    assert tuple(item.fact_check_id for item in artifact.fact_checks) == fact_check_ids
+    assert {item.fact_check_id for item in artifact.fact_checks} == set(fact_check_ids)
     assert artifact.risk_level is RiskLevel.HIGH
     assert artifact.sensitive_topics == ("COMMUNAL_VIOLENCE", "WAR")
     assert artifact.locations == ("New Delhi",)
     assert artifact.unresolved_questions == ("One material detail remains unresolved.",)
     assert artifact.counterclaims[0].status is ClaimVerificationStatus.DISPUTED
-    assert artifact.claims[0].evidence_ids
-    assert artifact.claims[-1].contradictory_evidence_ids
+    claims_by_id = {item.claim_id: item for item in artifact.claims}
+    assert claims_by_id[claim_ids[0]].evidence_ids
+    assert claims_by_id[claim_ids[-1]].contradictory_evidence_ids
     assert {item.url for item in artifact.sources} >= {
         "https://example.com/story",
         "https://example.com/support",
@@ -225,7 +228,6 @@ def test_generator_preserves_complete_verified_snapshot_and_emits_content_reques
     assert content_event.aggregate_type == "fact_sheet"
     assert content_event.aggregate_id == artifact.fact_sheet_id
     assert content_event.causation_id == event.event_id
-    assert content_event.payload["fact_sheet_version"] == 1
     assert content_event.payload["requested_platforms"] == ["INSTAGRAM"]
     assert content_event.payload["requested_formats"] == ["CAROUSEL"]
 
@@ -255,7 +257,48 @@ def test_material_regeneration_creates_new_version_without_mutating_old_one() ->
         assert second_row.summary == "Corrected persisted summary."
 
 
-def test_generator_rejects_unassessed_claim_even_when_event_claims_verified() -> None:
+def test_semantic_replay_with_new_event_id_reuses_fact_sheet_and_content_request() -> None:
+    factory = _factory()
+    event, _, _, _ = _seed_verified_story(factory)
+    generator = FactSheetGenerator()
+    with factory() as session, session.begin():
+        first = generator.generate(session, event)
+    replay_data = event.model_dump()
+    replay_data["event_id"] = uuid4()
+    replay_data["idempotency_key"] = f"story.verified:{uuid4()}"
+    replay = EventEnvelope.model_validate(replay_data)
+    with factory() as session, session.begin():
+        second = generator.generate(session, replay)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactSheet)) == 1
+        assert session.scalar(select(func.count()).select_from(EventOutbox)) == 1
+    assert second.created is False
+    assert second.fact_sheet_id == first.fact_sheet_id
+    assert second.event_id == first.event_id
+
+
+def test_generator_rejects_stale_fact_check_reference() -> None:
+    factory = _factory()
+    event, story_id, claim_ids, _ = _seed_verified_story(factory)
+    with factory() as session, session.begin():
+        session.add(
+            FactCheck(
+                story_id=story_id,
+                claim_id=claim_ids[0],
+                label=FactCheckLabel.TRUE,
+                summary="Newer durable assessment.",
+                review_required=True,
+                review_state=ReviewState.NOT_READY,
+                created_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+        )
+
+    with factory() as session, session.begin(), pytest.raises(ValueError, match="stale"):
+        FactSheetGenerator().generate(session, event)
+
+
+def test_generator_rejects_unassessed_durable_claim() -> None:
     factory = _factory()
     event, _, claim_ids, _ = _seed_verified_story(factory)
     with factory() as session, session.begin():
@@ -270,17 +313,23 @@ def test_generator_rejects_unassessed_claim_even_when_event_claims_verified() ->
 def test_generator_rejects_fact_check_claim_mismatch() -> None:
     factory = _factory()
     event, _, _, fact_check_ids = _seed_verified_story(factory)
-    reversed_ids = list(reversed(fact_check_ids))
+    mismatched_id = uuid4()
     bad_event = event.model_copy(
         update={
             "event_id": uuid4(),
-            "payload": {**event.payload, "fact_check_ids": [str(item) for item in reversed_ids]},
+            "payload": {
+                **event.payload,
+                "fact_check_ids": [
+                    str(mismatched_id),
+                    *(str(item) for item in fact_check_ids[1:]),
+                ],
+            },
         }
     )
 
     with (
         factory() as session,
         session.begin(),
-        pytest.raises(ValueError, match="mismatched fact check"),
+        pytest.raises(ValueError, match="missing fact checks"),
     ):
         FactSheetGenerator().generate(session, bad_event)
