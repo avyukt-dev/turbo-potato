@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
-
 from news_ai_common.config import ConfigLoader
 from news_ai_editorial import (
     CategoryAssignment,
@@ -16,6 +14,7 @@ from news_ai_editorial import (
     EditorialTaxonomyInput,
     TaxonomyConfig,
 )
+from pydantic import ValidationError
 
 CANONICAL_CATEGORIES = tuple(EditorialCategory)
 
