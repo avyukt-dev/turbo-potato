@@ -1,4 +1,4 @@
-"""Provider-neutral AI platform contracts."""
+"""Provider-neutral AI platform contracts and adapters."""
 
 from .contracts import (
     AIRequest,
@@ -11,6 +11,7 @@ from .contracts import (
     TokenUsage,
     metadata_contains_secret_key,
 )
+from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig
 from .provider import (
     AICapabilityError,
     AIContextTooLargeError,
@@ -43,6 +44,8 @@ __all__ = [
     "AIResponse",
     "AIResponseFormat",
     "AITaskType",
+    "LlamaCppProvider",
+    "LlamaCppProviderConfig",
     "PromptReference",
     "ProviderCapabilities",
     "ProviderLocality",
