@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+from pydantic import ValidationError
 
 from .feed_parser import FeedParseError, parse_feed
 from .models import CollectedArticle, FeedDefinition, FeedFetchResult
@@ -28,9 +29,13 @@ class RSSCollector:
         if self._client is not None:
             yield self._client
             return
+        accept = (
+            "application/rss+xml, application/atom+xml, application/xml, "
+            "text/xml;q=0.9, */*;q=0.1"
+        )
         async with httpx.AsyncClient(
             follow_redirects=True,
-            headers={"User-Agent": self._user_agent, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"},
+            headers={"User-Agent": self._user_agent, "Accept": accept},
         ) as client:
             yield client
 
@@ -68,7 +73,7 @@ class RSSCollector:
                         **entry,
                     )
                 )
-            except Exception as exc:
+            except ValidationError as exc:
                 warnings.append(f"skipped invalid feed entry: {type(exc).__name__}")
 
         return FeedFetchResult(
