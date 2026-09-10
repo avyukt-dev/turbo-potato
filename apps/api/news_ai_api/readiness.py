@@ -6,11 +6,10 @@ The API reports dependency health but does not expose connection strings or prov
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
-
 from news_ai_common.config import AppSettings
 from news_ai_database.session import create_database_engine
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 ReadinessProbe = Callable[[AppSettings], Awaitable[dict[str, bool]]]
 
