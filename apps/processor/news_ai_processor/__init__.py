@@ -1,5 +1,6 @@
-"""Article processing, normalization, persistence, and worker primitives."""
+"""Article processing, normalization, persistence, clustering, and worker primitives."""
 
+from .clustering import StoryClusteringConfig, StoryClusteringResult, StoryClusteringService
 from .models import ArticleNormalizationInput, NormalizedArticle
 from .normalizer import ArticleNormalizer, canonicalize_url
 from .persistence import ArticlePersistenceResult, ArticlePersistenceService
@@ -22,5 +23,8 @@ __all__ = [
     "NormalizedArticle",
     "ProcessorBatchResult",
     "ProcessorEventWorker",
+    "StoryClusteringConfig",
+    "StoryClusteringResult",
+    "StoryClusteringService",
     "canonicalize_url",
 ]
