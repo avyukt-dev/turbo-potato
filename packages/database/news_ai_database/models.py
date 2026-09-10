@@ -1,4 +1,4 @@
-"""Foundational SQLAlchemy models for collection, evidence, jobs, and outbox delivery."""
+"""Foundational SQLAlchemy models for collection, evidence, jobs, and event delivery."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -251,6 +251,9 @@ class EventOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, unique=True, index=True)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    producer: Mapped[str] = mapped_column(String(64), nullable=False)
+    producer_version: Mapped[str] = mapped_column(String(64), nullable=False)
     aggregate_type: Mapped[str] = mapped_column(String(64), nullable=False)
     aggregate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     correlation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
@@ -264,6 +267,24 @@ class EventOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
     )
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    publishing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ProcessedEvent(Base):
+    """Durable per-consumer event completion marker.
+
+    Redis delivery is at-least-once. Consumers may use this table in addition to domain-level
+    idempotency to recognize already-completed event handling.
+    """
+
+    __tablename__ = "processed_events"
+
+    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    consumer_group: Mapped[str] = mapped_column(String(128), primary_key=True)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
