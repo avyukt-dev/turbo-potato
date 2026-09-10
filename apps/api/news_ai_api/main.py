@@ -1,7 +1,7 @@
 """HTTP API entrypoint.
 
-Only liveness/readiness are implemented in the bootstrap batch. Business endpoints are added after
-persistence and event infrastructure exist.
+Only liveness/readiness are implemented in the bootstrap batches. Business endpoints are added as
+persistence and event-backed application services become available.
 """
 
 from fastapi import FastAPI
@@ -10,8 +10,14 @@ from fastapi.responses import JSONResponse
 from news_ai_common.config import AppSettings
 from news_ai_common.runtime import RuntimeDetector
 
+from .readiness import ReadinessProbe, run_dependency_checks
 
-def create_app(settings: AppSettings | None = None) -> FastAPI:
+
+def create_app(
+    settings: AppSettings | None = None,
+    *,
+    readiness_probe: ReadinessProbe = run_dependency_checks,
+) -> FastAPI:
     resolved_settings = settings or AppSettings()
     application = FastAPI(title="News AI Social Media Manager", version="0.1.0")
 
@@ -23,14 +29,19 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     async def ready() -> JSONResponse:
         config_ready = resolved_settings.config_dir.is_dir()
         runtime = RuntimeDetector(override=resolved_settings.service_manager).inspect()
-        payload: dict[str, object] = {
-            "status": "ready" if config_ready else "not_ready",
-            "checks": {
-                "configuration": config_ready,
-                "runtime_service_manager": runtime.service_manager,
-            },
+        dependencies = await readiness_probe(resolved_settings)
+        checks: dict[str, object] = {
+            "configuration": config_ready,
+            "postgres": dependencies.get("postgres", False),
+            "redis": dependencies.get("redis", False),
+            "runtime_service_manager": runtime.service_manager,
         }
-        return JSONResponse(status_code=200 if config_ready else 503, content=payload)
+        ready_state = config_ready and bool(checks["postgres"]) and bool(checks["redis"])
+        payload: dict[str, object] = {
+            "status": "ready" if ready_state else "not_ready",
+            "checks": checks,
+        }
+        return JSONResponse(status_code=200 if ready_state else 503, content=payload)
 
     return application
 
