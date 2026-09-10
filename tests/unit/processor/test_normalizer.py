@@ -13,7 +13,14 @@ def _article(**overrides: object) -> ArticleNormalizationInput:
         "url": "HTTPS://Example.COM:443/news/../news/item/?utm_source=x&b=2&a=1#section",
         "title": "  Example   headline  ",
         "author": "  Jane   Doe ",
-        "published_at": datetime(2026, 9, 10, 8, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+        "published_at": datetime(
+            2026,
+            9,
+            10,
+            8,
+            0,
+            tzinfo=timezone(timedelta(hours=5, minutes=30)),
+        ),
         "language": "EN_us",
         "summary": "First line.\n\n\nSecond   line.",
         "body": "Paragraph  one.\r\n\r\n\r\nParagraph\t two.",
@@ -38,6 +45,12 @@ def test_canonicalize_url_preserves_semantic_query_parameters() -> None:
 
 def test_canonicalize_url_handles_idna_hostnames() -> None:
     assert canonicalize_url("https://münich.example/path") == "https://xn--mnich-kva.example/path"
+
+
+def test_canonicalize_url_preserves_existing_percent_encoding() -> None:
+    assert canonicalize_url("https://example.com/a%20b?q=x%20y") == (
+        "https://example.com/a%20b?q=x+y"
+    )
 
 
 def test_normalizer_cleans_text_language_and_timestamps() -> None:
