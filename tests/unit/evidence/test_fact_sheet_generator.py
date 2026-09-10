@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+import pytest
 from news_ai_database import (
     Article,
     Base,
@@ -20,7 +21,6 @@ from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState,
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import envelope_from_outbox
 from news_ai_evidence import EvidenceRelation, FactSheetGenerator
-import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
