@@ -3,6 +3,7 @@
 from enum import StrEnum
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,3 +28,6 @@ class AppSettings(BaseSettings):
     config_dir: Path = Path("config")
     log_level: str = "INFO"
     service_manager: str | None = None
+    database_url: str | None = None
+    redis_url: str | None = None
+    readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
