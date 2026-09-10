@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from news_ai_collector import (
+    CollectedArticle,
     CollectionConfig,
     CollectionDefaults,
-    CollectedArticle,
     CollectorScheduler,
     FeedConfig,
     FeedFetchResult,
