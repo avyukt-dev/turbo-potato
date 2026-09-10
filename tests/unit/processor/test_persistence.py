@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from news_ai_database import Article, ArticleVersion, Base, EventOutbox, Source
-from news_ai_events import EventType
+from news_ai_events import EventEnvelope, EventType
 from news_ai_processor import (
     ArticleNormalizationInput,
     ArticleNormalizer,
@@ -57,6 +57,27 @@ def _normalized(
     )
 
 
+def _discovered_factory(correlation_id: UUID):
+    def build(article: Article, normalized: NormalizedArticle) -> EventEnvelope:
+        return EventEnvelope(
+            event_type=EventType.ARTICLE_DISCOVERED,
+            producer="collector",
+            producer_version="0.1.0",
+            aggregate_type="article",
+            aggregate_id=article.id,
+            correlation_id=correlation_id,
+            idempotency_key=f"article.discovered:{article.id}",
+            payload={
+                "article_id": str(article.id),
+                "source_id": str(normalized.source_id),
+                "canonical_url": normalized.canonical_url,
+                "title": normalized.title,
+            },
+        )
+
+    return build
+
+
 def _count(session: Session, model: type[object]) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
 
@@ -100,6 +121,29 @@ def test_persist_creates_article_version_and_outbox_atomically(session: Session)
     assert event.payload["content_hash"] == normalized.content_hash
 
 
+def test_predecessor_event_is_persisted_before_first_normalized_event(session: Session) -> None:
+    source = _source(session)
+    correlation_id = uuid4()
+
+    result = ArticlePersistenceService(session).persist(
+        _normalized(source.id),
+        correlation_id=correlation_id,
+        predecessor_event_factory=_discovered_factory(correlation_id),
+    )
+
+    events = list(session.scalars(select(EventOutbox).order_by(EventOutbox.created_at, EventOutbox.id)))
+    assert result.created_article is True
+    assert len(events) == 2
+    discovered, normalized = events
+    assert discovered.event_type == EventType.ARTICLE_DISCOVERED
+    assert normalized.event_type == EventType.ARTICLE_NORMALIZED
+    assert discovered.producer == "collector"
+    assert normalized.producer == "processor"
+    assert discovered.correlation_id == correlation_id
+    assert normalized.correlation_id == correlation_id
+    assert normalized.causation_id == discovered.event_id
+
+
 def test_identical_replay_reuses_version_and_does_not_duplicate_event(session: Session) -> None:
     source = _source(session)
     normalized = _normalized(source.id)
@@ -117,6 +161,35 @@ def test_identical_replay_reuses_version_and_does_not_duplicate_event(session: S
     assert _count(session, Article) == 1
     assert _count(session, ArticleVersion) == 1
     assert _count(session, EventOutbox) == 1
+
+
+def test_predecessor_is_not_duplicated_on_identical_replay(session: Session) -> None:
+    source = _source(session)
+    correlation_id = uuid4()
+    service = ArticlePersistenceService(session)
+    normalized = _normalized(source.id)
+    factory = _discovered_factory(correlation_id)
+
+    first = service.persist(
+        normalized,
+        correlation_id=correlation_id,
+        predecessor_event_factory=factory,
+    )
+    second = service.persist(
+        normalized,
+        correlation_id=uuid4(),
+        predecessor_event_factory=_discovered_factory(uuid4()),
+    )
+
+    assert first.created_article is True
+    assert second.created_article is False
+    assert second.created_version is False
+    assert _count(session, ArticleVersion) == 1
+    events = list(session.scalars(select(EventOutbox).order_by(EventOutbox.created_at, EventOutbox.id)))
+    assert [event.event_type for event in events] == [
+        EventType.ARTICLE_DISCOVERED,
+        EventType.ARTICLE_NORMALIZED,
+    ]
 
 
 def test_changed_content_creates_next_version_and_event(session: Session) -> None:
@@ -144,6 +217,61 @@ def test_changed_content_creates_next_version_and_event(session: Session) -> Non
         )
     )
     assert version_numbers == [1, 2]
+
+
+def test_changed_content_does_not_repeat_discovery_event(session: Session) -> None:
+    source = _source(session)
+    service = ArticlePersistenceService(session)
+    first_correlation = uuid4()
+
+    service.persist(
+        _normalized(source.id, body="Version one"),
+        correlation_id=first_correlation,
+        predecessor_event_factory=_discovered_factory(first_correlation),
+    )
+    second_correlation = uuid4()
+    second = service.persist(
+        _normalized(source.id, body="Version two"),
+        correlation_id=second_correlation,
+        predecessor_event_factory=_discovered_factory(second_correlation),
+    )
+
+    assert second.created_article is False
+    assert second.created_version is True
+    events = list(session.scalars(select(EventOutbox).order_by(EventOutbox.created_at, EventOutbox.id)))
+    assert [event.event_type for event in events] == [
+        EventType.ARTICLE_DISCOVERED,
+        EventType.ARTICLE_NORMALIZED,
+        EventType.ARTICLE_NORMALIZED,
+    ]
+    assert events[-1].correlation_id == second_correlation
+    assert events[-1].causation_id is None
+
+
+def test_invalid_predecessor_rolls_back_when_caller_rolls_back_transaction(session: Session) -> None:
+    source = _source(session)
+    source_id = source.id
+    session.commit()
+
+    def invalid_predecessor(_article: Article, _normalized: NormalizedArticle) -> EventEnvelope:
+        return EventEnvelope(
+            event_type=EventType.ARTICLE_DISCOVERED,
+            producer="collector",
+            producer_version="0.1.0",
+            aggregate_type="story",
+            aggregate_id=uuid4(),
+            idempotency_key="invalid-predecessor",
+        )
+
+    with pytest.raises(ValueError, match="predecessor event"), session.begin():
+        ArticlePersistenceService(session).persist(
+            _normalized(source_id),
+            predecessor_event_factory=invalid_predecessor,
+        )
+
+    assert _count(session, Article) == 0
+    assert _count(session, ArticleVersion) == 0
+    assert _count(session, EventOutbox) == 0
 
 
 def test_metadata_only_change_updates_article_without_new_version(session: Session) -> None:
