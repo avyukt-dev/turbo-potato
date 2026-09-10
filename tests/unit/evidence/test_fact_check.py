@@ -5,7 +5,16 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from news_ai_common.config import ConfigLoader
-from news_ai_database import Base, Claim, ClaimEvidence, EvidenceItem, EventOutbox, FactCheck, Job, Story
+from news_ai_database import (
+    Base,
+    Claim,
+    ClaimEvidence,
+    EventOutbox,
+    EvidenceItem,
+    FactCheck,
+    Job,
+    Story,
+)
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, RiskLevel
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import envelope_from_outbox
@@ -120,7 +129,9 @@ def _verify(
         claim = session.get(Claim, claim_id)
         fact_check = session.scalar(select(FactCheck).where(FactCheck.claim_id == claim_id))
         outbox = session.scalar(
-            select(EventOutbox).where(EventOutbox.event_type == EventType.FACT_CHECK_COMPLETED.value)
+            select(EventOutbox).where(
+                EventOutbox.event_type == EventType.FACT_CHECK_COMPLETED.value
+            )
         )
         assert claim is not None
         assert fact_check is not None
