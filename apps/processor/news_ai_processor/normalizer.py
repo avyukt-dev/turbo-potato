@@ -53,9 +53,7 @@ def _remove_dot_segments(path: str) -> str:
     while input_buffer:
         if input_buffer.startswith("../"):
             input_buffer = input_buffer[3:]
-        elif input_buffer.startswith("./"):
-            input_buffer = input_buffer[2:]
-        elif input_buffer.startswith("/./"):
+        elif input_buffer.startswith("./") or input_buffer.startswith("/./"):
             input_buffer = input_buffer[2:]
         elif input_buffer == "/.":
             input_buffer = "/"
