@@ -159,9 +159,9 @@ def test_router_applies_mode_and_request_provider_restrictions() -> None:
     assert local_router.candidate_provider_ids(_request()) == ("local-a",)
     assert cloud_router.candidate_provider_ids(_request()) == ("cloud-a",)
     hybrid_router = AIRouter(_registry(), _config())
-    assert hybrid_router.candidate_provider_ids(
-        _request(allowed_providers=("cloud-a",))
-    ) == ("cloud-a",)
+    assert hybrid_router.candidate_provider_ids(_request(allowed_providers=("cloud-a",))) == (
+        "cloud-a",
+    )
 
 
 def test_sensitive_routing_requires_explicit_allowlist_for_every_tag() -> None:
