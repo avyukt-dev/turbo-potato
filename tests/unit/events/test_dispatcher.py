@@ -107,7 +107,10 @@ def test_failed_publish_is_retried_with_backoff() -> None:
         assert persisted.status == OutboxStatus.PENDING
         assert persisted.attempt_count == 1
         assert persisted.next_attempt_at is not None
-        assert persisted.next_attempt_at >= now + timedelta(seconds=30)
+        persisted_retry_at = persisted.next_attempt_at
+        if persisted_retry_at.tzinfo is None or persisted_retry_at.utcoffset() is None:
+            persisted_retry_at = persisted_retry_at.replace(tzinfo=UTC)
+        assert persisted_retry_at >= now + timedelta(seconds=30)
         assert "redis unavailable" in (persisted.last_error or "")
 
 
