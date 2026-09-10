@@ -1,5 +1,16 @@
-"""Provider-neutral AI platform contracts, adapters, and routing."""
+"""Provider-neutral AI platform contracts, adapters, routing, and claim extraction."""
 
+from .claim_extraction import (
+    ClaimExtractionExecution,
+    ClaimExtractionItem,
+    ClaimExtractionOutput,
+    ClaimExtractionPrompt,
+    ClaimExtractionResult,
+    ClaimExtractionService,
+    StaleStoryContextError,
+    StoryArticleInput,
+    StoryClaimContext,
+)
 from .contracts import (
     AIRequest,
     AIResponse,
@@ -69,11 +80,20 @@ __all__ = [
     "AIRoutingMode",
     "AIRoutingPolicyError",
     "AITaskType",
+    "ClaimExtractionExecution",
+    "ClaimExtractionItem",
+    "ClaimExtractionOutput",
+    "ClaimExtractionPrompt",
+    "ClaimExtractionResult",
+    "ClaimExtractionService",
     "LlamaCppProvider",
     "LlamaCppProviderConfig",
     "PromptReference",
     "ProviderCapabilities",
     "ProviderLocality",
+    "StaleStoryContextError",
+    "StoryArticleInput",
+    "StoryClaimContext",
     "TaskRoutingPolicy",
     "TokenUsage",
     "metadata_contains_secret_key",

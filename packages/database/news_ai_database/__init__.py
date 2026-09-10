@@ -2,6 +2,8 @@
 
 from .base import Base
 from .models import (
+    AIModel,
+    AIRun,
     Article,
     ArticleVersion,
     Claim,
@@ -21,6 +23,8 @@ from .models import (
 from .registry_models import SourceFeedRegistryEntry, SourceRegistryEntry
 
 __all__ = [
+    "AIModel",
+    "AIRun",
     "Article",
     "ArticleVersion",
     "Base",
