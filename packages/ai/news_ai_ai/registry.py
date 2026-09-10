@@ -65,7 +65,9 @@ class AIProviderRegistry:
     @staticmethod
     def _validate_response(provider: AIProvider, request: AIRequest, response: AIResponse) -> None:
         if response.provider != provider.provider_id:
-            raise AIInvalidResponseError("provider response identity does not match adapter identity")
+            raise AIInvalidResponseError(
+                "provider response identity does not match adapter identity"
+            )
         if request.model is not None and response.model != request.model:
             raise AIInvalidResponseError("provider response model does not match requested model")
         if request.response_format is AIResponseFormat.STRUCTURED and response.structured is None:
