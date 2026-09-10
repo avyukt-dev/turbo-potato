@@ -4,7 +4,7 @@ The parser uses defusedxml and accepts only already-bounded response bytes. It i
 conservative: malformed entries are skipped by the caller instead of inventing missing fields.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin
 from xml.etree.ElementTree import Element
@@ -53,8 +53,8 @@ def _parse_datetime(value: str | None) -> datetime | None:
         except ValueError:
             return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _atom_link(entry: Element, base_url: str) -> str | None:
