@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import posixpath
 import re
 import unicodedata
 from datetime import UTC, datetime
@@ -40,6 +39,47 @@ def _remove_tracking_query(items: list[tuple[str, str]]) -> list[tuple[str, str]
     ]
 
 
+def _remove_last_path_segment(path: str) -> str:
+    separator = path.rfind("/")
+    return path[:separator] if separator >= 0 else ""
+
+
+def _remove_dot_segments(path: str) -> str:
+    """Apply RFC 3986 dot-segment removal without collapsing duplicate slashes."""
+
+    input_buffer = path
+    output = ""
+
+    while input_buffer:
+        if input_buffer.startswith("../"):
+            input_buffer = input_buffer[3:]
+        elif input_buffer.startswith("./"):
+            input_buffer = input_buffer[2:]
+        elif input_buffer.startswith("/./"):
+            input_buffer = input_buffer[2:]
+        elif input_buffer == "/.":
+            input_buffer = "/"
+        elif input_buffer.startswith("/../"):
+            input_buffer = input_buffer[3:]
+            output = _remove_last_path_segment(output)
+        elif input_buffer == "/..":
+            input_buffer = "/"
+            output = _remove_last_path_segment(output)
+        elif input_buffer in {".", ".."}:
+            input_buffer = ""
+        else:
+            search_from = 1 if input_buffer.startswith("/") else 0
+            separator = input_buffer.find("/", search_from)
+            if separator < 0:
+                output += input_buffer
+                input_buffer = ""
+            else:
+                output += input_buffer[:separator]
+                input_buffer = input_buffer[separator:]
+
+    return output
+
+
 def canonicalize_url(url: str) -> str:
     """Return a stable HTTP(S) URL while preserving semantic query parameters."""
 
@@ -58,10 +98,7 @@ def canonicalize_url(url: str) -> str:
     if port is not None and not default_port:
         host = f"{host}:{port}"
 
-    path = parts.path or "/"
-    normalized_path = posixpath.normpath(path)
-    if path.endswith("/") and not normalized_path.endswith("/"):
-        normalized_path += "/"
+    normalized_path = _remove_dot_segments(parts.path or "/")
     if not normalized_path.startswith("/"):
         normalized_path = f"/{normalized_path}"
     normalized_path = quote(normalized_path, safe="/%:@!$&'()*+,;=-._~")
