@@ -291,7 +291,12 @@ class EvidenceEngine:
             compatible = self.registry.compatible_provider_ids(constraints.request)
             if not compatible:
                 failures.append(
-                    self._query_failure(query, None, "NO_COMPATIBLE_PROVIDER", "no compatible provider")
+                    self._query_failure(
+                        query,
+                        None,
+                        "NO_COMPATIBLE_PROVIDER",
+                        "no compatible provider",
+                    )
                 )
                 continue
 
@@ -388,9 +393,7 @@ class EvidenceEngine:
         for url, candidates in grouped.items():
             first = candidates[0]
             assessment_records = [
-                assessment
-                for key, assessment in assessment_map.items()
-                if key[1] == url
+                assessment for key, assessment in assessment_map.items() if key[1] == url
             ]
             evidence = EvidenceItem(
                 source_id=None,

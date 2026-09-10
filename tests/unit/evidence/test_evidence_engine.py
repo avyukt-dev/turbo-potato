@@ -10,8 +10,8 @@ from news_ai_database import (
     Base,
     Claim,
     ClaimEvidence,
-    EvidenceItem,
     EventOutbox,
+    EvidenceItem,
     Job,
     Story,
 )
@@ -264,7 +264,9 @@ def test_query_intent_alone_never_promotes_candidate_to_evidence() -> None:
     _, claim, _, requested, task, result = _prepare(factory, engine)
     collection = asyncio.run(engine.collect(task))
 
-    assert any(item.target_role is ResearchTargetRole.CONTRADICTION for item in collection.candidates)
+    assert any(
+        item.target_role is ResearchTargetRole.CONTRADICTION for item in collection.candidates
+    )
     assert collection.assessments == ()
 
     with factory() as session, session.begin():
