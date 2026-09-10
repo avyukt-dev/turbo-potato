@@ -66,7 +66,7 @@ def test_304_returns_without_parsing() -> None:
 
 def test_response_size_limit_is_enforced() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=RSS, request=request)
+        return httpx.Response(200, content=b"x" * 2048, request=request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     collector = RSSCollector(client)
