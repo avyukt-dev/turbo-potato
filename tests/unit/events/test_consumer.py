@@ -13,6 +13,7 @@ class FakeConsumerRedis:
         self.group_exists = group_exists
         self.acks: list[tuple[str, str, tuple[str, ...]]] = []
         self.created_groups: list[tuple[str, str]] = []
+        self.claim_calls: list[tuple[str, str, str, int, str, int]] = []
 
     async def xgroup_create(self, name: str, groupname: str, **kwargs: Any) -> bool:
         if self.group_exists:
@@ -32,6 +33,25 @@ class FakeConsumerRedis:
                 b"news:articles",
                 [(b"1-0", {b"event": self.event.model_dump_json().encode("utf-8")})],
             )
+        ]
+
+    async def xautoclaim(
+        self,
+        name: str,
+        groupname: str,
+        consumername: str,
+        min_idle_time: int,
+        start_id: str = "0-0",
+        **kwargs: Any,
+    ) -> list[Any]:
+        count = int(kwargs.get("count", 10))
+        self.claim_calls.append(
+            (name, groupname, consumername, min_idle_time, start_id, count)
+        )
+        return [
+            b"0-0",
+            [(b"2-0", {b"event": self.event.model_dump_json().encode("utf-8")})],
+            [],
         ]
 
     async def xack(self, name: str, groupname: str, *ids: str) -> int:
@@ -97,3 +117,24 @@ def test_handler_failure_leaves_message_unacked() -> None:
         asyncio.run(consumer.consume_once(handler))
 
     assert client.acks == []
+
+
+def test_stale_pending_messages_can_be_claimed() -> None:
+    client = FakeConsumerRedis(_event())
+    consumer = RedisStreamConsumer(
+        client,
+        stream="news:articles",
+        group="processor",
+        consumer="worker-1",
+        count=5,
+    )
+
+    next_start, messages = asyncio.run(consumer.claim_stale(min_idle_ms=60_000))
+
+    assert next_start == "0-0"
+    assert len(messages) == 1
+    assert messages[0].message_id == "2-0"
+    assert messages[0].event.event_id == client.event.event_id
+    assert client.claim_calls == [
+        ("news:articles", "processor", "worker-1", 60_000, "0-0", 5)
+    ]
