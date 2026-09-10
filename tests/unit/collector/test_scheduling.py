@@ -160,16 +160,25 @@ def test_cycle_syncs_registry_collects_persists_and_advances_poll_state() -> Non
         feed = session.scalar(select(SourceFeed))
         article = session.scalar(select(Article))
         version = session.scalar(select(ArticleVersion))
-        outbox = session.scalar(select(EventOutbox))
+        outboxes = {row.event_type: row for row in session.scalars(select(EventOutbox))}
         assert feed is not None
         assert article is not None
         assert version is not None
-        assert outbox is not None
+        assert set(outboxes) == {
+            EventType.ARTICLE_DISCOVERED,
+            EventType.ARTICLE_NORMALIZED,
+        }
         assert feed.last_polled_at == clock.value.replace(tzinfo=None)
         assert feed.etag == '"etag-1"'
         assert article.title == "Main RSS headline"
         assert version.version_number == 1
-        assert outbox.event_type == EventType.ARTICLE_NORMALIZED
+        discovered = outboxes[EventType.ARTICLE_DISCOVERED]
+        normalized = outboxes[EventType.ARTICLE_NORMALIZED]
+        assert discovered.producer == "collector"
+        assert normalized.producer == "processor"
+        assert discovered.correlation_id == normalized.correlation_id
+        assert normalized.causation_id == discovered.event_id
+        assert discovered.payload["article_id"] == str(article.id)
     engine.dispose()
 
 
