@@ -24,6 +24,16 @@ class AsyncConsumerClient(Protocol):
         **kwargs: Any,
     ) -> Any: ...
 
+    async def xautoclaim(
+        self,
+        name: str,
+        groupname: str,
+        consumername: str,
+        min_idle_time: int,
+        start_id: str = "0-0",
+        **kwargs: Any,
+    ) -> Any: ...
+
     async def xack(self, name: str, groupname: str, *ids: str) -> Any: ...
 
 
@@ -95,6 +105,32 @@ class RedisStreamConsumer:
             for message_id, fields in entries:
                 messages.append(decode_stream_message(stream, message_id, fields))
         return messages
+
+    async def claim_stale(
+        self,
+        *,
+        min_idle_ms: int,
+        start_id: str = "0-0",
+    ) -> tuple[str, list[StreamMessage]]:
+        if min_idle_ms < 1:
+            raise ValueError("min_idle_ms must be >= 1")
+        response = await self.client.xautoclaim(
+            self.stream,
+            self.group,
+            self.consumer,
+            min_idle_ms,
+            start_id=start_id,
+            count=self.count,
+        )
+        if not response:
+            return "0-0", []
+        next_start = _text(response[0])
+        entries = response[1] if len(response) > 1 else []
+        messages = [
+            decode_stream_message(self.stream, message_id, fields)
+            for message_id, fields in entries
+        ]
+        return next_start, messages
 
     async def ack(self, message: StreamMessage) -> None:
         await self.client.xack(message.stream, self.group, message.message_id)
