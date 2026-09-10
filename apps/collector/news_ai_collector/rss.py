@@ -47,20 +47,24 @@ class RSSCollector:
             headers["If-Modified-Since"] = feed.last_modified
 
         timeout = httpx.Timeout(feed.timeout_seconds)
-        async with self._client_context() as client:
-            async with client.stream("GET", str(feed.url), headers=headers, timeout=timeout) as response:
-                if response.status_code == httpx.codes.NOT_MODIFIED:
-                    return FeedFetchResult(
-                        source_feed_id=feed.source_feed_id,
-                        etag=response.headers.get("etag") or feed.etag,
-                        last_modified=response.headers.get("last-modified") or feed.last_modified,
-                        not_modified=True,
-                    )
-                response.raise_for_status()
-                content = await self._read_bounded(response, max_bytes=feed.max_response_bytes)
-                final_url = str(response.url)
-                etag = response.headers.get("etag")
-                last_modified = response.headers.get("last-modified")
+        async with self._client_context() as client, client.stream(
+            "GET",
+            str(feed.url),
+            headers=headers,
+            timeout=timeout,
+        ) as response:
+            if response.status_code == httpx.codes.NOT_MODIFIED:
+                return FeedFetchResult(
+                    source_feed_id=feed.source_feed_id,
+                    etag=response.headers.get("etag") or feed.etag,
+                    last_modified=response.headers.get("last-modified") or feed.last_modified,
+                    not_modified=True,
+                )
+            response.raise_for_status()
+            content = await self._read_bounded(response, max_bytes=feed.max_response_bytes)
+            final_url = str(response.url)
+            etag = response.headers.get("etag")
+            last_modified = response.headers.get("last-modified")
 
         parsed_entries, warnings = parse_feed(content, base_url=final_url)
         articles: list[CollectedArticle] = []
