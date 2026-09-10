@@ -119,7 +119,9 @@ def test_fact_check_and_story_verification_workers_ack_after_commit() -> None:
 
     with factory() as session:
         completed_outbox = session.scalar(
-            select(EventOutbox).where(EventOutbox.event_type == EventType.FACT_CHECK_COMPLETED.value)
+            select(EventOutbox).where(
+                EventOutbox.event_type == EventType.FACT_CHECK_COMPLETED.value
+            )
         )
         assert completed_outbox is not None
         completed_event = envelope_from_outbox(completed_outbox)
@@ -136,9 +138,7 @@ def test_fact_check_and_story_verification_workers_ack_after_commit() -> None:
 
     with factory() as session:
         story = session.get(Story, completed_event.aggregate_id)
-        processed_groups = set(
-            session.scalars(select(ProcessedEvent.consumer_group)).all()
-        )
+        processed_groups = set(session.scalars(select(ProcessedEvent.consumer_group)).all())
         verified = session.scalar(
             select(EventOutbox).where(EventOutbox.event_type == EventType.STORY_VERIFIED.value)
         )
