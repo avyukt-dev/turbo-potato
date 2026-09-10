@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
-
 from news_ai_common.config import ConfigDomain, ConfigError, ConfigLoader
+from pydantic import BaseModel
 
 
 class ExampleConfig(BaseModel):

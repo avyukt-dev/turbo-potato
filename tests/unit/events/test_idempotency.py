@@ -1,10 +1,9 @@
 from uuid import uuid4
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-
 from news_ai_database import Base
 from news_ai_events.idempotency import mark_processed, was_processed
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 def test_processed_event_marker_is_scoped_to_consumer_group() -> None:

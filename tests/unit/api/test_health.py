@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-
 from news_ai_api.main import create_app
 from news_ai_common.config import AppSettings
 

@@ -3,7 +3,6 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.consumer import RedisStreamConsumer
 

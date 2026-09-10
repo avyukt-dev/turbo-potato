@@ -30,8 +30,7 @@ class RSSCollector:
             yield self._client
             return
         accept = (
-            "application/rss+xml, application/atom+xml, application/xml, "
-            "text/xml;q=0.9, */*;q=0.1"
+            "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"
         )
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -47,12 +46,15 @@ class RSSCollector:
             headers["If-Modified-Since"] = feed.last_modified
 
         timeout = httpx.Timeout(feed.timeout_seconds)
-        async with self._client_context() as client, client.stream(
-            "GET",
-            str(feed.url),
-            headers=headers,
-            timeout=timeout,
-        ) as response:
+        async with (
+            self._client_context() as client,
+            client.stream(
+                "GET",
+                str(feed.url),
+                headers=headers,
+                timeout=timeout,
+            ) as response,
+        ):
             if response.status_code == httpx.codes.NOT_MODIFIED:
                 return FeedFetchResult(
                     source_feed_id=feed.source_feed_id,

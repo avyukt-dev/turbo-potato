@@ -2,7 +2,6 @@ import asyncio
 import os
 
 import pytest
-
 from news_ai_api.readiness import run_dependency_checks
 from news_ai_common.config import AppSettings
 

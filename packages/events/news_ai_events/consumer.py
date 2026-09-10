@@ -4,8 +4,9 @@ This layer deliberately does not own domain transactions. A worker handler must 
 state change idempotently; the transport ACK occurs only after the handler returns successfully.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 

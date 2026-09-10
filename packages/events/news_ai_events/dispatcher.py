@@ -1,14 +1,13 @@
 """Dispatch committed outbox rows to Redis Streams with bounded retry and stale-lease recovery."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from news_ai_database.models import EventOutbox, OutboxStatus
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
-
-from news_ai_database.models import EventOutbox, OutboxStatus
 
 from .outbox import envelope_from_outbox, mark_failed, mark_published, mark_publishing, mark_retry
 
@@ -141,7 +140,7 @@ class OutboxDispatcher:
             return True
 
     async def dispatch_once(self, *, now: datetime | None = None) -> DispatchStats:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         recovered = self._recover_stale(now=current)
         record_ids = self._claim_ready(now=current)
         published = retried = failed = 0
@@ -150,10 +149,10 @@ class OutboxDispatcher:
             try:
                 event, _attempt_count = self._load_event(record_id)
                 await self.publisher.publish(event)
-                self._mark_success(record_id, now=datetime.now(timezone.utc))
+                self._mark_success(record_id, now=datetime.now(UTC))
                 published += 1
             except Exception as exc:  # provider/network errors are normalized into retry state here
-                if self._mark_error(record_id, error=exc, now=datetime.now(timezone.utc)):
+                if self._mark_error(record_id, error=exc, now=datetime.now(UTC)):
                     retried += 1
                 else:
                     failed += 1

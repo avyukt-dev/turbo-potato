@@ -3,9 +3,8 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy.orm import Session
-
 from news_ai_database.models import ProcessedEvent
+from sqlalchemy.orm import Session
 
 
 def was_processed(session: Session, *, event_id: UUID, consumer_group: str) -> bool:

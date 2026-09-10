@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from news_ai_database.models import OutboxStatus
@@ -42,7 +42,7 @@ def test_outbox_lifecycle_helpers() -> None:
     assert record.status == OutboxStatus.PUBLISHING
     assert record.attempt_count == 1
 
-    retry_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    retry_at = datetime.now(UTC) + timedelta(minutes=1)
     mark_retry(record, error="temporary", next_attempt_at=retry_at)
     assert record.status == OutboxStatus.PENDING
     assert record.next_attempt_at == retry_at

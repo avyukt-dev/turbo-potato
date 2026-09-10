@@ -1,8 +1,6 @@
+from news_ai_database import Base
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
-
-from news_ai_database import Base
-
 
 EXPECTED_FOUNDATION_TABLES = {
     "sources",
@@ -23,7 +21,7 @@ EXPECTED_FOUNDATION_TABLES = {
 
 
 def test_foundation_tables_are_registered() -> None:
-    assert EXPECTED_FOUNDATION_TABLES <= set(Base.metadata.tables)
+    assert set(Base.metadata.tables) >= EXPECTED_FOUNDATION_TABLES
 
 
 def test_outbox_compiles_for_postgresql() -> None:

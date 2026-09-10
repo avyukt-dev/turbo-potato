@@ -1,6 +1,5 @@
-from sqlalchemy.orm import Session
-
 from news_ai_database.session import create_database_engine, create_session_factory
+from sqlalchemy.orm import Session
 
 
 def test_session_factory_is_explicit_and_usable() -> None:

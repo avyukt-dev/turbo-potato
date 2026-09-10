@@ -1,7 +1,6 @@
 import subprocess
 
 import pytest
-
 from news_ai_common.runtime import RuntimeDetector, ServiceManager, ServiceResult, ServiceState
 from news_ai_common.runtime.base import validate_service_name
 

@@ -3,7 +3,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-
 from news_ai_collector.models import FeedDefinition
 from news_ai_collector.rss import FeedTooLargeError, RSSCollector
 

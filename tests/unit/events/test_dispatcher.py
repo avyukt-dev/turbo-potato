@@ -1,16 +1,15 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
 
 from news_ai_database import Base
 from news_ai_database.models import EventOutbox, OutboxStatus
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.dispatcher import OutboxDispatcher, RetryPolicy
 from news_ai_events.outbox import build_outbox_record
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 
 class FakePublisher:
@@ -32,7 +31,7 @@ def _factory() -> sessionmaker[Session]:
 
 
 def _insert_event(factory: sessionmaker[Session]) -> EventOutbox:
-    occurred_at = datetime(2026, 9, 10, 1, 2, tzinfo=timezone.utc)
+    occurred_at = datetime(2026, 9, 10, 1, 2, tzinfo=UTC)
     event = EventEnvelope(
         event_type=EventType.ARTICLE_DISCOVERED,
         occurred_at=occurred_at,
@@ -62,7 +61,7 @@ def test_dispatch_preserves_original_event_provenance() -> None:
     assert isinstance(emitted, EventEnvelope)
     assert emitted.producer == "collector"
     assert emitted.producer_version == "0.1.0"
-    assert emitted.occurred_at == datetime(2026, 9, 10, 1, 2, tzinfo=timezone.utc)
+    assert emitted.occurred_at == datetime(2026, 9, 10, 1, 2, tzinfo=UTC)
     with factory() as session:
         persisted = session.get(EventOutbox, record.id)
         assert persisted is not None
@@ -75,9 +74,7 @@ def test_failed_publish_is_retried_with_backoff() -> None:
     record = _insert_event(factory)
     dispatcher = OutboxDispatcher(factory, FakePublisher(fail=True))
 
-    stats = asyncio.run(
-        dispatcher.dispatch_once(now=datetime(2026, 9, 10, 2, 0, tzinfo=timezone.utc))
-    )
+    stats = asyncio.run(dispatcher.dispatch_once(now=datetime(2026, 9, 10, 2, 0, tzinfo=UTC)))
 
     assert stats.retried == 1
     with factory() as session:
@@ -115,7 +112,7 @@ def test_stale_publishing_lease_is_recovered() -> None:
         assert persisted is not None
         persisted.status = OutboxStatus.PUBLISHING
         persisted.attempt_count = 1
-        persisted.publishing_started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        persisted.publishing_started_at = datetime.now(UTC) - timedelta(minutes=10)
 
     publisher = FakePublisher()
     dispatcher = OutboxDispatcher(factory, publisher, publishing_lease_seconds=60)

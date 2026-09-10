@@ -10,8 +10,8 @@ call Base.metadata.create_all(). Future model changes require new revisions.
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0001_foundation"
@@ -88,9 +88,13 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=32), nullable=True),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
         *_timestamps(),
-        sa.ForeignKeyConstraint(["source_id"], ["sources.id"], name="fk_articles_source_id_sources"),
+        sa.ForeignKeyConstraint(
+            ["source_id"], ["sources.id"], name="fk_articles_source_id_sources"
+        ),
         sa.PrimaryKeyConstraint("id", name="pk_articles"),
-        sa.UniqueConstraint("source_id", "canonical_url", name="uq_articles_source_id_canonical_url"),
+        sa.UniqueConstraint(
+            "source_id", "canonical_url", name="uq_articles_source_id_canonical_url"
+        ),
     )
     op.create_index("ix_articles_published_at", "articles", ["published_at"])
     op.create_index("ix_articles_source_id", "articles", ["source_id"])
@@ -212,7 +216,9 @@ def upgrade() -> None:
             ["claim_id"], ["claims.id"], name="fk_claim_evidence_claim_id_claims"
         ),
         sa.ForeignKeyConstraint(
-            ["evidence_id"], ["evidence_items.id"], name="fk_claim_evidence_evidence_id_evidence_items"
+            ["evidence_id"],
+            ["evidence_items.id"],
+            name="fk_claim_evidence_evidence_id_evidence_items",
         ),
         sa.PrimaryKeyConstraint("claim_id", "evidence_id", name="pk_claim_evidence"),
     )

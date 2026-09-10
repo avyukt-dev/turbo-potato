@@ -52,11 +52,15 @@ class RuntimeDetector:
         candidates: Iterable[ServiceManager] | None = None,
         override: str | None = None,
     ) -> None:
-        self._candidates = list(candidates) if candidates is not None else [
-            OpenRCServiceManager(),
-            SystemdServiceManager(),
-            SysVServiceManager(),
-        ]
+        self._candidates = (
+            list(candidates)
+            if candidates is not None
+            else [
+                OpenRCServiceManager(),
+                SystemdServiceManager(),
+                SysVServiceManager(),
+            ]
+        )
         self._override = override or os.getenv("NEWS_AI_SERVICE_MANAGER")
 
     def detect_service_manager(self) -> ServiceManager:

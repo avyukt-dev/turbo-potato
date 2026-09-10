@@ -4,7 +4,7 @@ The caller adds the returned record to the same SQLAlchemy transaction as the bu
 Redis publication happens later from committed outbox rows.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from news_ai_database.models import EventOutbox, OutboxStatus
 
@@ -49,14 +49,14 @@ def envelope_from_outbox(record: EventOutbox) -> EventEnvelope:
 def mark_publishing(record: EventOutbox, *, at: datetime | None = None) -> None:
     record.status = OutboxStatus.PUBLISHING
     record.attempt_count = (record.attempt_count or 0) + 1
-    record.publishing_started_at = at or datetime.now(timezone.utc)
+    record.publishing_started_at = at or datetime.now(UTC)
     record.next_attempt_at = None
     record.last_error = None
 
 
 def mark_published(record: EventOutbox, *, at: datetime | None = None) -> None:
     record.status = OutboxStatus.PUBLISHED
-    record.published_at = at or datetime.now(timezone.utc)
+    record.published_at = at or datetime.now(UTC)
     record.publishing_started_at = None
     record.next_attempt_at = None
     record.last_error = None

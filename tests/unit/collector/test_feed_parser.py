@@ -1,9 +1,7 @@
-from datetime import timezone
+from datetime import UTC
 
 import pytest
-
 from news_ai_collector.feed_parser import FeedParseError, parse_feed
-
 
 RSS = b"""<?xml version="1.0"?>
 <rss version="2.0">
@@ -44,7 +42,7 @@ def test_parses_rss_and_resolves_relative_links() -> None:
     assert entries[0]["url"] == "https://example.com/story/1"
     assert entries[0]["title"] == "Headline"
     assert entries[0]["external_id"] == "story-1"
-    assert entries[0]["published_at"].tzinfo == timezone.utc
+    assert entries[0]["published_at"].tzinfo == UTC
 
 
 def test_parses_atom() -> None:
