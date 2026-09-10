@@ -120,4 +120,5 @@ def test_provider_capabilities_require_non_empty_task_and_format_sets() -> None:
 def test_secret_key_detection_checks_metadata_keys_not_news_content() -> None:
     assert metadata_contains_secret_key({"api_key": "value"})
     assert metadata_contains_secret_key({"provider_access_token": "value"})
-    assert not metadata_contains_secret_key({"article_text": "The report mentioned a password leak."})
+    news_metadata = {"article_text": "The report mentioned a password leak."}
+    assert not metadata_contains_secret_key(news_metadata)
