@@ -1,8 +1,8 @@
 """Deterministic first-pass story clustering.
 
-This layer intentionally uses conservative lexical similarity plus source-publication time proximity.
-It does not claim semantic or entity-aware matching; those signals can be added later without changing
-the story/event persistence boundary.
+This layer uses conservative lexical similarity plus source-publication time
+proximity. It does not claim semantic or entity-aware matching; those signals
+can be added later without changing the story/event persistence boundary.
 """
 
 from __future__ import annotations
@@ -139,7 +139,13 @@ class StoryClusteringService:
         best_story, best_score = self._find_best_story(session, article, work_item)
         if best_story is None:
             story = self._create_story(session, article, version, work_item)
-            session.add(StorySource(story_id=story.id, article_id=article.id, relationship_type="ORIGIN"))
+            session.add(
+                StorySource(
+                    story_id=story.id,
+                    article_id=article.id,
+                    relationship_type="ORIGIN",
+                )
+            )
             session.flush()
             event = self._created_event(session, triggering_event, story, article.id)
             return StoryClusteringResult(
@@ -153,7 +159,11 @@ class StoryClusteringService:
 
         best_story.last_updated_at = _utc(work_item.retrieved_at)
         session.add(
-            StorySource(story_id=best_story.id, article_id=article.id, relationship_type="RELATED")
+            StorySource(
+                story_id=best_story.id,
+                article_id=article.id,
+                relationship_type="RELATED",
+            )
         )
         session.flush()
         event = self._clustered_event(
@@ -229,19 +239,30 @@ class StoryClusteringService:
         lower = anchor - window
         upper = anchor + window
 
+        candidate_story_ids = (
+            select(StorySource.story_id)
+            .join(Article, Article.id == StorySource.article_id)
+            .where(
+                or_(
+                    and_(
+                        Article.published_at.is_not(None),
+                        Article.published_at >= lower,
+                        Article.published_at <= upper,
+                    ),
+                    and_(
+                        Article.published_at.is_(None),
+                        StorySource.created_at >= lower,
+                        StorySource.created_at <= upper,
+                    ),
+                )
+            )
+            .group_by(StorySource.story_id)
+        )
         candidates = list(
             session.scalars(
                 select(Story)
-                .join(StorySource, StorySource.story_id == Story.id)
-                .join(Article, Article.id == StorySource.article_id)
-                .where(
-                    or_(
-                        and_(Article.published_at.is_not(None), Article.published_at >= lower, Article.published_at <= upper),
-                        and_(Article.published_at.is_(None), Story.first_seen_at >= lower, Story.first_seen_at <= upper),
-                    )
-                )
+                .where(Story.id.in_(candidate_story_ids))
                 .order_by(Story.last_updated_at.desc())
-                .distinct()
                 .limit(self.config.max_candidates)
                 .with_for_update()
             )
@@ -264,9 +285,12 @@ class StoryClusteringService:
             hours_apart = abs((anchor - candidate_anchor).total_seconds()) / 3600
             time_score = max(0.0, 1.0 - (hours_apart / self.config.time_window_hours))
             combined = round((lexical * 0.9) + (time_score * 0.1), 5)
-            if combined > best_score or (
-                combined == best_score and best_story is not None and str(story.id) < str(best_story.id)
-            ):
+            wins_tie = (
+                combined == best_score
+                and best_story is not None
+                and str(story.id) < str(best_story.id)
+            )
+            if combined > best_score or wins_tie:
                 best_story = story
                 best_score = combined
 
@@ -277,7 +301,10 @@ class StoryClusteringService:
         published_at = session.scalar(
             select(Article.published_at)
             .join(StorySource, StorySource.article_id == Article.id)
-            .where(StorySource.story_id == story.id, Article.published_at.is_not(None))
+            .where(
+                StorySource.story_id == story.id,
+                Article.published_at.is_not(None),
+            )
             .order_by(Article.published_at.asc())
             .limit(1)
         )
@@ -292,6 +319,7 @@ class StoryClusteringService:
     ) -> Story:
         summary = version.version_metadata.get("summary")
         headline = article.title or article.canonical_url
+        cluster_anchor = work_item.published_at or work_item.retrieved_at
         story = Story(
             canonical_headline=headline,
             summary=summary if isinstance(summary, str) else None,
@@ -299,7 +327,7 @@ class StoryClusteringService:
             language=article.language,
             first_seen_at=_utc(work_item.retrieved_at),
             last_updated_at=_utc(work_item.retrieved_at),
-            cluster_key=_cluster_key(headline, article.language, work_item.published_at or work_item.retrieved_at),
+            cluster_key=_cluster_key(headline, article.language, cluster_anchor),
             story_metadata={"initial_article_id": str(article.id)},
         )
         session.add(story)
