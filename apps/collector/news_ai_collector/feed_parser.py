@@ -7,9 +7,9 @@ conservative: malformed entries are skipped by the caller instead of inventing m
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin
+from xml.etree.ElementTree import Element
 
 from defusedxml import ElementTree
-from xml.etree.ElementTree import Element
 
 
 class FeedParseError(ValueError):
@@ -122,9 +122,15 @@ def parse_feed(content: bytes, *, base_url: str) -> tuple[list[dict[str, object]
     warnings: list[str] = []
     entries: list[dict[str, object]] = []
 
+    if root_name == "rss":
+        channel = _first_child(root, "channel")
+        items = _children(channel, "item") if channel is not None else []
+    elif root_name == "rdf":
+        items = _children(root, "item")
+    else:
+        items = []
+
     if root_name in {"rss", "rdf"}:
-        channel = _first_child(root, "channel") or root
-        items = _children(channel, "item")
         for item in items:
             parsed = _rss_item(item, base_url)
             if parsed is None:
