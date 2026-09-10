@@ -127,8 +127,7 @@ class RedisStreamConsumer:
         next_start = _text(response[0])
         entries = response[1] if len(response) > 1 else []
         messages = [
-            decode_stream_message(self.stream, message_id, fields)
-            for message_id, fields in entries
+            decode_stream_message(self.stream, message_id, fields) for message_id, fields in entries
         ]
         return next_start, messages
 
