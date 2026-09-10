@@ -219,9 +219,7 @@ class FactCheckEngine:
                 "claim_ids": [str(item) for item in claim_ids],
                 "fact_check_ids": [str(item.id) for item in fact_checks],
                 "research_run_id": str(research_run_id),
-                "claim_statuses": {
-                    str(item.claim_id): item.status.value for item in results
-                },
+                "claim_statuses": {str(item.claim_id): item.status.value for item in results},
                 "labels": {str(item.claim_id): item.label.value for item in results},
             },
         )
@@ -299,18 +297,15 @@ class FactCheckEngine:
     ) -> ClaimVerificationResult:
         threshold = self.policy.thresholds[claim.risk_level]
         support = tuple(item for item in links if item.relation in _SUPPORT_RELATIONS)
-        contradict = tuple(
-            item for item in links if item.relation is EvidenceRelation.CONTRADICTS
-        )
+        contradict = tuple(item for item in links if item.relation is EvidenceRelation.CONTRADICTS)
         qualify = tuple(item for item in links if item.relation is EvidenceRelation.QUALIFIES)
         support_score = _strongest(support)
         contradiction_score = _strongest(contradict)
         qualifier_score = _strongest(qualify)
         credible_support = support_score >= threshold.credible_strength
         credible_contradiction = contradiction_score >= threshold.credible_strength
-        strong_support = (
-            support_score >= threshold.decisive_strength
-            and self._corroborated(support, threshold)
+        strong_support = support_score >= threshold.decisive_strength and self._corroborated(
+            support, threshold
         )
         strong_contradiction = (
             contradiction_score >= threshold.decisive_strength
@@ -379,9 +374,8 @@ class FactCheckEngine:
         credible = tuple(item for item in links if item.strength >= threshold.credible_strength)
         if not credible:
             return False
-        if (
-            self.policy.invariants.primary_evidence_can_satisfy_corroboration
-            and any(item.source_level == 1 for item in credible)
+        if self.policy.invariants.primary_evidence_can_satisfy_corroboration and any(
+            item.source_level == 1 for item in credible
         ):
             return True
         groups = _independence_groups(credible, threshold.credible_strength)
