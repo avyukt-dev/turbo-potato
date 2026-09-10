@@ -1,0 +1,11 @@
+# Project-scoped Codex defaults. Loaded only when this repository is trusted.
+# Keep model selection user-controlled; this file defines execution posture only.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+project_doc_max_bytes = 32768
+
+[sandbox_workspace_write]
+# Keep remote/network actions behind Codex approval/rules rather than granting
+# unrestricted network access to every workspace command.
+network_access = false

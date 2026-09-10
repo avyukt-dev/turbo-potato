@@ -1,0 +1,28 @@
+# Project-local Codex execpolicy for Git/GitHub operations.
+# These rules affect commands requested outside the sandbox. Project-local rules
+# load only when the repository is trusted.
+
+# Safe repository/GitHub inspection.
+prefix_rule(pattern = ["gh", "auth", "status"], decision = "allow", justification = "Read-only authentication status check")
+prefix_rule(pattern = ["gh", "repo", "view"], decision = "allow", justification = "Read-only repository inspection")
+prefix_rule(pattern = ["gh", "pr", ["view", "list", "checks", "diff", "status"]], decision = "allow", justification = "Read-only pull-request inspection")
+prefix_rule(pattern = ["gh", "run", ["view", "list", "watch"]], decision = "allow", justification = "Read-only GitHub Actions inspection")
+prefix_rule(pattern = ["gh", "workflow", ["view", "list"]], decision = "allow", justification = "Read-only workflow inspection")
+prefix_rule(pattern = ["git", ["status", "diff", "log", "show", "branch", "rev-parse", "remote"]], decision = "allow", justification = "Read-only local Git inspection")
+prefix_rule(pattern = ["git", "fetch"], decision = "allow", justification = "Fetches remote repository state without modifying remote refs")
+
+# GitHub/remote writes require explicit approval.
+prefix_rule(pattern = ["gh", "pr", ["create", "merge", "edit", "close", "reopen", "review", "comment"]], decision = "prompt", justification = "Pull-request mutation changes GitHub state")
+prefix_rule(pattern = ["gh", "run", ["rerun", "cancel", "delete"]], decision = "prompt", justification = "Workflow-run mutation changes GitHub state")
+prefix_rule(pattern = ["gh", "workflow", ["run", "enable", "disable"]], decision = "prompt", justification = "Workflow mutation or dispatch changes GitHub state")
+prefix_rule(pattern = ["gh", "api"], decision = "prompt", justification = "gh api can perform arbitrary GitHub reads or writes; review each invocation")
+prefix_rule(pattern = ["git", "push"], decision = "prompt", justification = "Push mutates remote Git refs")
+
+# Common force-push forms are never permitted in this repository workflow.
+prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden", justification = "Force-push is prohibited; create a normal follow-up commit instead")
+prefix_rule(pattern = ["git", "push", "-f"], decision = "forbidden", justification = "Force-push is prohibited; create a normal follow-up commit instead")
+prefix_rule(pattern = ["git", "push", "--force-with-lease"], decision = "forbidden", justification = "History rewriting is prohibited in the project workflow")
+
+# High-risk local history/destructive commands require approval or are blocked.
+prefix_rule(pattern = ["git", "reset", "--hard"], decision = "prompt", justification = "Hard reset can discard local work")
+prefix_rule(pattern = ["git", "clean", "-fd"], decision = "prompt", justification = "git clean can permanently delete untracked files")
