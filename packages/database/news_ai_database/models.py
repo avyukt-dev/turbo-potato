@@ -267,18 +267,24 @@ class FactSheet(UUIDPrimaryKeyMixin, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     headline: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
-    claims: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
-    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
+    claims_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
+    fact_checks_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
+    evidence_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
+    sources_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
     timeline: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
     entities: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
     locations: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
     context: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
     counterclaims: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
+    unresolved_questions: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     risk_level: Mapped[RiskLevel] = mapped_column(
         SAEnum(RiskLevel, native_enum=False, length=16), nullable=False
     )
-    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+    sensitive_topics: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    ai_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("ai_runs.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
