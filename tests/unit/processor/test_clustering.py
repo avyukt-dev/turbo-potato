@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from news_ai_database import (
@@ -295,7 +295,7 @@ def test_missing_headline_is_not_auto_clustered(session: Session) -> None:
     assert _count(session, Story) == 2
 
 
-def test_new_article_version_reuses_existing_story_and_emits_update_signal(session: Session) -> None:
+def test_article_version_reuses_story_and_emits_update_signal(session: Session) -> None:
     source = _source(session, "Alpha")
     anchor = datetime(2026, 9, 10, 3, 0, tzinfo=UTC)
     service = StoryClusteringService()
@@ -360,11 +360,13 @@ def test_cluster_key_is_deterministic_for_same_anchor_and_headline(session: Sess
     first_story = session.get(Story, first.story_id)
     assert first_story is not None
 
-    session.delete(session.get(StorySource, (first.story_id, article.id)))
+    relation = session.get(StorySource, (first.story_id, article.id))
+    assert relation is not None
+    session.delete(relation)
     session.delete(first_story)
     session.flush()
 
-    article2, _, item2, trigger2 = _article(
+    _, _, item2, trigger2 = _article(
         session,
         source,
         title="India and France sign defence agreement in Paris",
