@@ -39,6 +39,7 @@ where = [
   "packages/domain",
   "packages/database",
   "packages/events",
+  "packages/editorial",
 ]
 include = [
   "news_ai_api*",
@@ -48,6 +49,7 @@ include = [
   "news_ai_domain*",
   "news_ai_database*",
   "news_ai_events*",
+  "news_ai_editorial*",
 ]
 
 [tool.pytest.ini_options]
@@ -59,6 +61,7 @@ pythonpath = [
   "packages/domain",
   "packages/database",
   "packages/events",
+  "packages/editorial",
 ]
 testpaths = ["tests"]
 addopts = "-q"
