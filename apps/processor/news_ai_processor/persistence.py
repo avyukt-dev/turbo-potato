@@ -6,6 +6,7 @@ the caller's SQLAlchemy transaction so they succeed or roll back together.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
@@ -17,6 +18,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import NormalizedArticle
+
+PredecessorEventFactory = Callable[[Article, NormalizedArticle], EventEnvelope]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +52,23 @@ class ArticlePersistenceService:
         *,
         correlation_id: UUID | None = None,
         causation_id: UUID | None = None,
+        predecessor_event_factory: PredecessorEventFactory | None = None,
     ) -> ArticlePersistenceResult:
         article, created_article = self._get_or_create_article(normalized)
         self._apply_latest_metadata(article, normalized)
+
+        if created_article and predecessor_event_factory is not None:
+            predecessor = predecessor_event_factory(article, normalized)
+            if predecessor.aggregate_type != "article" or predecessor.aggregate_id != article.id:
+                raise ValueError("article predecessor event must reference the persisted article")
+            if correlation_id is not None and correlation_id != predecessor.correlation_id:
+                raise ValueError("article predecessor event correlation_id does not match")
+            if causation_id is not None and causation_id != predecessor.event_id:
+                raise ValueError("article predecessor event must be the normalized event causation")
+            correlation_id = predecessor.correlation_id
+            causation_id = predecessor.event_id
+            self.session.add(build_outbox_record(predecessor))
+            self.session.flush()
 
         existing_version = self.session.scalar(
             select(ArticleVersion)
