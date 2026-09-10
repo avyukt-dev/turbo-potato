@@ -120,6 +120,7 @@ class FactSheetArtifact(BaseModel):
     confidence_score: float | None = None
     risk_level: RiskLevel
     sensitive_topics: tuple[str, ...] = ()
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,8 +251,7 @@ class FactSheetGenerator:
                 FactSheetClaimSnapshot.model_validate(item) for item in row.claims_snapshot
             ),
             fact_checks=tuple(
-                FactSheetFactCheckSnapshot.model_validate(item)
-                for item in row.fact_checks_snapshot
+                FactSheetFactCheckSnapshot.model_validate(item) for item in row.fact_checks_snapshot
             ),
             evidence=tuple(
                 FactSheetEvidenceSnapshot.model_validate(item) for item in row.evidence_snapshot
@@ -272,6 +272,7 @@ class FactSheetGenerator:
             ),
             risk_level=row.risk_level,
             sensitive_topics=tuple(row.sensitive_topics or []),
+            created_at=row.created_at,
         )
 
     @staticmethod
@@ -528,9 +529,7 @@ class FactSheetGenerator:
     def _sensitive_topics(metadata: dict[str, Any], claims: list[Claim]) -> tuple[str, ...]:
         topics = set(_metadata_str_list(metadata, "sensitive_topics"))
         for claim in claims:
-            topics.update(
-                _metadata_str_list(dict(claim.claim_metadata or {}), "sensitive_topics")
-            )
+            topics.update(_metadata_str_list(dict(claim.claim_metadata or {}), "sensitive_topics"))
         return tuple(sorted(topics))
 
     @staticmethod
