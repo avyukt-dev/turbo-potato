@@ -34,6 +34,7 @@ newsctl = "news_ai_common.runtime.cli:main"
 where = [
   "apps/api",
   "apps/collector",
+  "apps/processor",
   "packages/common",
   "packages/domain",
   "packages/database",
@@ -42,6 +43,7 @@ where = [
 include = [
   "news_ai_api*",
   "news_ai_collector*",
+  "news_ai_processor*",
   "news_ai_common*",
   "news_ai_domain*",
   "news_ai_database*",
@@ -52,6 +54,7 @@ include = [
 pythonpath = [
   "apps/api",
   "apps/collector",
+  "apps/processor",
   "packages/common",
   "packages/domain",
   "packages/database",
