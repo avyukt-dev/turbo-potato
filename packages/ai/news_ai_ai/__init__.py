@@ -1,4 +1,4 @@
-"""Provider-neutral AI platform contracts and adapters."""
+"""Provider-neutral AI platform contracts, adapters, and routing."""
 
 from .contracts import (
     AIRequest,
@@ -26,10 +26,25 @@ from .provider import (
     require_provider_compatibility,
 )
 from .registry import AIProviderNotRegisteredError, AIProviderRegistry
+from .routing import (
+    AIFailureReason,
+    AIRouteAttempt,
+    AIRouteAttemptOutcome,
+    AIRoutedResponse,
+    AIRouter,
+    AIRoutingConfig,
+    AIRoutingConfigLoader,
+    AIRoutingError,
+    AIRoutingExecutionError,
+    AIRoutingMode,
+    AIRoutingPolicyError,
+    TaskRoutingPolicy,
+)
 
 __all__ = [
     "AICapabilityError",
     "AIContextTooLargeError",
+    "AIFailureReason",
     "AIInvalidResponseError",
     "AILocalResourceExhaustedError",
     "AIProvider",
@@ -43,12 +58,23 @@ __all__ = [
     "AIRequest",
     "AIResponse",
     "AIResponseFormat",
+    "AIRouteAttempt",
+    "AIRouteAttemptOutcome",
+    "AIRoutedResponse",
+    "AIRouter",
+    "AIRoutingConfig",
+    "AIRoutingConfigLoader",
+    "AIRoutingError",
+    "AIRoutingExecutionError",
+    "AIRoutingMode",
+    "AIRoutingPolicyError",
     "AITaskType",
     "LlamaCppProvider",
     "LlamaCppProviderConfig",
     "PromptReference",
     "ProviderCapabilities",
     "ProviderLocality",
+    "TaskRoutingPolicy",
     "TokenUsage",
     "metadata_contains_secret_key",
     "require_provider_compatibility",
