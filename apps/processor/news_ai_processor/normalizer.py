@@ -54,7 +54,8 @@ def canonicalize_url(url: str) -> str:
 
     host = parts.hostname.encode("idna").decode("ascii").lower()
     port = parts.port
-    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+    default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    if port is not None and not default_port:
         host = f"{host}:{port}"
 
     path = parts.path or "/"
