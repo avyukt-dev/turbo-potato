@@ -1,4 +1,4 @@
-"""Provider-neutral search and evidence-acquisition boundaries."""
+"""Provider-neutral search, evidence-acquisition, and verification boundaries."""
 
 from .contracts import (
     CandidateSourceType,
@@ -26,6 +26,16 @@ from .engine import (
     ResearchTargetRole,
     SearchProviderSelector,
 )
+from .fact_check import (
+    ClaimVerificationResult,
+    FactCheckBatchResult,
+    FactCheckEngine,
+    FactCheckInvariants,
+    FactCheckPolicy,
+    FactCheckPolicyLoader,
+    FactCheckThreshold,
+    StoryVerificationResult,
+)
 from .policy import (
     SearchBudgets,
     SearchExecutionConstraints,
@@ -49,11 +59,18 @@ from .registry import SearchProviderNotRegisteredError, SearchProviderRegistry
 
 __all__ = [
     "CandidateSourceType",
+    "ClaimVerificationResult",
     "EvidenceAssessment",
     "EvidenceAssessor",
     "EvidenceCollectionResult",
     "EvidenceEngine",
     "EvidenceRelation",
+    "FactCheckBatchResult",
+    "FactCheckEngine",
+    "FactCheckInvariants",
+    "FactCheckPolicy",
+    "FactCheckPolicyLoader",
+    "FactCheckThreshold",
     "ResearchCandidate",
     "ResearchCollection",
     "ResearchCollectionTask",
@@ -85,6 +102,7 @@ __all__ = [
     "SearchResponse",
     "SearchResult",
     "SearchRules",
+    "StoryVerificationResult",
     "metadata_contains_secret_key",
     "require_provider_compatibility",
 ]
