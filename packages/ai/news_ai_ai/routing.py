@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 
 from news_ai_common.config import ConfigDomain, ConfigLoader
@@ -19,6 +20,8 @@ from .provider import (
     AIProviderUnavailableError,
 )
 from .registry import AIProviderRegistry
+
+ResponseValidator = Callable[[AIResponse], None]
 
 
 class AIRoutingMode(StrEnum):
@@ -192,7 +195,19 @@ class AIRouter:
             raise AIRoutingPolicyError("no configured AI provider is authorized and compatible")
         return tuple(candidates)
 
-    async def execute(self, request: AIRequest) -> AIRoutedResponse:
+    async def execute(
+        self,
+        request: AIRequest,
+        *,
+        response_validator: ResponseValidator | None = None,
+    ) -> AIRoutedResponse:
+        """Execute one task with policy-bounded fallback.
+
+        A domain validator may reject syntactically valid provider output with
+        ``AIInvalidResponseError``. Such rejection participates in the same configured fallback
+        policy as provider-level structured-output validation.
+        """
+
         policy = self.config.routes.get(request.task_type)
         if policy is None:
             raise AIRoutingPolicyError(f"no AI route configured for task {request.task_type.value}")
@@ -202,6 +217,8 @@ class AIRouter:
         for index, provider_id in enumerate(candidates):
             try:
                 response = await self.registry.execute(provider_id, request)
+                if response_validator is not None:
+                    response_validator(response)
             except AIProviderError as exc:
                 reason = _failure_reason(exc)
                 attempts.append(

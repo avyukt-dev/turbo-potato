@@ -1,4 +1,4 @@
-"""Foundational SQLAlchemy models for collection, evidence, jobs, and event delivery."""
+"""Foundational SQLAlchemy models for collection, evidence, jobs, AI, and event delivery."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -147,6 +147,42 @@ class StorySource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AIModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "ai_models"
+    __table_args__ = (
+        UniqueConstraint("provider", "model_name", name="uq_ai_models_provider_model_name"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    locality: Mapped[str] = mapped_column(String(16), nullable=False)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    model_metadata: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+
+
+class AIRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "ai_runs"
+
+    ai_model_id: Mapped[UUID] = mapped_column(
+        ForeignKey("ai_models.id"), nullable=False, index=True
+    )
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    prompt_id: Mapped[str | None] = mapped_column(String(128))
+    prompt_version: Mapped[str | None] = mapped_column(String(64))
+    prompt_checksum: Mapped[str | None] = mapped_column(String(128))
+    input_artifact_ids: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    input_hash: Mapped[str | None] = mapped_column(String(128), index=True)
+    output_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    correlation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    routing_attempts: Mapped[list[dict[str, Any]]] = mapped_column(JSON_TYPE, default=list)
+
+
 class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "claims"
 
@@ -168,6 +204,9 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     temporal_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     temporal_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_ai_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("ai_runs.id"), nullable=True, index=True
+    )
     claim_metadata: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
 
 
