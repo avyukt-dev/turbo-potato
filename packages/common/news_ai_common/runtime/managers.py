@@ -4,10 +4,16 @@ This is the only layer allowed to know native utility command syntax. Applicatio
 must depend on ServiceManager instead.
 """
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
-from .base import ServiceManager, ServiceResult, ServiceState, UnsupportedOperation, validate_service_name
+from .base import (
+    ServiceManager,
+    ServiceResult,
+    ServiceState,
+    UnsupportedOperation,
+    validate_service_name,
+)
 
 
 def _state_from_text(text: str, returncode: int) -> ServiceState:
@@ -19,6 +25,15 @@ def _state_from_text(text: str, returncode: int) -> ServiceState:
     if any(word in normalized for word in ("failed", "crashed")):
         return ServiceState.FAILED
     return ServiceState.UNKNOWN
+
+
+def _result_from_process(result: object, text: str) -> ServiceResult:
+    return ServiceResult(
+        _state_from_text(text, result.returncode),
+        result.returncode,
+        result.stdout,
+        result.stderr,
+    )
 
 
 class OpenRCServiceManager(ServiceManager):
@@ -34,7 +49,7 @@ class OpenRCServiceManager(ServiceManager):
         name = validate_service_name(service)
         result = self.runner.run(["rc-service", name, action])
         text = f"{result.stdout}\n{result.stderr}"
-        return ServiceResult(_state_from_text(text, result.returncode), result.returncode, result.stdout, result.stderr)
+        return _result_from_process(result, text)
 
     def status(self, service: str) -> ServiceResult:
         return self._call(service, "status")
@@ -53,7 +68,12 @@ class OpenRCServiceManager(ServiceManager):
             raise UnsupportedOperation("OpenRC boot registration requires rc-update")
         name = validate_service_name(service)
         result = self.runner.run(["rc-update", action, name, "default"])
-        return ServiceResult(ServiceState.UNKNOWN, result.returncode, result.stdout, result.stderr)
+        return ServiceResult(
+            ServiceState.UNKNOWN,
+            result.returncode,
+            result.stdout,
+            result.stderr,
+        )
 
     def enable(self, service: str) -> ServiceResult:
         return self._boot_registration(service, "add")
@@ -116,7 +136,7 @@ class SysVServiceManager(ServiceManager):
         name = validate_service_name(service)
         result = self.runner.run(["service", name, action])
         text = f"{result.stdout}\n{result.stderr}"
-        return ServiceResult(_state_from_text(text, result.returncode), result.returncode, result.stdout, result.stderr)
+        return _result_from_process(result, text)
 
     def status(self, service: str) -> ServiceResult:
         return self._call(service, "status")
@@ -131,10 +151,14 @@ class SysVServiceManager(ServiceManager):
         return self._call(service, "restart")
 
     def enable(self, service: str) -> ServiceResult:
-        raise UnsupportedOperation("SysV enablement is distribution-specific and intentionally not guessed")
+        raise UnsupportedOperation(
+            "SysV enablement is distribution-specific and intentionally not guessed"
+        )
 
     def disable(self, service: str) -> ServiceResult:
-        raise UnsupportedOperation("SysV disablement is distribution-specific and intentionally not guessed")
+        raise UnsupportedOperation(
+            "SysV disablement is distribution-specific and intentionally not guessed"
+        )
 
 
 class ManualServiceManager(ServiceManager):
