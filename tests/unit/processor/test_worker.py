@@ -93,7 +93,7 @@ def test_worker_rejects_wrong_stream(session_factory: Callable[[], Session]) -> 
     consumer.stream = "news:stories"
 
     with pytest.raises(ValueError, match="must read"):
-        ProcessorEventWorker(consumer, session_factory, lambda session, item: None)  # type: ignore[arg-type]
+        ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
 
 
 def test_worker_rejects_wrong_group(session_factory: Callable[[], Session]) -> None:
@@ -101,12 +101,12 @@ def test_worker_rejects_wrong_group(session_factory: Callable[[], Session]) -> N
     consumer.group = "other"
 
     with pytest.raises(ValueError, match="consumer group"):
-        ProcessorEventWorker(consumer, session_factory, lambda session, item: None)  # type: ignore[arg-type]
+        ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
 
 
 def test_ensure_ready_creates_consumer_group(session_factory: Callable[[], Session]) -> None:
     consumer = FakeConsumer()
-    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)  # type: ignore[arg-type]
+    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
 
     asyncio.run(worker.ensure_ready())
 
@@ -123,7 +123,7 @@ def test_success_commits_marker_before_ack(session_factory: Callable[[], Session
         seen.append(item)
         return {"handoff": "story-clustering"}
 
-    worker = ProcessorEventWorker(consumer, session_factory, handler)  # type: ignore[arg-type]
+    worker = ProcessorEventWorker(consumer, session_factory, handler)
     result = asyncio.run(worker.run_once())
 
     assert result.received == 1
@@ -151,11 +151,11 @@ def test_duplicate_event_is_acked_without_reinvoking_handler(
         calls += 1
 
     first_consumer = FakeConsumer([_message(event, "1-0")])
-    first_worker = ProcessorEventWorker(first_consumer, session_factory, handler)  # type: ignore[arg-type]
+    first_worker = ProcessorEventWorker(first_consumer, session_factory, handler)
     first = asyncio.run(first_worker.run_once())
 
     second_consumer = FakeConsumer([_message(event, "2-0")])
-    second_worker = ProcessorEventWorker(second_consumer, session_factory, handler)  # type: ignore[arg-type]
+    second_worker = ProcessorEventWorker(second_consumer, session_factory, handler)
     second = asyncio.run(second_worker.run_once())
 
     assert first.processed == 1
@@ -174,7 +174,7 @@ def test_handler_failure_rolls_back_marker_and_leaves_message_pending(
     def handler(session: Session, item: ArticleNormalizedWorkItem) -> None:
         raise RuntimeError("clustering unavailable")
 
-    worker = ProcessorEventWorker(consumer, session_factory, handler)  # type: ignore[arg-type]
+    worker = ProcessorEventWorker(consumer, session_factory, handler)
     result = asyncio.run(worker.run_once())
 
     assert result.received == 1
@@ -195,7 +195,7 @@ def test_invalid_payload_remains_pending(session_factory: Callable[[], Session])
         nonlocal called
         called = True
 
-    worker = ProcessorEventWorker(consumer, session_factory, handler)  # type: ignore[arg-type]
+    worker = ProcessorEventWorker(consumer, session_factory, handler)
     result = asyncio.run(worker.run_once())
 
     assert result.failed == 1
@@ -203,10 +203,37 @@ def test_invalid_payload_remains_pending(session_factory: Callable[[], Session])
     assert consumer.acked == []
 
 
+def test_payload_article_id_must_match_event_aggregate(
+    session_factory: Callable[[], Session],
+) -> None:
+    event = _event()
+    event.payload["article_id"] = str(uuid4())
+    consumer = FakeConsumer([_message(event)])
+    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+
+    result = asyncio.run(worker.run_once())
+
+    assert result.failed == 1
+    assert consumer.acked == []
+    assert _processed_count(session_factory) == 0
+
+
+def test_naive_event_timestamp_remains_pending(session_factory: Callable[[], Session]) -> None:
+    event = _event()
+    event.payload["retrieved_at"] = "2026-09-10T03:05:00"
+    consumer = FakeConsumer([_message(event)])
+    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
+
+    result = asyncio.run(worker.run_once())
+
+    assert result.failed == 1
+    assert consumer.acked == []
+
+
 def test_wrong_event_type_remains_pending(session_factory: Callable[[], Session]) -> None:
     event = _event(event_type=EventType.STORY_CREATED)
     consumer = FakeConsumer([_message(event)])
-    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)  # type: ignore[arg-type]
+    worker = ProcessorEventWorker(consumer, session_factory, lambda session, item: None)
 
     result = asyncio.run(worker.run_once())
 
@@ -224,7 +251,7 @@ def test_stale_pending_message_can_be_recovered(session_factory: Callable[[], Se
     def handler(session: Session, item: ArticleNormalizedWorkItem) -> None:
         seen.append(item.retrieved_at)
 
-    worker = ProcessorEventWorker(consumer, session_factory, handler)  # type: ignore[arg-type]
+    worker = ProcessorEventWorker(consumer, session_factory, handler)
     cursor, result = asyncio.run(worker.recover_once(min_idle_ms=60_000))
 
     assert cursor == "0-0"
