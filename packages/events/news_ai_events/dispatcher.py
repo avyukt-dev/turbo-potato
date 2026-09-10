@@ -1,5 +1,6 @@
 """Dispatch committed outbox rows to Redis Streams with bounded retry and stale-lease recovery."""
 
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -19,6 +20,13 @@ class EventPublisher(Protocol):
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     delays_seconds: tuple[int, ...] = (30, 120, 600, 1800, 7200)
+    jitter_ratio: float = 0.2
+
+    def __post_init__(self) -> None:
+        if not self.delays_seconds or any(delay <= 0 for delay in self.delays_seconds):
+            raise ValueError("retry delays must contain positive values")
+        if not 0 <= self.jitter_ratio <= 1:
+            raise ValueError("jitter_ratio must be between 0 and 1")
 
     @property
     def max_attempts(self) -> int:
@@ -26,7 +34,10 @@ class RetryPolicy:
 
     def next_attempt_at(self, attempt_count: int, *, now: datetime) -> datetime:
         index = max(0, min(attempt_count - 1, len(self.delays_seconds) - 1))
-        return now + timedelta(seconds=self.delays_seconds[index])
+        base_delay = self.delays_seconds[index]
+        jitter = base_delay * self.jitter_ratio
+        delay = random.uniform(base_delay - jitter, base_delay + jitter)
+        return now + timedelta(seconds=max(0.0, delay))
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +119,7 @@ class OutboxDispatcher:
                 mark_publishing(record, at=now)
             return [record.id for record in records]
 
-    def _load_event(self, record_id: UUID):
+    def _load_event(self, record_id: UUID) -> tuple[object, int]:
         with self.session_factory() as session:
             record = session.get(EventOutbox, record_id)
             if record is None:
