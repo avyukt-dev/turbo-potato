@@ -10,6 +10,7 @@ from news_ai_processor import (
     ArticleNormalizationInput,
     ArticleNormalizer,
     ArticlePersistenceService,
+    NormalizedArticle,
 )
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -38,7 +39,7 @@ def _normalized(
     title: str = "Example headline",
     author: str = "Jane Doe",
     summary: str = "Example summary",
-) -> object:
+) -> NormalizedArticle:
     return ArticleNormalizer().normalize(
         ArticleNormalizationInput(
             source_id=source_id,
@@ -166,10 +167,9 @@ def test_caller_rollback_removes_article_version_and_outbox(session: Session) ->
     source_id = source.id
     session.commit()
 
-    with pytest.raises(RuntimeError, match="rollback"):
-        with session.begin():
-            ArticlePersistenceService(session).persist(_normalized(source_id))
-            raise RuntimeError("rollback")
+    with pytest.raises(RuntimeError, match="rollback"), session.begin():
+        ArticlePersistenceService(session).persist(_normalized(source_id))
+        raise RuntimeError("rollback")
 
     assert _count(session, Article) == 0
     assert _count(session, ArticleVersion) == 0
