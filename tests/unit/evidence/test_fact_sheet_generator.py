@@ -24,7 +24,6 @@ from news_ai_evidence import EvidenceRelation, FactSheetGenerator
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-
 _STATUS_LABELS = (
     (ClaimVerificationStatus.SUPPORTED, FactCheckLabel.TRUE),
     (ClaimVerificationStatus.PARTIALLY_SUPPORTED, FactCheckLabel.PARTIALLY_TRUE),
