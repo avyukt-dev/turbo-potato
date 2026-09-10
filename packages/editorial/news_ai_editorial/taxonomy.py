@@ -58,7 +58,8 @@ class TaxonomyConfig(BaseModel):
         expected = set(EditorialCategory)
         if configured != expected:
             missing = sorted(category.value for category in expected - configured)
-            raise ValueError(f"editorial taxonomy is missing canonical categories: {', '.join(missing)}")
+            message = f"editorial taxonomy is missing canonical categories: {', '.join(missing)}"
+            raise ValueError(message)
         return self
 
 
