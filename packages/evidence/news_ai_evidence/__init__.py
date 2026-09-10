@@ -1,4 +1,4 @@
-"""Provider-neutral search, evidence-acquisition, and verification boundaries."""
+"""Provider-neutral search, evidence-acquisition, verification, and Fact Sheet boundaries."""
 
 from .contracts import (
     CandidateSourceType,
@@ -36,6 +36,15 @@ from .fact_check import (
     FactCheckThreshold,
     StoryVerificationResult,
 )
+from .fact_sheet import (
+    FactSheetArtifact,
+    FactSheetClaimSnapshot,
+    FactSheetEvidenceSnapshot,
+    FactSheetFactCheckSnapshot,
+    FactSheetGenerationResult,
+    FactSheetGenerator,
+    FactSheetSourceSnapshot,
+)
 from .policy import (
     SearchBudgets,
     SearchExecutionConstraints,
@@ -71,6 +80,13 @@ __all__ = [
     "FactCheckPolicy",
     "FactCheckPolicyLoader",
     "FactCheckThreshold",
+    "FactSheetArtifact",
+    "FactSheetClaimSnapshot",
+    "FactSheetEvidenceSnapshot",
+    "FactSheetFactCheckSnapshot",
+    "FactSheetGenerationResult",
+    "FactSheetGenerator",
+    "FactSheetSourceSnapshot",
     "ResearchCandidate",
     "ResearchCollection",
     "ResearchCollectionTask",
