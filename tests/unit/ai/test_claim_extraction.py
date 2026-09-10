@@ -326,14 +326,13 @@ def test_persist_rejects_story_context_changed_during_ai_call(tmp_path: Path) ->
             )
         )
 
-    with pytest.raises(StaleStoryContextError):
-        with factory() as session, session.begin():
-            service.persist(
-                session,
-                context=context,
-                triggering_event=event,
-                execution=execution,
-            )
+    with pytest.raises(StaleStoryContextError), factory() as session, session.begin():
+        service.persist(
+            session,
+            context=context,
+            triggering_event=event,
+            execution=execution,
+        )
 
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(Claim)) == 0
