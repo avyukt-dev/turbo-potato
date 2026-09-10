@@ -6,7 +6,6 @@ persistence and event-backed application services become available.
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-
 from news_ai_common.config import AppSettings
 from news_ai_common.runtime import RuntimeDetector
 
