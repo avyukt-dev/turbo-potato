@@ -187,6 +187,9 @@ _RISK_ORDER = {
 }
 
 
+FACT_CHECK_METHODOLOGY_VERSION = "fact-check-methodology-v1"
+
+
 class FactCheckEngine:
     """Evaluate assessed evidence without converting research insufficiency into falsity."""
 
@@ -197,11 +200,15 @@ class FactCheckEngine:
         *,
         producer: str = "research-worker",
         producer_version: str = "0.1.0",
+        methodology_version: str = FACT_CHECK_METHODOLOGY_VERSION,
     ) -> None:
+        if not methodology_version.strip():
+            raise ValueError("fact-check methodology version must not be empty")
         self.policy = policy
         self.risk_policy = risk_policy
         self.producer = producer
         self.producer_version = producer_version
+        self.methodology_version = methodology_version
 
     def verify_evidence_collection(
         self,
@@ -428,6 +435,7 @@ class FactCheckEngine:
         return semantic_key(
             "fact-check",
             {
+                "methodology_version": self.methodology_version,
                 "story_id": story_id,
                 "research_run_id": research_run_id,
                 "claim_id": claim.id,

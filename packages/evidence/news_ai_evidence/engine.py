@@ -179,6 +179,9 @@ class EvidenceAssessor(Protocol):
 SearchProviderSelector = Callable[[SearchRequest, tuple[str, ...]], str]
 
 
+RESEARCH_PLANNER_METHODOLOGY_VERSION = "research-planner-v1"
+
+
 class EvidenceEngine:
     """Research claims without allowing search ranking or query intent to become factual truth."""
 
@@ -191,7 +194,10 @@ class EvidenceEngine:
         *,
         producer: str = "research-worker",
         producer_version: str = "0.1.0",
+        methodology_version: str = RESEARCH_PLANNER_METHODOLOGY_VERSION,
     ) -> None:
+        if not methodology_version.strip():
+            raise ValueError("research planner methodology version must not be empty")
         self.registry = registry
         self.search_policy = search_policy
         self.enforcer = SearchPolicyEnforcer(search_policy)
@@ -199,6 +205,7 @@ class EvidenceEngine:
         self.assessor = assessor
         self.producer = producer
         self.producer_version = producer_version
+        self.methodology_version = methodology_version
 
     def request_research(
         self,
@@ -217,6 +224,7 @@ class EvidenceEngine:
         operation_key = semantic_key(
             "research",
             {
+                "methodology_version": self.methodology_version,
                 "story_id": story.id,
                 "claim_ids": sorted(payload.claim_ids, key=str),
                 "ai_run_id": payload.ai_run_id,
@@ -256,6 +264,7 @@ class EvidenceEngine:
                 priority=2,
                 payload={
                     "plan": plan.model_dump(mode="json"),
+                    "methodology_version": self.methodology_version,
                     "triggering_event_id": str(triggering_event.event_id),
                 },
                 semantic_key=operation_key,

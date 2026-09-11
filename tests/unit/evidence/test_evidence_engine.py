@@ -18,6 +18,7 @@ from news_ai_database import (
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
 from news_ai_events import EventEnvelope, EventType
 from news_ai_evidence import (
+    RESEARCH_PLANNER_METHODOLOGY_VERSION,
     CandidateSourceType,
     EvidenceAssessment,
     EvidenceEngine,
@@ -126,13 +127,20 @@ def _policy() -> SearchPolicy:
     )
 
 
-def _engine(*, assessor=None, fail_news: bool = False) -> EvidenceEngine:
+def _engine(
+    *,
+    assessor=None,
+    fail_news: bool = False,
+    methodology_version: str = RESEARCH_PLANNER_METHODOLOGY_VERSION,
+    policy: SearchPolicy | None = None,
+) -> EvidenceEngine:
     provider = FakeSearchProvider(fail_news=fail_news)
     return EvidenceEngine(
         SearchProviderRegistry([provider]),
-        _policy(),
+        policy or _policy(),
         lambda _request, compatible: compatible[0],
         assessor or ExplicitAssessor(),
+        methodology_version=methodology_version,
     )
 
 
@@ -250,6 +258,38 @@ def test_research_request_reuses_semantic_operation_for_new_event_id() -> None:
     assert second.created is False
     assert second.research_run_id == first.research_run_id
     assert second.event_id == first.event_id
+
+
+def test_research_methodology_version_invalidates_semantic_operation() -> None:
+    factory = _factory()
+    _, _, trigger, _, _, first = _prepare(factory, _engine())
+
+    with factory() as session, session.begin():
+        second = _engine(methodology_version="research-planner-v2").request_research(
+            session, trigger
+        )
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Job)) == 2
+        stored = session.get(Job, second.research_run_id)
+        assert stored is not None
+        assert stored.payload["methodology_version"] == "research-planner-v2"
+    assert second.created is True
+    assert second.research_run_id != first.research_run_id
+
+
+def test_research_policy_change_invalidates_semantic_operation_independently() -> None:
+    factory = _factory()
+    _, _, trigger, _, _, first = _prepare(factory, _engine())
+    changed_policy = _policy().model_copy(
+        update={"rules": _policy().rules.model_copy(update={"search_counterclaims": False})}
+    )
+
+    with factory() as session, session.begin():
+        second = _engine(policy=changed_policy).request_research(session, trigger)
+
+    assert second.created is True
+    assert second.research_run_id != first.research_run_id
 
 
 def test_research_request_allows_materially_changed_claim_input() -> None:
