@@ -99,7 +99,8 @@ def build_production_research_stack(
         EvidenceAssessmentPrompt.load(prompt_root / "evidence-assessment" / "v1.txt"),
     )
     search_registry = SearchProviderRegistry((PostgresArticleSearchProvider(session_factory),))
-    source_resolver = SourceEvidenceResolver(ResearchPolicyLoader(loader).load())
+    research_policy = ResearchPolicyLoader(loader).load()
+    source_resolver = SourceEvidenceResolver(research_policy)
     evidence_engine = EvidenceEngine(
         search_registry,
         SearchPolicyLoader(loader).load(),
@@ -110,6 +111,9 @@ def build_production_research_stack(
     fact_check_engine = FactCheckEngine(
         FactCheckPolicyLoader(loader).load(),
         EditorialConfigLoader(loader).load().risk_policy,
+        discovery_is_not_sufficient_for_serious_claims=(
+            research_policy.source_policy.rules.discovery_is_not_sufficient_for_serious_claims
+        ),
     )
 
     def consumer(event_type: EventType, group: str) -> RedisStreamConsumer:

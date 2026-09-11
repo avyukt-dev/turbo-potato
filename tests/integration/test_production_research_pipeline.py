@@ -186,7 +186,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 name="Origin News",
                 domain="origin.example",
                 source_type="NEWS",
-                authority_level=2,
+                authority_level=4,
                 source_metadata={"wire_origin": "wire:flood-42"},
             )
             session.add(source)
@@ -224,7 +224,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 name="Syndicated News",
                 domain="syndicated.example",
                 source_type="NEWS",
-                authority_level=2,
+                authority_level=4,
                 source_metadata={"wire_origin": "wire:flood-42"},
             )
             session.add(syndicated_source)
@@ -249,6 +249,34 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                     ),
                     retrieved_at=now,
                     version_metadata={"originating_url": "https://wire.example/flood-42"},
+                )
+            )
+            primary_record_source = Source(
+                name="Community records archive",
+                domain="records.example",
+                source_type="NEWS",
+                authority_level=4,
+                source_metadata={},
+            )
+            session.add(primary_record_source)
+            session.flush()
+            primary_record = Article(
+                source_id=primary_record_source.id,
+                canonical_url="https://records.example/gauge-reading-17",
+                title="River gauge measurement record",
+                language="en",
+                published_at=now,
+            )
+            session.add(primary_record)
+            session.flush()
+            session.add(
+                ArticleVersion(
+                    article_id=primary_record.id,
+                    version_number=1,
+                    content_hash="8" * 64,
+                    body="The river gauge measured two metres in measurement record 17.",
+                    retrieved_at=now,
+                    version_metadata={"primary_document_id": "gauge-record:17"},
                 )
             )
 
@@ -344,6 +372,12 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
             assert {claim.status for claim in claims} <= set(ClaimVerificationStatus)
             assert ClaimVerificationStatus.UNVERIFIED in {claim.status for claim in claims}
             assert FactCheckLabel.UNVERIFIED in {check.label for check in checks}
+            high_claim = next(claim for claim in claims if claim.risk_level == "HIGH")
+            high_check = next(check for check in checks if check.claim_id == high_claim.id)
+            assert high_claim.status is ClaimVerificationStatus.PARTIALLY_SUPPORTED
+            assert high_check.label is FactCheckLabel.PARTIALLY_TRUE
+            assert "independent_support_groups=2" in (high_check.reasoning_summary or "")
+            assert "authority_qualified_support_groups=0" in (high_check.reasoning_summary or "")
             assert story.status == "VERIFIED"
             assert content.payload["fact_sheet_id"] == str(sheet.id)
             assert content.aggregate_id == sheet.id
@@ -365,7 +399,25 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 per_claim_groups.setdefault(assessment["claim_id"], set()).add(
                     item.evidence_metadata["independence_group"]
                 )
-            assert all(len(groups) == 1 for groups in per_claim_groups.values())
+            high_groups = per_claim_groups[str(high_claim.id)]
+            assert len(high_groups) == 2
+            high_evidence = [
+                item
+                for item in reviewed
+                if item.evidence_metadata["relationship_assessments"][0]["claim_id"]
+                == str(high_claim.id)
+            ]
+            assert all(item.evidence_metadata["source_level"] == 4 for item in high_evidence)
+            assert (
+                len(
+                    {
+                        item.evidence_metadata["independence_group"]
+                        for item in high_evidence
+                        if item.evidence_metadata["lineage_status"] == "KNOWN_SHARED"
+                    }
+                )
+                == 1
+            )
             assert all(
                 entry["article_version_id"] and entry["content_hash"]
                 for entry in sheet.evidence_snapshot

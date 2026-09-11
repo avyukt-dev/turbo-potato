@@ -23,6 +23,13 @@ _SHARED_REFERENCE_KEYS = (
     "dataset_id",
     "citation_source_url",
 )
+_POSITIVE_ORIGIN_KEYS = (
+    "primary_document_id",
+    "dataset_id",
+    "eyewitness_record_id",
+    "source_record_id",
+)
+_LINEAGE_REFERENCE_KEYS = tuple(dict.fromkeys((*_SHARED_REFERENCE_KEYS, *_POSITIVE_ORIGIN_KEYS)))
 
 
 class SourceAuthorityLevel(IntEnum):
@@ -69,6 +76,10 @@ class SourcePolicyConfig(BaseModel):
             raise ValueError("primary sources must not be configured as automatic truth")
         if not self.rules.preserve_source_lineage:
             raise ValueError("source lineage preservation is mandatory")
+        if not self.rules.discovery_is_not_sufficient_for_serious_claims:
+            raise ValueError("discovery sources cannot be sufficient for serious claims")
+        if self.rules.unknown_effective_level is not SourceAuthorityLevel.DISCOVERY:
+            raise ValueError("unknown source authority must resolve to discovery level")
         return self
 
 
@@ -222,7 +233,7 @@ class SourceEvidenceResolver:
         combined = {**(source.source_metadata or {}), **(version.version_metadata or {})}
         references = {
             key: str(combined[key]).strip()
-            for key in _SHARED_REFERENCE_KEYS
+            for key in _LINEAGE_REFERENCE_KEYS
             if combined.get(key) is not None and str(combined[key]).strip()
         }
         return _Record(candidate, source, article, version, references)
@@ -257,32 +268,50 @@ class SourceEvidenceResolver:
 
         output: dict[tuple[UUID, str], CandidateSourceResolution] = {}
         for indexes in components.values():
-            matches = [
-                pair_basis[pair] for pair in pair_basis if pair[0] in indexes and pair[1] in indexes
-            ]
-            if matches:
-                known = next(
-                    (item for item in matches if item[0] is LineageStatus.KNOWN_SHARED),
-                    None,
-                )
-                selected = known or matches[0]
-                fingerprint = f"{selected[1]}|{selected[2] or ''}"
-                lineage = LineageResolution(
-                    status=selected[0],
-                    independence_group="shared:"
-                    + hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
-                    basis=selected[1],
-                    originating_reference=selected[2],
-                )
-            else:
-                only = records[indexes[0]]
-                lineage = LineageResolution(
-                    status=LineageStatus.INDEPENDENT,
-                    independence_group=f"independent:{only.version.id}",
-                    basis="distinct-durable-source-version",
-                )
+            component_pairs = {
+                pair: match
+                for pair, match in pair_basis.items()
+                if pair[0] in indexes and pair[1] in indexes
+            }
+            shared_group = None
+            if component_pairs:
+                fingerprint = "|".join(sorted(str(records[index].version.id) for index in indexes))
+                shared_group = "shared:" + hashlib.sha256(fingerprint.encode()).hexdigest()[:32]
             for index in indexes:
                 record = records[index]
+                if shared_group is not None:
+                    incident = [match for pair, match in component_pairs.items() if index in pair]
+                    selected = min(
+                        incident,
+                        key=lambda item: (
+                            0 if item[0] is LineageStatus.KNOWN_SHARED else 1,
+                            item[1],
+                            item[2] or "",
+                        ),
+                    )
+                    lineage = LineageResolution(
+                        status=selected[0],
+                        independence_group=shared_group,
+                        basis=selected[1],
+                        originating_reference=selected[2],
+                    )
+                else:
+                    positive = self._positive_origin(record)
+                    if positive is None:
+                        lineage = LineageResolution(
+                            status=LineageStatus.UNRESOLVED,
+                            basis="no-positive-lineage-or-independence-signal",
+                        )
+                    else:
+                        basis, reference = positive
+                        fingerprint = f"{basis}|{reference}"
+                        lineage = LineageResolution(
+                            status=LineageStatus.INDEPENDENT,
+                            independence_group="independent:"
+                            + hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
+                            basis=basis,
+                            originating_reference=reference,
+                        )
                 level = record.source.authority_level
                 explicit = level in {1, 2, 3, 4}
                 authority = SourcePolicyResolution(
@@ -308,6 +337,14 @@ class SourceEvidenceResolver:
                     )
                 )
         return output
+
+    @staticmethod
+    def _positive_origin(record: _Record) -> tuple[str, str] | None:
+        for key in _POSITIVE_ORIGIN_KEYS:
+            reference = record.references.get(key)
+            if reference is not None:
+                return f"explicit-{key}", reference
+        return None
 
     def _shared_basis(
         self, left: _Record, right: _Record

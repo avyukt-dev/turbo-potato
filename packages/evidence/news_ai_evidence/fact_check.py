@@ -206,6 +206,7 @@ class FactCheckEngine:
         producer: str = "research-worker",
         producer_version: str = "0.1.0",
         methodology_version: str = FACT_CHECK_METHODOLOGY_VERSION,
+        discovery_is_not_sufficient_for_serious_claims: bool = True,
     ) -> None:
         if not methodology_version.strip():
             raise ValueError("fact-check methodology version must not be empty")
@@ -214,6 +215,11 @@ class FactCheckEngine:
         self.producer = producer
         self.producer_version = producer_version
         self.methodology_version = methodology_version
+        if not discovery_is_not_sufficient_for_serious_claims:
+            raise ValueError("discovery sources cannot be sufficient for serious claims")
+        self.discovery_is_not_sufficient_for_serious_claims = (
+            discovery_is_not_sufficient_for_serious_claims
+        )
 
     def verify_evidence_collection(
         self,
@@ -551,11 +557,11 @@ class FactCheckEngine:
         credible_support = support_score >= threshold.credible_strength
         credible_contradiction = contradiction_score >= threshold.credible_strength
         strong_support = support_score >= threshold.decisive_strength and self._corroborated(
-            support, threshold
+            support, threshold, claim.risk_level
         )
         strong_contradiction = (
             contradiction_score >= threshold.decisive_strength
-            and self._corroborated(contradict, threshold)
+            and self._corroborated(contradict, threshold, claim.risk_level)
         )
 
         if credible_support and credible_contradiction:
@@ -587,13 +593,21 @@ class FactCheckEngine:
             contradict,
             threshold.credible_strength,
         )
+        authority_support_groups = self._authority_qualified_groups(
+            support, threshold.credible_strength, claim.risk_level
+        )
+        authority_contradiction_groups = self._authority_qualified_groups(
+            contradict, threshold.credible_strength, claim.risk_level
+        )
         summary = _summary_for(status)
         reasoning = (
             f"support={len(support)} strongest={support_score}; "
             f"contradiction={len(contradict)} strongest={contradiction_score}; "
             f"qualifying={len(qualify)}; primary={primary_count}; "
             f"independent_support_groups={len(support_groups)}; "
-            f"independent_contradiction_groups={len(contradiction_groups)}"
+            f"independent_contradiction_groups={len(contradiction_groups)}; "
+            f"authority_qualified_support_groups={len(authority_support_groups)}; "
+            f"authority_qualified_contradiction_groups={len(authority_contradiction_groups)}"
         )
         return ClaimVerificationResult(
             claim_id=claim.id,
@@ -616,6 +630,7 @@ class FactCheckEngine:
         self,
         links: tuple[_EvidenceLink, ...],
         threshold: FactCheckThreshold,
+        risk_level: RiskLevel,
     ) -> bool:
         credible = tuple(item for item in links if item.strength >= threshold.credible_strength)
         if not credible:
@@ -624,8 +639,21 @@ class FactCheckEngine:
             item.source_level == 1 for item in credible
         ):
             return True
-        groups = _independence_groups(credible, threshold.credible_strength)
+        groups = self._authority_qualified_groups(credible, threshold.credible_strength, risk_level)
         return len(groups) >= threshold.min_independent_groups
+
+    def _authority_qualified_groups(
+        self,
+        links: tuple[_EvidenceLink, ...],
+        minimum_strength: Decimal,
+        risk_level: RiskLevel,
+    ) -> set[str]:
+        if self.discovery_is_not_sufficient_for_serious_claims and risk_level in {
+            RiskLevel.HIGH,
+            RiskLevel.CRITICAL,
+        }:
+            links = tuple(item for item in links if item.source_level in {1, 2, 3})
+        return _independence_groups(links, minimum_strength)
 
     @staticmethod
     def _load_claims(

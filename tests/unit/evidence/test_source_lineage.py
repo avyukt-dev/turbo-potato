@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
 from news_ai_common.config import ConfigLoader
 from news_ai_database import Article, ArticleVersion, Base, Source
 from news_ai_evidence import (
@@ -15,7 +16,10 @@ from news_ai_evidence import (
     SearchResult,
     SourceAuthorityLevel,
     SourceEvidenceResolver,
+    SourcePolicyConfig,
 )
+from news_ai_evidence.source_policy import _shingle_similarity
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -102,8 +106,16 @@ def _record(
     return source, article, version
 
 
-def _resolver() -> SourceEvidenceResolver:
-    return SourceEvidenceResolver(ResearchPolicyLoader(ConfigLoader("config")).load())
+def _resolver(*, threshold: float | None = None) -> SourceEvidenceResolver:
+    policy = ResearchPolicyLoader(ConfigLoader("config")).load()
+    if threshold is not None:
+        policy = policy.__class__(
+            source_policy=policy.source_policy,
+            corroboration=policy.corroboration.model_copy(
+                update={"near_duplicate_similarity_threshold": threshold}
+            ),
+        )
+    return SourceEvidenceResolver(policy)
 
 
 def test_wire_republication_and_exact_duplicates_form_one_group() -> None:
@@ -214,6 +226,106 @@ def test_distinct_primary_records_remain_distinct_and_unknown_authority_is_conse
     assert len({item.lineage.independence_group for item in values}) == 2
     assert values[0].authority.effective_level is SourceAuthorityLevel.PRIMARY
     assert values[1].authority.effective_level is SourceAuthorityLevel.DISCOVERY
+
+
+def test_distinct_durable_records_without_positive_origin_are_unresolved() -> None:
+    factory = _factory()
+    claim_id = uuid4()
+    with factory() as session, session.begin():
+        records = (
+            _record(session, 1, body="A municipal budget meeting discussed bridge repairs."),
+            _record(session, 2, body="A coastal forecast described unusually calm conditions."),
+            _record(session, 3, body="A theatre company announced its winter programme."),
+        )
+        result = _resolver().resolve(
+            session, tuple(_candidate(claim_id, *record) for record in records)
+        )
+
+    assert {item.lineage.status for item in result.values()} == {LineageStatus.UNRESOLVED}
+    assert {item.lineage.independence_group for item in result.values()} == {None}
+    assert {item.lineage.basis for item in result.values()} == {
+        "no-positive-lineage-or-independence-signal"
+    }
+
+
+def test_near_duplicate_similarity_threshold_is_inclusive() -> None:
+    first_body = "one two three four five six seven eight nine ten shared report material"
+    second_body = first_body + " update"
+    similarity = _shingle_similarity(first_body, second_body, 5)
+    factory = _factory()
+    claim_id = uuid4()
+    with factory() as session, session.begin():
+        first = _record(session, 1, body=first_body)
+        second = _record(session, 2, body=second_body)
+        candidates = (_candidate(claim_id, *first), _candidate(claim_id, *second))
+        at_threshold = _resolver(threshold=similarity).resolve(session, candidates)
+        below_threshold = _resolver(threshold=min(1.0, similarity + 0.001)).resolve(
+            session, candidates
+        )
+
+    assert {item.lineage.status for item in at_threshold.values()} == {
+        LineageStatus.INFERRED_SHARED
+    }
+    assert {item.lineage.status for item in below_threshold.values()} == {LineageStatus.UNRESOLVED}
+
+
+def test_transitive_component_preserves_truthful_per_member_basis() -> None:
+    factory = _factory()
+    claim_id = uuid4()
+    shared_text = "one two three four five six seven eight nine ten shared dispatch"
+    with factory() as session, session.begin():
+        known_only = _record(
+            session,
+            1,
+            body="Text unrelated to the syndicated wording.",
+            source_metadata={"wire_origin": "wire:transitive"},
+        )
+        bridge = _record(
+            session,
+            2,
+            body=shared_text,
+            source_metadata={"wire_origin": "wire:transitive"},
+        )
+        inferred_only = _record(session, 3, body=shared_text + " update")
+        result = _resolver().resolve(
+            session,
+            tuple(_candidate(claim_id, *record) for record in (known_only, bridge, inferred_only)),
+        )
+
+    by_url = {item.article.canonical_url: item.lineage for item in result.values()}
+    known = by_url[known_only[1].canonical_url]
+    bridging = by_url[bridge[1].canonical_url]
+    inferred = by_url[inferred_only[1].canonical_url]
+    assert known.status is LineageStatus.KNOWN_SHARED
+    assert known.basis == "shared-wire_origin"
+    assert bridging.status is LineageStatus.KNOWN_SHARED
+    assert bridging.basis == "shared-wire_origin"
+    assert inferred.status is LineageStatus.INFERRED_SHARED
+    assert inferred.basis == "near-duplicate-content"
+    assert (
+        len({known.independence_group, bridging.independence_group, inferred.independence_group})
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("rule", "value"),
+    (
+        ("primary_is_not_automatic_truth", False),
+        ("preserve_source_lineage", False),
+        ("discovery_is_not_sufficient_for_serious_claims", False),
+        ("unknown_effective_level", SourceAuthorityLevel.ESTABLISHED_SECONDARY),
+    ),
+)
+def test_source_policy_rejects_disabled_canonical_safety_invariants(
+    rule: str, value: object
+) -> None:
+    policy = ResearchPolicyLoader(ConfigLoader("config")).load().source_policy
+    raw = policy.model_dump(mode="python")
+    raw["rules"][rule] = value
+
+    with pytest.raises(ValidationError):
+        SourcePolicyConfig.model_validate(raw)
 
 
 def test_unresolved_candidate_never_gets_an_independence_group() -> None:

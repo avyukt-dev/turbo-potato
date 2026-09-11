@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from news_ai_database import Article, ArticleVersion, Base, Source
@@ -128,3 +129,66 @@ def test_corpus_provider_rejects_unsupported_web_capability() -> None:
 
     with pytest.raises(SearchCapabilityError):
         asyncio.run(provider.search(_request(capability=SearchCapability.WEB)))
+
+
+def test_corpus_provider_does_not_silently_truncate_before_matching() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    now = datetime(2026, 9, 11, tzinfo=UTC)
+    with factory() as session, session.begin():
+        source = Source(
+            name="Large corpus",
+            domain="large.example",
+            source_type="NEWS",
+            authority_level=4,
+            language="en",
+            source_metadata={},
+        )
+        session.add(source)
+        session.flush()
+        for index in range(1, 2002):
+            article = Article(
+                id=UUID(int=index),
+                source_id=source.id,
+                canonical_url=f"https://large.example/{index}",
+                title="Routine corpus entry",
+                language="en",
+                published_at=now,
+            )
+            session.add(article)
+            session.add(
+                ArticleVersion(
+                    article_id=article.id,
+                    version_number=1,
+                    content_hash=f"{index:064x}",
+                    body="Unrelated archived material.",
+                    retrieved_at=now,
+                    version_metadata={},
+                )
+            )
+        relevant = Article(
+            id=UUID("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+            source_id=source.id,
+            canonical_url="https://large.example/relevant",
+            title="Needleworthy investigation",
+            language="en",
+            published_at=now,
+        )
+        session.add(relevant)
+        session.add(
+            ArticleVersion(
+                article_id=relevant.id,
+                version_number=1,
+                content_hash="f" * 64,
+                body="The uniquely needleworthy record is present.",
+                retrieved_at=now,
+                version_metadata={},
+            )
+        )
+
+    response = asyncio.run(
+        PostgresArticleSearchProvider(factory).search(_request(query="needleworthy"))
+    )
+
+    assert [item.url for item in response.results] == [relevant.canonical_url]

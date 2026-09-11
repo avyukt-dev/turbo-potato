@@ -35,13 +35,9 @@ class PostgresArticleSearchProvider:
         session_factory: Callable[[], Session],
         *,
         clock: Callable[[], datetime] | None = None,
-        scan_limit: int = 2_000,
     ) -> None:
-        if scan_limit < 1:
-            raise ValueError("corpus scan_limit must be positive")
         self.session_factory = session_factory
         self.clock = clock or (lambda: datetime.now(UTC))
-        self.scan_limit = scan_limit
         self._capabilities = SearchProviderCapabilities(
             provider_id=self.provider_id,
             capabilities=frozenset({SearchCapability.NEWS}),
@@ -88,7 +84,6 @@ class PostgresArticleSearchProvider:
                     )
                     .where(Source.is_active.is_(True))
                     .order_by(Article.id, ArticleVersion.id)
-                    .limit(self.scan_limit)
                 )
             )
 

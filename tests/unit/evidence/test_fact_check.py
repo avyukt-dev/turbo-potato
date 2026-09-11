@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from news_ai_common.config import ConfigLoader
 from news_ai_database import (
     Base,
@@ -222,6 +223,24 @@ def test_many_unresolved_sources_do_not_satisfy_high_risk_corroboration() -> Non
     )
 
     assert result.claim_results[0].independent_support_groups == 0
+    assert claim.status is ClaimVerificationStatus.PARTIALLY_SUPPORTED
+    assert fact_check.label is FactCheckLabel.PARTIALLY_TRUE
+
+
+@pytest.mark.parametrize("risk", (RiskLevel.HIGH, RiskLevel.CRITICAL))
+def test_discovery_sources_remain_distinct_but_cannot_decide_serious_claim(
+    risk: RiskLevel,
+) -> None:
+    _, result, _, claim, fact_check, _ = _verify(
+        risk=risk,
+        evidence=tuple(
+            (EvidenceRelation.DIRECT_SUPPORT, "0.95", f"explicit-primary-record:{index}", 4)
+            for index in range(6)
+        ),
+    )
+
+    assert result.claim_results[0].independent_support_groups == 6
+    assert "authority_qualified_support_groups=0" in result.claim_results[0].reasoning_summary
     assert claim.status is ClaimVerificationStatus.PARTIALLY_SUPPORTED
     assert fact_check.label is FactCheckLabel.PARTIALLY_TRUE
 
