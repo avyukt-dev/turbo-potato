@@ -143,6 +143,19 @@ def _seed_story(factory: sessionmaker[Session]) -> tuple[Story, Article, Article
 
 
 def _story_event(story_id, *, event_type: EventType = EventType.STORY_CREATED) -> EventEnvelope:
+    if event_type is EventType.STORY_CREATED:
+        payload = {
+            "story_id": str(story_id),
+            "article_id": str(uuid4()),
+            "cluster_key": "claim-extraction-test",
+        }
+    else:
+        payload = {
+            "story_id": str(story_id),
+            "article_ids": [str(uuid4())],
+            "similarity_score": 0.9,
+            "cluster_method": "test",
+        }
     return EventEnvelope(
         event_type=event_type,
         producer="processor",
@@ -150,7 +163,7 @@ def _story_event(story_id, *, event_type: EventType = EventType.STORY_CREATED) -
         aggregate_type="story",
         aggregate_id=story_id,
         idempotency_key=f"{event_type.value}:{uuid4()}",
-        payload={"story_id": str(story_id)},
+        payload=payload,
     )
 
 

@@ -23,13 +23,22 @@ def test_event_maps_to_canonical_stream() -> None:
 def test_publisher_serializes_envelope() -> None:
     client = FakeRedis()
     publisher = RedisStreamPublisher(client, maxlen=1000)
+    article_id = uuid4()
     event = EventEnvelope(
         event_type=EventType.ARTICLE_DISCOVERED,
         producer="collector",
         producer_version="0.1.0",
         aggregate_type="article",
-        aggregate_id=uuid4(),
+        aggregate_id=article_id,
         idempotency_key="article:1",
+        payload={
+            "article_id": str(article_id),
+            "source_id": str(uuid4()),
+            "source_feed_id": str(uuid4()),
+            "canonical_url": "https://example.com/article",
+            "title": "Example",
+            "published_at": None,
+        },
     )
 
     message_id = asyncio.run(publisher.publish(event))

@@ -1,15 +1,20 @@
 """Versioned event envelope."""
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .payloads import validate_event_payload
 from .types import EventType
 
 
 class EventEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     event_id: UUID = Field(default_factory=uuid4)
     event_type: EventType
     schema_version: int = Field(default=1, ge=1)
@@ -29,3 +34,8 @@ class EventEnvelope(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("occurred_at must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def validate_versioned_payload(self) -> EventEnvelope:
+        self.payload = validate_event_payload(self.event_type, self.schema_version, self.payload)
+        return self

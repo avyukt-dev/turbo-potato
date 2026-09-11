@@ -10,6 +10,7 @@ from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState,
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -118,6 +119,12 @@ class ArticleVersion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class Story(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "stories"
+    __table_args__ = (
+        CheckConstraint(
+            "risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')",
+            name="ck_stories_risk_level",
+        ),
+    )
 
     canonical_headline: Mapped[str | None] = mapped_column(Text)
     summary: Mapped[str | None] = mapped_column(Text)
@@ -129,13 +136,14 @@ class Story(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     evidence_strength: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     controversy_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     risk_level: Mapped[RiskLevel] = mapped_column(
-        SAEnum(RiskLevel, native_enum=False, length=16),
+        SAEnum(RiskLevel, native_enum=False, length=16, validate_strings=True),
         nullable=False,
         default=RiskLevel.LOW,
     )
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     cluster_key: Mapped[str | None] = mapped_column(String(255), index=True)
     story_metadata: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+    verification_semantic_key: Mapped[str | None] = mapped_column(String(128), index=True)
 
 
 class StorySource(Base):
@@ -185,20 +193,36 @@ class AIRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "claims"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('UNASSESSED', 'SUPPORTED', 'PARTIALLY_SUPPORTED', "
+            "'DISPUTED', 'UNVERIFIED', 'REFUTED')",
+            name="ck_claims_status",
+        ),
+        CheckConstraint(
+            "risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')",
+            name="ck_claims_risk_level",
+        ),
+    )
 
     story_id: Mapped[UUID] = mapped_column(ForeignKey("stories.id"), nullable=False, index=True)
     claim_text: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_claim: Mapped[str | None] = mapped_column(Text)
     claim_type: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[ClaimVerificationStatus] = mapped_column(
-        SAEnum(ClaimVerificationStatus, native_enum=False, length=32),
+        SAEnum(
+            ClaimVerificationStatus,
+            native_enum=False,
+            length=32,
+            validate_strings=True,
+        ),
         nullable=False,
         default=ClaimVerificationStatus.UNASSESSED,
     )
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     importance_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     risk_level: Mapped[RiskLevel] = mapped_column(
-        SAEnum(RiskLevel, native_enum=False, length=16),
+        SAEnum(RiskLevel, native_enum=False, length=16, validate_strings=True),
         nullable=False,
         default=RiskLevel.LOW,
     )
@@ -236,21 +260,54 @@ class ClaimEvidence(Base):
 
 class FactCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "fact_checks"
+    __table_args__ = (
+        CheckConstraint(
+            "label IN ('TRUE', 'MOSTLY_TRUE', 'PARTIALLY_TRUE', 'MISLEADING', "
+            "'OUT_OF_CONTEXT', 'UNVERIFIED', 'FALSE', 'FABRICATED', 'SATIRE')",
+            name="ck_fact_checks_label",
+        ),
+        CheckConstraint(
+            "review_state IN ('NOT_READY', 'READY_FOR_REVIEW', 'IN_REVIEW', "
+            "'APPROVED', 'REJECTED', 'CHANGES_REQUESTED')",
+            name="ck_fact_checks_review_state",
+        ),
+        CheckConstraint(
+            "primary_evidence_count >= 0",
+            name="ck_fact_checks_primary_evidence_count_nonnegative",
+        ),
+        CheckConstraint(
+            "supporting_count >= 0",
+            name="ck_fact_checks_supporting_count_nonnegative",
+        ),
+        CheckConstraint(
+            "contradicting_count >= 0",
+            name="ck_fact_checks_contradicting_count_nonnegative",
+        ),
+        UniqueConstraint("semantic_key", name="uq_fact_checks_semantic_key"),
+    )
 
     story_id: Mapped[UUID] = mapped_column(ForeignKey("stories.id"), nullable=False, index=True)
     claim_id: Mapped[UUID | None] = mapped_column(ForeignKey("claims.id"), index=True)
     label: Mapped[FactCheckLabel] = mapped_column(
-        SAEnum(FactCheckLabel, native_enum=False, length=32), nullable=False
+        SAEnum(FactCheckLabel, native_enum=False, length=32, validate_strings=True),
+        nullable=False,
     )
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     summary: Mapped[str | None] = mapped_column(Text)
     reasoning_summary: Mapped[str | None] = mapped_column(Text)
+    primary_evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    supporting_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    contradicting_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     review_state: Mapped[ReviewState] = mapped_column(
-        SAEnum(ReviewState, native_enum=False, length=32),
+        SAEnum(ReviewState, native_enum=False, length=32, validate_strings=True),
         nullable=False,
         default=ReviewState.NOT_READY,
     )
+    ai_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("ai_runs.id"), nullable=True, index=True
+    )
+    semantic_key: Mapped[str | None] = mapped_column(String(128), index=True)
 
 
 class FactSheet(UUIDPrimaryKeyMixin, Base):
@@ -260,6 +317,11 @@ class FactSheet(UUIDPrimaryKeyMixin, Base):
             "story_id",
             "version",
             name="uq_fact_sheets_story_id_version",
+        ),
+        UniqueConstraint("semantic_key", name="uq_fact_sheets_semantic_key"),
+        CheckConstraint(
+            "risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')",
+            name="ck_fact_sheets_risk_level",
         ),
     )
 
@@ -279,17 +341,20 @@ class FactSheet(UUIDPrimaryKeyMixin, Base):
     unresolved_questions: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
     confidence_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     risk_level: Mapped[RiskLevel] = mapped_column(
-        SAEnum(RiskLevel, native_enum=False, length=16), nullable=False
+        SAEnum(RiskLevel, native_enum=False, length=16, validate_strings=True),
+        nullable=False,
     )
     sensitive_topics: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
     ai_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("ai_runs.id"), nullable=True, index=True
     )
+    semantic_key: Mapped[str | None] = mapped_column(String(128), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "jobs"
+    __table_args__ = (UniqueConstraint("semantic_key", name="uq_jobs_semantic_key"),)
 
     job_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING", index=True)
@@ -299,6 +364,7 @@ class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
+    semantic_key: Mapped[str | None] = mapped_column(String(128), index=True)
 
 
 class JobAttempt(UUIDPrimaryKeyMixin, Base):
@@ -324,6 +390,10 @@ class EventOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "event_outbox"
     __table_args__ = (
         UniqueConstraint("event_id", name="uq_event_outbox_event_id"),
+        CheckConstraint(
+            "status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'FAILED')",
+            name="ck_event_outbox_status",
+        ),
         Index(
             "ix_event_outbox_dispatch_ready",
             "status",
@@ -345,7 +415,7 @@ class EventOutbox(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
     status: Mapped[OutboxStatus] = mapped_column(
-        SAEnum(OutboxStatus, native_enum=False, length=16),
+        SAEnum(OutboxStatus, native_enum=False, length=16, validate_strings=True),
         nullable=False,
         default=OutboxStatus.PENDING,
         index=True,

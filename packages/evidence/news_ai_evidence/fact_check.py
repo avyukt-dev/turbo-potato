@@ -12,20 +12,36 @@ from typing import Any
 from uuid import UUID
 
 from news_ai_common.config import ConfigDomain, ConfigLoader
-from news_ai_database import Claim, ClaimEvidence, EvidenceItem, FactCheck, Job, Story
+from news_ai_database import (
+    Claim,
+    ClaimEvidence,
+    EventOutbox,
+    EvidenceItem,
+    FactCheck,
+    Job,
+    Story,
+)
 from news_ai_domain import (
     ClaimVerificationStatus,
     FactCheckLabel,
     ReviewState,
     RiskLevel,
 )
-from news_ai_events import EventEnvelope, EventType
+from news_ai_editorial import EditorialRiskPolicy
+from news_ai_events import (
+    EventEnvelope,
+    EventType,
+    EvidenceCollectedV1,
+    FactCheckCompletedV1,
+    parse_event_payload,
+)
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .engine import EvidenceRelation
+from .semantic import semantic_key
 
 
 class FactCheckInvariants(BaseModel):
@@ -110,14 +126,19 @@ class ClaimVerificationResult(BaseModel):
 @dataclass(frozen=True, slots=True)
 class FactCheckBatchResult:
     story_id: UUID
-    event_id: UUID
+    event_ids: tuple[UUID, ...]
     fact_check_ids: tuple[UUID, ...]
     claim_results: tuple[ClaimVerificationResult, ...]
+    created_count: int
+
+    @property
+    def event_id(self) -> UUID:
+        return self.event_ids[0]
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
             "story_id": str(self.story_id),
-            "event_id": str(self.event_id),
+            "event_ids": [str(item) for item in self.event_ids],
             "fact_check_ids": [str(item) for item in self.fact_check_ids],
             "claim_statuses": {
                 str(item.claim_id): item.status.value for item in self.claim_results
@@ -128,14 +149,20 @@ class FactCheckBatchResult:
 @dataclass(frozen=True, slots=True)
 class StoryVerificationResult:
     story_id: UUID
-    event_id: UUID
+    event_id: UUID | None
     claim_ids: tuple[UUID, ...]
+    fact_check_ids: tuple[UUID, ...]
+    ready: bool
+    created: bool
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
             "story_id": str(self.story_id),
-            "event_id": str(self.event_id),
+            "event_id": str(self.event_id) if self.event_id is not None else None,
             "claim_ids": [str(item) for item in self.claim_ids],
+            "fact_check_ids": [str(item) for item in self.fact_check_ids],
+            "ready": self.ready,
+            "created": self.created,
         }
 
 
@@ -152,6 +179,15 @@ _SUPPORT_RELATIONS = {
     EvidenceRelation.DIRECT_SUPPORT,
     EvidenceRelation.INDIRECT_SUPPORT,
 }
+_RISK_ORDER = {
+    RiskLevel.LOW: 0,
+    RiskLevel.MEDIUM: 1,
+    RiskLevel.HIGH: 2,
+    RiskLevel.CRITICAL: 3,
+}
+
+
+FACT_CHECK_METHODOLOGY_VERSION = "fact-check-methodology-v1"
 
 
 class FactCheckEngine:
@@ -160,13 +196,19 @@ class FactCheckEngine:
     def __init__(
         self,
         policy: FactCheckPolicy,
+        risk_policy: EditorialRiskPolicy,
         *,
         producer: str = "research-worker",
         producer_version: str = "0.1.0",
+        methodology_version: str = FACT_CHECK_METHODOLOGY_VERSION,
     ) -> None:
+        if not methodology_version.strip():
+            raise ValueError("fact-check methodology version must not be empty")
         self.policy = policy
+        self.risk_policy = risk_policy
         self.producer = producer
         self.producer_version = producer_version
+        self.methodology_version = methodology_version
 
     def verify_evidence_collection(
         self,
@@ -177,7 +219,9 @@ class FactCheckEngine:
         story = session.get(Story, story_id)
         if story is None:
             raise ValueError("evidence.collected references missing story")
-        research_job = session.get(Job, research_run_id)
+        research_job = session.scalar(
+            select(Job).where(Job.id == research_run_id).with_for_update()
+        )
         if research_job is None or research_job.job_type != "RESEARCH":
             raise ValueError("evidence.collected references missing research run")
         if research_job.status != "COMPLETED":
@@ -186,10 +230,26 @@ class FactCheckEngine:
         claims = self._load_claims(session, story_id, claim_ids)
         results: list[ClaimVerificationResult] = []
         fact_checks: list[FactCheck] = []
+        event_ids: list[UUID] = []
+        created_count = 0
         for claim in claims:
             links = self._load_links(session, claim.id, evidence_ids)
             result = self._evaluate_claim(claim, links)
             claim.status = result.status
+            operation_key = self._fact_check_semantic_key(
+                story_id=story_id,
+                research_run_id=research_run_id,
+                claim=claim,
+                links=links,
+            )
+            existing = session.scalar(
+                select(FactCheck).where(FactCheck.semantic_key == operation_key)
+            )
+            if existing is not None:
+                fact_checks.append(existing)
+                results.append(result)
+                event_ids.append(self._fact_check_event_id(session, existing))
+                continue
             fact_check = FactCheck(
                 story_id=story_id,
                 claim_id=claim.id,
@@ -197,39 +257,49 @@ class FactCheckEngine:
                 confidence_score=None,
                 summary=result.summary,
                 reasoning_summary=result.reasoning_summary,
+                primary_evidence_count=result.primary_evidence_count,
+                supporting_count=result.supporting_count,
+                contradicting_count=result.contradicting_count,
                 review_required=True,
                 review_state=ReviewState.NOT_READY,
+                ai_run_id=None,
+                semantic_key=operation_key,
             )
             session.add(fact_check)
+            session.flush()
             fact_checks.append(fact_check)
             results.append(result)
-
-        session.flush()
-        completed = EventEnvelope(
-            event_type=EventType.FACT_CHECK_COMPLETED,
-            producer=self.producer,
-            producer_version=self.producer_version,
-            aggregate_type="story",
-            aggregate_id=story_id,
-            correlation_id=event.correlation_id,
-            causation_id=event.event_id,
-            idempotency_key=f"fact_check.completed:{event.event_id}",
-            payload={
-                "story_id": str(story_id),
-                "claim_ids": [str(item) for item in claim_ids],
-                "fact_check_ids": [str(item.id) for item in fact_checks],
-                "research_run_id": str(research_run_id),
-                "claim_statuses": {str(item.claim_id): item.status.value for item in results},
-                "labels": {str(item.claim_id): item.label.value for item in results},
-            },
-        )
-        session.add(build_outbox_record(completed))
+            completed = EventEnvelope(
+                event_type=EventType.FACT_CHECK_COMPLETED,
+                producer=self.producer,
+                producer_version=self.producer_version,
+                aggregate_type="story",
+                aggregate_id=story_id,
+                correlation_id=event.correlation_id,
+                causation_id=event.event_id,
+                idempotency_key=f"fact_check.completed:{fact_check.id}",
+                payload={
+                    "story_id": str(story_id),
+                    "fact_check_id": str(fact_check.id),
+                    "label": fact_check.label.value,
+                    "confidence_score": (
+                        float(fact_check.confidence_score)
+                        if fact_check.confidence_score is not None
+                        else None
+                    ),
+                    "review_required": fact_check.review_required,
+                },
+            )
+            session.add(build_outbox_record(completed))
+            event_ids.append(completed.event_id)
+            created_count += 1
         session.flush()
         return FactCheckBatchResult(
             story_id=story_id,
-            event_id=completed.event_id,
+            event_ids=tuple(event_ids),
             fact_check_ids=tuple(item.id for item in fact_checks),
             claim_results=tuple(results),
+            created_count=created_count,
         )
 
     def mark_story_verified(
@@ -237,35 +307,95 @@ class FactCheckEngine:
         session: Session,
         event: EventEnvelope,
     ) -> StoryVerificationResult:
-        if event.event_type != EventType.FACT_CHECK_COMPLETED:
-            raise ValueError("story verification requires fact_check.completed")
+        payload = parse_event_payload(
+            event.event_type,
+            event.schema_version,
+            event.payload,
+            FactCheckCompletedV1,
+        )
         if event.aggregate_type != "story":
             raise ValueError("fact_check.completed must use story aggregate")
-        story_id = UUID(str(event.payload.get("story_id")))
+        story_id = payload.story_id
         if story_id != event.aggregate_id:
             raise ValueError("fact_check.completed story_id must match aggregate_id")
-        claim_ids = _uuid_tuple(event.payload.get("claim_ids"), "claim_ids")
-        fact_check_ids = _uuid_tuple(event.payload.get("fact_check_ids"), "fact_check_ids")
-        if len(claim_ids) != len(fact_check_ids):
-            raise ValueError("fact_check.completed claim and fact-check counts must match")
 
-        story = session.get(Story, story_id)
+        story = session.scalar(select(Story).where(Story.id == story_id).with_for_update())
         if story is None:
             raise ValueError("fact_check.completed references missing story")
-        claims = self._load_claims(session, story_id, claim_ids)
-        if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
-            raise ValueError("story cannot complete verification with UNASSESSED claims")
+        trigger = session.get(FactCheck, payload.fact_check_id)
+        if trigger is None or trigger.story_id != story_id or trigger.claim_id is None:
+            raise ValueError("fact_check.completed references missing or mismatched FactCheck")
+        if (
+            trigger.label is not payload.label
+            or _decimal_float(trigger.confidence_score) != payload.confidence_score
+            or trigger.review_required is not payload.review_required
+        ):
+            raise ValueError("fact_check.completed payload does not match durable FactCheck state")
 
-        checks = list(session.scalars(select(FactCheck).where(FactCheck.id.in_(fact_check_ids))))
-        by_id = {item.id: item for item in checks}
-        if set(by_id) != set(fact_check_ids):
-            raise ValueError("fact_check.completed references missing fact-check rows")
-        for claim_id, fact_check_id in zip(claim_ids, fact_check_ids, strict=True):
-            check = by_id[fact_check_id]
-            if check.story_id != story_id or check.claim_id != claim_id:
-                raise ValueError("fact_check.completed references mismatched fact-check row")
+        claims = list(
+            session.scalars(select(Claim).where(Claim.story_id == story_id).order_by(Claim.id))
+        )
+        claim_ids = tuple(claim.id for claim in claims)
+        if not claims:
+            raise ValueError("story verification requires at least one durable claim")
+        if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
+            return StoryVerificationResult(story_id, None, claim_ids, (), False, False)
+
+        checks = self._latest_fact_checks(session, story_id)
+        if set(checks) != set(claim_ids):
+            return StoryVerificationResult(story_id, None, claim_ids, (), False, False)
+        if checks[trigger.claim_id].id != trigger.id:
+            return StoryVerificationResult(
+                story_id,
+                None,
+                claim_ids,
+                tuple(checks[claim_id].id for claim_id in claim_ids),
+                True,
+                False,
+            )
+
+        ordered_checks = tuple(checks[claim_id] for claim_id in claim_ids)
+        fact_check_ids = tuple(check.id for check in ordered_checks)
+        confidence = _aggregate_confidence(ordered_checks, story.confidence_score)
+        risk_level = max(
+            (story.risk_level, *(claim.risk_level for claim in claims)),
+            key=_RISK_ORDER.__getitem__,
+        )
+        sensitive_topics = _sensitive_topics(story, claims)
+        review_required = any(check.review_required for check in ordered_checks) or (
+            self.risk_policy.requires_review(sensitive_topics)
+        )
+        operation_key = semantic_key(
+            "story-verification",
+            {
+                "story_id": story_id,
+                "fact_check_ids": fact_check_ids,
+                "confidence_score": confidence,
+                "risk_level": risk_level,
+                "review_required": review_required,
+            },
+        )
+        existing = session.scalar(
+            select(EventOutbox).where(
+                EventOutbox.event_type == EventType.STORY_VERIFIED.value,
+                EventOutbox.idempotency_key == f"story.verified:{operation_key}",
+            )
+        )
+        if story.verification_semantic_key == operation_key:
+            if existing is None:
+                raise ValueError("verified story is missing its canonical outbox event")
+            return StoryVerificationResult(
+                story_id, existing.event_id, claim_ids, fact_check_ids, True, False
+            )
+        if existing is not None:
+            story.verification_semantic_key = operation_key
+            return StoryVerificationResult(
+                story_id, existing.event_id, claim_ids, fact_check_ids, True, False
+            )
 
         story.status = "VERIFIED"
+        story.confidence_score = Decimal(str(confidence)) if confidence is not None else None
+        story.verification_semantic_key = operation_key
         verified = EventEnvelope(
             event_type=EventType.STORY_VERIFIED,
             producer=self.producer,
@@ -274,12 +404,13 @@ class FactCheckEngine:
             aggregate_id=story_id,
             correlation_id=event.correlation_id,
             causation_id=event.event_id,
-            idempotency_key=f"story.verified:{event.event_id}",
+            idempotency_key=f"story.verified:{operation_key}",
             payload={
                 "story_id": str(story_id),
-                "claim_ids": [str(item) for item in claim_ids],
                 "fact_check_ids": [str(item) for item in fact_check_ids],
-                "verification_stage_complete": True,
+                "confidence_score": confidence,
+                "risk_level": risk_level.value,
+                "review_required": review_required,
             },
         )
         session.add(build_outbox_record(verified))
@@ -288,7 +419,66 @@ class FactCheckEngine:
             story_id=story_id,
             event_id=verified.event_id,
             claim_ids=claim_ids,
+            fact_check_ids=fact_check_ids,
+            ready=True,
+            created=True,
         )
+
+    def _fact_check_semantic_key(
+        self,
+        *,
+        story_id: UUID,
+        research_run_id: UUID,
+        claim: Claim,
+        links: tuple[_EvidenceLink, ...],
+    ) -> str:
+        return semantic_key(
+            "fact-check",
+            {
+                "methodology_version": self.methodology_version,
+                "story_id": story_id,
+                "research_run_id": research_run_id,
+                "claim_id": claim.id,
+                "claim_text": claim.claim_text,
+                "claim_risk": claim.risk_level,
+                "evidence": [
+                    {
+                        "id": link.evidence_id,
+                        "relation": link.relation,
+                        "strength": link.strength,
+                        "source_level": link.source_level,
+                        "independence_group": link.independence_group,
+                    }
+                    for link in sorted(links, key=lambda item: str(item.evidence_id))
+                ],
+                "policy": self.policy.model_dump(mode="json"),
+            },
+        )
+
+    @staticmethod
+    def _fact_check_event_id(session: Session, fact_check: FactCheck) -> UUID:
+        outbox = session.scalar(
+            select(EventOutbox).where(
+                EventOutbox.event_type == EventType.FACT_CHECK_COMPLETED.value,
+                EventOutbox.idempotency_key == f"fact_check.completed:{fact_check.id}",
+            )
+        )
+        if outbox is None:
+            raise ValueError("semantic FactCheck is missing its canonical outbox event")
+        return outbox.event_id
+
+    @staticmethod
+    def _latest_fact_checks(session: Session, story_id: UUID) -> dict[UUID, FactCheck]:
+        rows = session.scalars(
+            select(FactCheck)
+            .where(FactCheck.story_id == story_id, FactCheck.claim_id.is_not(None))
+            .order_by(FactCheck.created_at, FactCheck.id)
+        )
+        latest: dict[UUID, FactCheck] = {}
+        for check in rows:
+            assert check.claim_id is not None
+            latest[check.claim_id] = check
+        return latest
 
     def _evaluate_claim(
         self,
@@ -430,31 +620,21 @@ class FactCheckEngine:
     def _parse_collected_event(
         event: EventEnvelope,
     ) -> tuple[UUID, tuple[UUID, ...], tuple[UUID, ...], UUID]:
-        if event.event_type != EventType.EVIDENCE_COLLECTED:
-            raise ValueError("fact checking requires evidence.collected")
+        payload = parse_event_payload(
+            event.event_type,
+            event.schema_version,
+            event.payload,
+            EvidenceCollectedV1,
+        )
         if event.aggregate_type != "research_run":
             raise ValueError("evidence.collected must use research_run aggregate")
-        story_id = UUID(str(event.payload.get("story_id")))
-        claim_ids = _uuid_tuple(event.payload.get("claim_ids"), "claim_ids")
-        evidence_ids = _uuid_tuple(
-            event.payload.get("evidence_ids", []),
-            "evidence_ids",
-            allow_empty=True,
-        )
-        research_run_id = UUID(str(event.payload.get("research_run_id")))
+        story_id = payload.story_id
+        claim_ids = payload.claim_ids
+        evidence_ids = payload.evidence_ids
+        research_run_id = payload.research_run_id
         if research_run_id != event.aggregate_id:
             raise ValueError("evidence.collected research_run_id must match aggregate_id")
         return story_id, claim_ids, evidence_ids, research_run_id
-
-
-def _uuid_tuple(value: Any, name: str, *, allow_empty: bool = False) -> tuple[UUID, ...]:
-    if not isinstance(value, list) or (not value and not allow_empty):
-        qualifier = "possibly empty" if allow_empty else "non-empty"
-        raise ValueError(f"{name} must be a {qualifier} list")
-    parsed = tuple(UUID(str(item)) for item in value)
-    if len(parsed) != len(set(parsed)):
-        raise ValueError(f"{name} must not contain duplicates")
-    return parsed
 
 
 def _assessment_metadata(evidence: EvidenceItem, claim_id: UUID) -> dict[str, Any]:
@@ -504,3 +684,29 @@ def _summary_for(status: ClaimVerificationStatus) -> str:
         ClaimVerificationStatus.REFUTED: "Assessed evidence decisively contradicts the claim.",
         ClaimVerificationStatus.UNASSESSED: "The claim has not been assessed.",
     }[status]
+
+
+def _decimal_float(value: Decimal | None) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _aggregate_confidence(
+    checks: tuple[FactCheck, ...],
+    existing: Decimal | None,
+) -> float | None:
+    values = [
+        float(check.confidence_score) for check in checks if check.confidence_score is not None
+    ]
+    if values:
+        return sum(values) / len(values)
+    return _decimal_float(existing)
+
+
+def _sensitive_topics(story: Story, claims: list[Claim]) -> frozenset[str]:
+    topics: set[str] = set()
+    for metadata in (story.story_metadata, *(claim.claim_metadata for claim in claims)):
+        raw = (metadata or {}).get("sensitive_topics", [])
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise ValueError("sensitive_topics metadata must be a list of strings")
+        topics.update(item.strip() for item in raw if item.strip())
+    return frozenset(topics)

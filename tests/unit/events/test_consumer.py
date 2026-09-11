@@ -58,13 +58,22 @@ class FakeConsumerRedis:
 
 
 def _event() -> EventEnvelope:
+    article_id = uuid4()
     return EventEnvelope(
         event_type=EventType.ARTICLE_DISCOVERED,
         producer="collector",
         producer_version="0.1.0",
         aggregate_type="article",
-        aggregate_id=uuid4(),
+        aggregate_id=article_id,
         idempotency_key="article:test",
+        payload={
+            "article_id": str(article_id),
+            "source_id": str(uuid4()),
+            "source_feed_id": str(uuid4()),
+            "canonical_url": "https://example.com/article",
+            "title": "Example",
+            "published_at": None,
+        },
     )
 
 

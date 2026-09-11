@@ -71,7 +71,6 @@ def _verified_event(factory: sessionmaker[Session]) -> EventEnvelope:
         session.add(check)
         session.flush()
         story_id = story.id
-        claim_id = claim.id
         check_id = check.id
 
     return EventEnvelope(
@@ -83,9 +82,10 @@ def _verified_event(factory: sessionmaker[Session]) -> EventEnvelope:
         idempotency_key=f"story.verified:{uuid4()}",
         payload={
             "story_id": str(story_id),
-            "claim_ids": [str(claim_id)],
             "fact_check_ids": [str(check_id)],
-            "verification_stage_complete": True,
+            "confidence_score": None,
+            "risk_level": "LOW",
+            "review_required": True,
         },
     )
 

@@ -11,6 +11,7 @@ from .contracts import (
     metadata_contains_secret_key,
 )
 from .engine import (
+    RESEARCH_PLANNER_METHODOLOGY_VERSION,
     EvidenceAssessment,
     EvidenceAssessor,
     EvidenceCollectionResult,
@@ -27,6 +28,7 @@ from .engine import (
     SearchProviderSelector,
 )
 from .fact_check import (
+    FACT_CHECK_METHODOLOGY_VERSION,
     ClaimVerificationResult,
     FactCheckBatchResult,
     FactCheckEngine,
@@ -74,6 +76,7 @@ __all__ = [
     "EvidenceCollectionResult",
     "EvidenceEngine",
     "EvidenceRelation",
+    "FACT_CHECK_METHODOLOGY_VERSION",
     "FactCheckBatchResult",
     "FactCheckEngine",
     "FactCheckInvariants",
@@ -88,6 +91,7 @@ __all__ = [
     "FactSheetGenerator",
     "FactSheetSourceSnapshot",
     "ResearchCandidate",
+    "RESEARCH_PLANNER_METHODOLOGY_VERSION",
     "ResearchCollection",
     "ResearchCollectionTask",
     "ResearchPlan",

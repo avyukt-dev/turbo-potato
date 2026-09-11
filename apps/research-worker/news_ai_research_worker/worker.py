@@ -106,7 +106,7 @@ class ResearchPlanningWorker:
                 consumer_group=RESEARCH_PLANNING_CONSUMER_GROUP,
                 result=result.as_handler_result(),
             )
-        return False
+        return not result.created
 
 
 class EvidenceCollectionWorker:

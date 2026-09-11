@@ -12,6 +12,7 @@ from news_ai_database import (
     Article,
     Claim,
     ClaimEvidence,
+    EventOutbox,
     EvidenceItem,
     FactCheck,
     FactSheet,
@@ -20,13 +21,14 @@ from news_ai_database import (
     StorySource,
 )
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
-from news_ai_events import EventEnvelope, EventType
+from news_ai_events import EventEnvelope, EventType, StoryVerifiedV1, parse_event_payload
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .engine import EvidenceRelation
+from .semantic import semantic_key
 
 _RISK_ORDER = {
     RiskLevel.LOW: 0,
@@ -129,6 +131,7 @@ class FactSheetGenerationResult:
     fact_sheet_id: UUID
     version: int
     event_id: UUID
+    created: bool
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
@@ -136,6 +139,7 @@ class FactSheetGenerationResult:
             "fact_sheet_id": str(self.fact_sheet_id),
             "fact_sheet_version": self.version,
             "event_id": str(self.event_id),
+            "created": self.created,
         }
 
 
@@ -160,15 +164,16 @@ class FactSheetGenerator:
         session: Session,
         event: EventEnvelope,
     ) -> FactSheetGenerationResult:
-        story_id, claim_ids, fact_check_ids = self._validate_verified_event(event)
+        story_id, fact_check_ids = self._validate_verified_event(event)
         story = session.scalar(select(Story).where(Story.id == story_id).with_for_update())
         if story is None:
             raise ValueError("story.verified references missing story")
         if story.status != "VERIFIED":
             raise ValueError("Fact Sheet generation requires VERIFIED story state")
 
-        claims = self._load_claims(session, story_id, claim_ids)
-        checks = self._load_fact_checks(session, story_id, claim_ids, fact_check_ids)
+        claims = self._load_claims(session, story_id)
+        claim_ids = tuple(claim.id for claim in claims)
+        checks = self._load_fact_checks(session, story_id, claims, fact_check_ids)
         links, evidence = self._load_evidence(session, claim_ids)
         claim_snapshots = self._claim_snapshots(claims, links)
         evidence_snapshots = self._evidence_snapshots(links, evidence)
@@ -189,6 +194,26 @@ class FactSheetGenerator:
         if not headline:
             raise ValueError("Fact Sheet requires a non-empty story headline")
         summary = (story.summary or "").strip() or headline
+        operation_key = semantic_key(
+            "fact-sheet",
+            {
+                "story_id": story_id,
+                "headline": headline,
+                "summary": summary,
+                "story_metadata": metadata,
+                "claims": [item.model_dump(mode="json") for item in claim_snapshots],
+                "fact_checks": [item.model_dump(mode="json") for item in fact_check_snapshots],
+                "evidence": [item.model_dump(mode="json") for item in evidence_snapshots],
+                "sources": [item.model_dump(mode="json") for item in source_snapshots],
+                "risk_level": risk_level,
+                "sensitive_topics": sensitive_topics,
+                "requested_platforms": self.requested_platforms,
+                "requested_formats": self.requested_formats,
+            },
+        )
+        existing = session.scalar(select(FactSheet).where(FactSheet.semantic_key == operation_key))
+        if existing is not None:
+            return self._existing_result(session, existing)
 
         fact_sheet = FactSheet(
             story_id=story_id,
@@ -209,6 +234,7 @@ class FactSheetGenerator:
             risk_level=risk_level,
             sensitive_topics=list(sensitive_topics),
             ai_run_id=None,
+            semantic_key=operation_key,
         )
         session.add(fact_sheet)
         session.flush()
@@ -225,7 +251,6 @@ class FactSheetGenerator:
             payload={
                 "story_id": str(story_id),
                 "fact_sheet_id": str(fact_sheet.id),
-                "fact_sheet_version": version,
                 "requested_platforms": list(self.requested_platforms),
                 "requested_formats": list(self.requested_formats),
             },
@@ -237,6 +262,27 @@ class FactSheetGenerator:
             fact_sheet_id=fact_sheet.id,
             version=version,
             event_id=content_requested.event_id,
+            created=True,
+        )
+
+    @staticmethod
+    def _existing_result(session: Session, fact_sheet: FactSheet) -> FactSheetGenerationResult:
+        outbox = session.scalar(
+            select(EventOutbox).where(
+                EventOutbox.event_type == EventType.CONTENT_REQUESTED.value,
+                EventOutbox.aggregate_id == fact_sheet.id,
+                EventOutbox.idempotency_key
+                == f"content.requested:{fact_sheet.id}:{fact_sheet.version}",
+            )
+        )
+        if outbox is None:
+            raise ValueError("semantic Fact Sheet is missing its content.requested outbox event")
+        return FactSheetGenerationResult(
+            story_id=fact_sheet.story_id,
+            fact_sheet_id=fact_sheet.id,
+            version=fact_sheet.version,
+            event_id=outbox.event_id,
+            created=False,
         )
 
     @staticmethod
@@ -278,55 +324,69 @@ class FactSheetGenerator:
     @staticmethod
     def _validate_verified_event(
         event: EventEnvelope,
-    ) -> tuple[UUID, tuple[UUID, ...], tuple[UUID, ...]]:
-        if event.event_type != EventType.STORY_VERIFIED:
-            raise ValueError("Fact Sheet generation requires story.verified")
+    ) -> tuple[UUID, tuple[UUID, ...]]:
+        payload = parse_event_payload(
+            event.event_type,
+            event.schema_version,
+            event.payload,
+            StoryVerifiedV1,
+        )
         if event.aggregate_type != "story":
             raise ValueError("story.verified must use story aggregate")
-        story_id = UUID(str(event.payload.get("story_id")))
+        story_id = payload.story_id
         if story_id != event.aggregate_id:
             raise ValueError("story.verified story_id must match aggregate_id")
-        if event.payload.get("verification_stage_complete") is not True:
-            raise ValueError("story.verified must mark verification stage complete")
-        claim_ids = _event_uuid_tuple(event.payload.get("claim_ids"), "claim_ids")
-        fact_check_ids = _event_uuid_tuple(event.payload.get("fact_check_ids"), "fact_check_ids")
-        if len(claim_ids) != len(fact_check_ids):
-            raise ValueError("story.verified claim and fact-check counts must match")
-        return story_id, claim_ids, fact_check_ids
+        return story_id, payload.fact_check_ids
 
     @staticmethod
     def _load_claims(
         session: Session,
         story_id: UUID,
-        claim_ids: tuple[UUID, ...],
     ) -> list[Claim]:
-        claims = list(session.scalars(select(Claim).where(Claim.id.in_(claim_ids))))
-        by_id = {claim.id: claim for claim in claims}
-        if set(by_id) != set(claim_ids):
-            raise ValueError("story.verified references missing claims")
-        ordered = [by_id[claim_id] for claim_id in claim_ids]
-        if any(claim.story_id != story_id for claim in ordered):
-            raise ValueError("story.verified contains claim from another story")
-        if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in ordered):
+        claims = list(
+            session.scalars(select(Claim).where(Claim.story_id == story_id).order_by(Claim.id))
+        )
+        if not claims:
+            raise ValueError("Fact Sheet requires at least one durable story claim")
+        if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
             raise ValueError("Fact Sheet cannot include UNASSESSED claim state")
-        return ordered
+        return claims
 
     @staticmethod
     def _load_fact_checks(
         session: Session,
         story_id: UUID,
-        claim_ids: tuple[UUID, ...],
+        claims: list[Claim],
         fact_check_ids: tuple[UUID, ...],
     ) -> list[FactCheck]:
         checks = list(session.scalars(select(FactCheck).where(FactCheck.id.in_(fact_check_ids))))
         by_id = {check.id: check for check in checks}
         if set(by_id) != set(fact_check_ids):
             raise ValueError("story.verified references missing fact checks")
-        ordered = [by_id[check_id] for check_id in fact_check_ids]
-        for claim_id, check in zip(claim_ids, ordered, strict=True):
-            if check.story_id != story_id or check.claim_id != claim_id:
+        selected = [by_id[check_id] for check_id in fact_check_ids]
+        selected_by_claim: dict[UUID, FactCheck] = {}
+        for check in selected:
+            if check.story_id != story_id or check.claim_id is None:
                 raise ValueError("story.verified references mismatched fact check")
-        return ordered
+            if check.claim_id in selected_by_claim:
+                raise ValueError("story.verified references multiple FactChecks for one claim")
+            selected_by_claim[check.claim_id] = check
+        claim_ids = tuple(claim.id for claim in claims)
+        if set(selected_by_claim) != set(claim_ids):
+            raise ValueError("story.verified FactChecks do not cover current durable claims")
+
+        latest: dict[UUID, FactCheck] = {}
+        for check in session.scalars(
+            select(FactCheck)
+            .where(FactCheck.story_id == story_id, FactCheck.claim_id.is_not(None))
+            .order_by(FactCheck.created_at, FactCheck.id)
+        ):
+            assert check.claim_id is not None
+            latest[check.claim_id] = check
+        latest_ids = {check.id for check in latest.values()}
+        if latest_ids != set(fact_check_ids):
+            raise ValueError("story.verified references stale FactChecks")
+        return [selected_by_claim[claim_id] for claim_id in claim_ids]
 
     @staticmethod
     def _load_evidence(
@@ -538,15 +598,6 @@ class FactSheetGenerator:
             select(func.max(FactSheet.version)).where(FactSheet.story_id == story_id)
         )
         return int(current or 0) + 1
-
-
-def _event_uuid_tuple(value: Any, name: str) -> tuple[UUID, ...]:
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"story.verified must contain non-empty {name}")
-    result = tuple(UUID(str(item)) for item in value)
-    if len(result) != len(set(result)):
-        raise ValueError(f"story.verified {name} must be unique")
-    return result
 
 
 def _metadata_str_list(metadata: dict[str, Any], key: str) -> tuple[str, ...]:

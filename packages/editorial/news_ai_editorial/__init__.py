@@ -6,9 +6,11 @@ from .taxonomy import (
     EditorialConfigLoader,
     EditorialConfigSnapshot,
     EditorialPrioritiesConfig,
+    EditorialRiskPolicy,
     EditorialTaxonomyEngine,
     EditorialTaxonomyInput,
     EditorialTaxonomyResult,
+    MandatoryReviewCategory,
     TaxonomyConfig,
     TopicPrioritySignal,
 )
@@ -19,9 +21,11 @@ __all__ = [
     "EditorialConfigLoader",
     "EditorialConfigSnapshot",
     "EditorialPrioritiesConfig",
+    "EditorialRiskPolicy",
     "EditorialTaxonomyEngine",
     "EditorialTaxonomyInput",
     "EditorialTaxonomyResult",
+    "MandatoryReviewCategory",
     "TaxonomyConfig",
     "TopicPrioritySignal",
 ]

@@ -70,8 +70,12 @@ def _discovered_factory(correlation_id: UUID):
             payload={
                 "article_id": str(article.id),
                 "source_id": str(normalized.source_id),
+                "source_feed_id": str(normalized.source_feed_id),
                 "canonical_url": normalized.canonical_url,
                 "title": normalized.title,
+                "published_at": normalized.published_at.isoformat()
+                if normalized.published_at is not None
+                else None,
             },
         )
 
@@ -254,13 +258,22 @@ def test_invalid_predecessor_rolls_back_transaction(session: Session) -> None:
     session.commit()
 
     def invalid_predecessor(_article: Article, _normalized: NormalizedArticle) -> EventEnvelope:
+        article_id = uuid4()
         return EventEnvelope(
             event_type=EventType.ARTICLE_DISCOVERED,
             producer="collector",
             producer_version="0.1.0",
             aggregate_type="story",
-            aggregate_id=uuid4(),
+            aggregate_id=article_id,
             idempotency_key="invalid-predecessor",
+            payload={
+                "article_id": str(article_id),
+                "source_id": str(source_id),
+                "source_feed_id": str(uuid4()),
+                "canonical_url": "https://example.com/invalid",
+                "title": "Invalid predecessor",
+                "published_at": None,
+            },
         )
 
     with pytest.raises(ValueError, match="predecessor event"), session.begin():

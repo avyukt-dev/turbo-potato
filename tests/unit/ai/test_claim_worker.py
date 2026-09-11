@@ -158,6 +158,19 @@ def _service(provider: CountingProvider, tmp_path: Path) -> ClaimExtractionServi
 
 
 def _event(story: Story, event_type: EventType) -> EventEnvelope:
+    if event_type is EventType.STORY_CREATED:
+        payload = {
+            "story_id": str(story.id),
+            "article_id": str(uuid4()),
+            "cluster_key": "claim-worker-test",
+        }
+    else:
+        payload = {
+            "story_id": str(story.id),
+            "claim_ids": [str(uuid4())],
+            "ai_run_id": str(uuid4()),
+            "model_id": str(uuid4()),
+        }
     return EventEnvelope(
         event_type=event_type,
         producer="processor",
@@ -165,7 +178,7 @@ def _event(story: Story, event_type: EventType) -> EventEnvelope:
         aggregate_type="story",
         aggregate_id=story.id,
         idempotency_key=f"{event_type.value}:{uuid4()}",
-        payload={"story_id": str(story.id)},
+        payload=payload,
     )
 
 

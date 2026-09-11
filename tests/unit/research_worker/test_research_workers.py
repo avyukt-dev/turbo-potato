@@ -134,7 +134,12 @@ def _seed_claim_event(factory: sessionmaker[Session]) -> EventEnvelope:
         aggregate_type="story",
         aggregate_id=story.id,
         idempotency_key=f"claims.extracted:{uuid4()}",
-        payload={"story_id": str(story.id), "claim_ids": [str(claim.id)]},
+        payload={
+            "story_id": str(story.id),
+            "claim_ids": [str(claim.id)],
+            "ai_run_id": str(uuid4()),
+            "model_id": str(uuid4()),
+        },
     )
 
 
@@ -191,7 +196,15 @@ def test_collection_failure_remains_unacked_for_recovery() -> None:
         aggregate_type="research_run",
         aggregate_id=uuid4(),
         idempotency_key=f"evidence.requested:{uuid4()}",
-        payload={"story_id": str(uuid4()), "claim_ids": [str(uuid4())]},
+        payload={
+            "story_id": str(uuid4()),
+            "claim_ids": [str(uuid4())],
+            "research_scope": {
+                "primary_sources": True,
+                "independent_corroboration": True,
+                "contradiction_search": True,
+            },
+        },
     )
     consumer = FakeConsumer(
         stream="news:evidence",

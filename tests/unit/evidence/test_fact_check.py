@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from news_ai_common.config import ConfigLoader
 from news_ai_database import (
     Base,
@@ -15,11 +17,17 @@ from news_ai_database import (
     Job,
     Story,
 )
-from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, RiskLevel
+from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
+from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import envelope_from_outbox
-from news_ai_evidence import EvidenceRelation, FactCheckEngine, FactCheckPolicyLoader
-from sqlalchemy import create_engine, select
+from news_ai_evidence import (
+    FACT_CHECK_METHODOLOGY_VERSION,
+    EvidenceRelation,
+    FactCheckEngine,
+    FactCheckPolicyLoader,
+)
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -29,8 +37,17 @@ def _factory() -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 
 
-def _engine() -> FactCheckEngine:
-    return FactCheckEngine(FactCheckPolicyLoader(ConfigLoader(Path("config"))).load())
+def _engine(
+    *,
+    methodology_version: str = FACT_CHECK_METHODOLOGY_VERSION,
+    policy=None,
+) -> FactCheckEngine:
+    loader = ConfigLoader(Path("config"))
+    return FactCheckEngine(
+        policy or FactCheckPolicyLoader(loader).load(),
+        EditorialConfigLoader(loader).load().risk_policy,
+        methodology_version=methodology_version,
+    )
 
 
 def _seed(
@@ -152,6 +169,10 @@ def test_no_evidence_is_unverified_not_false() -> None:
     assert claim.status is ClaimVerificationStatus.UNVERIFIED
     assert fact_check.label is FactCheckLabel.UNVERIFIED
     assert fact_check.label is not FactCheckLabel.FALSE
+    assert fact_check.primary_evidence_count == 0
+    assert fact_check.supporting_count == 0
+    assert fact_check.contradicting_count == 0
+    assert fact_check.ai_run_id is None
 
 
 def test_strong_low_risk_support_is_supported_true() -> None:
@@ -237,3 +258,324 @@ def test_story_verified_means_stage_complete_not_all_claims_true() -> None:
         assert outbox is not None
         assert verified.story_id == story_id
         assert outbox.causation_id == completed_event.event_id
+        verified_event = envelope_from_outbox(outbox)
+        assert set(verified_event.payload) == {
+            "story_id",
+            "fact_check_ids",
+            "confidence_score",
+            "risk_level",
+            "review_required",
+        }
+        assert verified_event.payload["fact_check_ids"] == [
+            str(completed_event.payload["fact_check_id"])
+        ]
+
+
+def test_fact_check_persists_evidence_counts_and_canonical_event() -> None:
+    _, _, _, _, fact_check, outbox = _verify(
+        evidence=(
+            (EvidenceRelation.DIRECT_SUPPORT, "0.90", "source-a", 1),
+            (EvidenceRelation.CONTRADICTS, "0.70", "source-b", 2),
+        )
+    )
+    event = envelope_from_outbox(outbox)
+
+    assert fact_check.primary_evidence_count == 1
+    assert fact_check.supporting_count == 1
+    assert fact_check.contradicting_count == 1
+    assert fact_check.ai_run_id is None
+    assert set(event.payload) == {
+        "story_id",
+        "fact_check_id",
+        "label",
+        "confidence_score",
+        "review_required",
+    }
+    assert event.payload["fact_check_id"] == str(fact_check.id)
+
+
+def test_fact_check_semantic_replay_with_new_event_id_is_safe() -> None:
+    factory = _factory()
+    event, _, _ = _seed(
+        factory,
+        evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "source-a", 2),),
+    )
+    with factory() as session, session.begin():
+        first = _engine().verify_evidence_collection(session, event)
+    replay_data = event.model_dump()
+    replay_data["event_id"] = uuid4()
+    replay_data["idempotency_key"] = f"evidence.collected:{uuid4()}"
+    replay = EventEnvelope.model_validate(replay_data)
+    with factory() as session, session.begin():
+        second = _engine().verify_evidence_collection(session, replay)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactCheck)) == 1
+        assert session.scalar(select(func.count()).select_from(EventOutbox)) == 1
+    assert second.created_count == 0
+    assert second.fact_check_ids == first.fact_check_ids
+
+
+def test_fact_check_methodology_version_invalidates_semantic_operation() -> None:
+    factory = _factory()
+    event, _, _ = _seed(
+        factory,
+        evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "source-a", 2),),
+    )
+    with factory() as session, session.begin():
+        first = _engine().verify_evidence_collection(session, event)
+    with factory() as session, session.begin():
+        second = _engine(
+            methodology_version="fact-check-methodology-v2"
+        ).verify_evidence_collection(session, event)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactCheck)) == 2
+        assert session.scalar(select(func.count()).select_from(EventOutbox)) == 2
+    assert second.created_count == 1
+    assert second.fact_check_ids != first.fact_check_ids
+
+
+def test_fact_check_policy_change_invalidates_semantic_operation_independently() -> None:
+    factory = _factory()
+    event, _, _ = _seed(
+        factory,
+        evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "source-a", 2),),
+    )
+    loader = ConfigLoader(Path("config"))
+    policy = FactCheckPolicyLoader(loader).load()
+    changed_policy = policy.model_copy(update={"schema_version": policy.schema_version + 1})
+    with factory() as session, session.begin():
+        first = _engine(policy=policy).verify_evidence_collection(session, event)
+    with factory() as session, session.begin():
+        second = _engine(policy=changed_policy).verify_evidence_collection(session, event)
+
+    assert second.created_count == 1
+    assert second.fact_check_ids != first.fact_check_ids
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Remediation Slice 2 requires an explicit per-claim current research generation "
+        "and FactCheck research-run provenance"
+    ),
+)
+def test_superseded_research_run_cannot_replace_current_fact_check() -> None:
+    factory = _factory()
+    current_event, story_id, claim_id = _seed(
+        factory,
+        evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "current-source", 1),),
+    )
+    superseded_run_id = uuid4()
+    with factory() as session, session.begin():
+        current_job = session.get(Job, current_event.aggregate_id)
+        assert current_job is not None
+        item = EvidenceItem(
+            title="Superseded contradictory evidence",
+            url="https://example.com/superseded-evidence",
+            evidence_type="ARTICLE",
+            evidence_metadata={
+                "relationship_assessments": [
+                    {
+                        "claim_id": str(claim_id),
+                        "candidate_url": "https://example.com/superseded-evidence",
+                        "relation": EvidenceRelation.CONTRADICTS.value,
+                        "strength_score": "0.90",
+                        "source_level": 1,
+                        "independence_group": "superseded-source",
+                    }
+                ]
+            },
+        )
+        session.add_all(
+            [
+                Job(
+                    id=superseded_run_id,
+                    job_type="RESEARCH",
+                    status="COMPLETED",
+                    priority=2,
+                    payload={},
+                    result={},
+                    created_at=current_job.created_at - timedelta(minutes=5),
+                ),
+                item,
+            ]
+        )
+        session.flush()
+        session.add(
+            ClaimEvidence(
+                claim_id=claim_id,
+                evidence_id=item.id,
+                relation=EvidenceRelation.CONTRADICTS.value,
+                strength_score=Decimal("0.90"),
+            )
+        )
+        superseded_evidence_id = item.id
+
+    superseded_event = EventEnvelope(
+        event_type=EventType.EVIDENCE_COLLECTED,
+        producer="research-worker",
+        producer_version="0.1.0",
+        aggregate_type="research_run",
+        aggregate_id=superseded_run_id,
+        idempotency_key=f"evidence.collected:{superseded_run_id}",
+        payload={
+            "story_id": str(story_id),
+            "claim_ids": [str(claim_id)],
+            "evidence_ids": [str(superseded_evidence_id)],
+            "research_run_id": str(superseded_run_id),
+        },
+    )
+
+    with factory() as session, session.begin():
+        current = _engine().verify_evidence_collection(session, current_event)
+    with factory() as session, session.begin():
+        superseded = _engine().verify_evidence_collection(session, superseded_event)
+
+    with factory() as session:
+        claim = session.get(Claim, claim_id)
+        assert claim is not None
+        assert claim.status is ClaimVerificationStatus.SUPPORTED
+        assert session.scalar(select(func.count()).select_from(FactCheck)) == 1
+    assert superseded.created_count == 0
+    assert superseded.fact_check_ids == current.fact_check_ids
+
+
+def test_fact_check_material_evidence_change_creates_new_result() -> None:
+    factory = _factory()
+    event, _, claim_id = _seed(
+        factory,
+        evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "source-a", 2),),
+    )
+    with factory() as session, session.begin():
+        first = _engine().verify_evidence_collection(session, event)
+    with factory() as session, session.begin():
+        relation = session.scalar(select(ClaimEvidence).where(ClaimEvidence.claim_id == claim_id))
+        assert relation is not None
+        relation.strength_score = Decimal("0.75")
+    changed_data = event.model_dump()
+    changed_data["event_id"] = uuid4()
+    changed_data["idempotency_key"] = f"evidence.collected:{uuid4()}"
+    changed = EventEnvelope.model_validate(changed_data)
+    with factory() as session, session.begin():
+        second = _engine().verify_evidence_collection(session, changed)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactCheck)) == 2
+        assert session.scalar(select(func.count()).select_from(EventOutbox)) == 2
+    assert second.created_count == 1
+    assert second.fact_check_ids != first.fact_check_ids
+
+
+def test_story_verification_semantic_replay_with_new_event_id_is_safe() -> None:
+    factory, _, _, _, _, completed_outbox = _verify()
+    completed = envelope_from_outbox(completed_outbox)
+    with factory() as session, session.begin():
+        first = _engine().mark_story_verified(session, completed)
+    replay_data = completed.model_dump()
+    replay_data["event_id"] = uuid4()
+    replay_data["idempotency_key"] = f"fact_check.completed:{uuid4()}"
+    replay = EventEnvelope.model_validate(replay_data)
+    with factory() as session, session.begin():
+        second = _engine().mark_story_verified(session, replay)
+
+    with factory() as session:
+        verified_count = session.scalar(
+            select(func.count())
+            .select_from(EventOutbox)
+            .where(EventOutbox.event_type == EventType.STORY_VERIFIED.value)
+        )
+        assert verified_count == 1
+    assert first.created is True
+    assert second.created is False
+    assert second.event_id == first.event_id
+
+
+def test_story_verification_waits_for_all_durable_claim_assessments() -> None:
+    factory = _factory()
+    with factory() as session, session.begin():
+        story = Story(
+            canonical_headline="Out-of-order verification",
+            status="DISCOVERED",
+            risk_level=RiskLevel.LOW,
+            story_metadata={"sensitive_topics": ["RELIGIOUS_VIOLENCE"]},
+        )
+        session.add(story)
+        session.flush()
+        first_claim = Claim(
+            story_id=story.id,
+            claim_text="First claim",
+            status=ClaimVerificationStatus.SUPPORTED,
+            risk_level=RiskLevel.LOW,
+            claim_metadata={},
+        )
+        second_claim = Claim(
+            story_id=story.id,
+            claim_text="Second claim",
+            status=ClaimVerificationStatus.UNASSESSED,
+            risk_level=RiskLevel.LOW,
+            claim_metadata={},
+        )
+        session.add_all([first_claim, second_claim])
+        session.flush()
+        first_check = FactCheck(
+            story_id=story.id,
+            claim_id=first_claim.id,
+            label=FactCheckLabel.TRUE,
+            review_required=False,
+            review_state=ReviewState.NOT_READY,
+        )
+        session.add(first_check)
+        session.flush()
+        story_id = story.id
+        second_claim_id = second_claim.id
+
+    def completed_event(check: FactCheck) -> EventEnvelope:
+        return EventEnvelope(
+            event_type=EventType.FACT_CHECK_COMPLETED,
+            producer="research-worker",
+            producer_version="0.1.0",
+            aggregate_type="story",
+            aggregate_id=story_id,
+            idempotency_key=f"fact_check.completed:{check.id}",
+            payload={
+                "story_id": str(story_id),
+                "fact_check_id": str(check.id),
+                "label": check.label.value,
+                "confidence_score": None,
+                "review_required": check.review_required,
+            },
+        )
+
+    with factory() as session, session.begin():
+        waiting = _engine().mark_story_verified(session, completed_event(first_check))
+    assert waiting.ready is False
+    assert waiting.event_id is None
+
+    with factory() as session, session.begin():
+        second_claim = session.get(Claim, second_claim_id)
+        assert second_claim is not None
+        second_claim.status = ClaimVerificationStatus.UNVERIFIED
+        second_check = FactCheck(
+            story_id=story_id,
+            claim_id=second_claim_id,
+            label=FactCheckLabel.UNVERIFIED,
+            review_required=False,
+            review_state=ReviewState.NOT_READY,
+        )
+        session.add(second_check)
+        session.flush()
+        second_event = completed_event(second_check)
+    with factory() as session, session.begin():
+        completed = _engine().mark_story_verified(session, second_event)
+
+    assert completed.ready is True
+    assert completed.created is True
+    assert len(completed.fact_check_ids) == 2
+    with factory() as session:
+        outbox = session.scalar(
+            select(EventOutbox).where(EventOutbox.event_type == EventType.STORY_VERIFIED.value)
+        )
+        assert outbox is not None
+        assert envelope_from_outbox(outbox).payload["review_required"] is True
