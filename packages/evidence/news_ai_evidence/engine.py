@@ -12,16 +12,33 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from news_ai_database import Claim, ClaimEvidence, EventOutbox, EvidenceItem, Job, Story
+from news_ai_database import (
+    Claim,
+    ClaimEvidence,
+    EventOutbox,
+    EvidenceItem,
+    Job,
+    ResearchRunClaim,
+    Story,
+)
+from news_ai_domain import ClaimVerificationStatus
 from news_ai_events import ClaimsExtractedV1, EventEnvelope, EventType, parse_event_payload
 from news_ai_events.outbox import build_outbox_record
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .contracts import SearchCapability, SearchQueryFamily, SearchRequest, SearchResult
 from .policy import SearchPolicy, SearchPolicyEnforcer
-from .provider import SearchProviderError, SearchProviderPolicyError
+from .provider import (
+    SearchCapabilityError,
+    SearchInvalidResponseError,
+    SearchProviderError,
+    SearchProviderPolicyError,
+    SearchProviderRateLimitError,
+    SearchProviderTimeoutError,
+    SearchProviderUnavailableError,
+)
 from .registry import SearchProviderRegistry
 from .semantic import semantic_key
 
@@ -117,6 +134,14 @@ class ResearchQueryFailure(BaseModel):
     provider_id: str | None = None
     error_code: str
     error_message: str
+    retryable: bool
+
+
+class ResearchCollectionDisposition(StrEnum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
+    PERMANENT_FAILURE = "PERMANENT_FAILURE"
 
 
 class ResearchCollection(BaseModel):
@@ -126,6 +151,19 @@ class ResearchCollection(BaseModel):
     candidates: tuple[ResearchCandidate, ...] = ()
     assessments: tuple[EvidenceAssessment, ...] = ()
     failures: tuple[ResearchQueryFailure, ...] = ()
+    successful_query_count: int = Field(default=0, ge=0)
+
+    @property
+    def disposition(self) -> ResearchCollectionDisposition:
+        if self.successful_query_count:
+            return (
+                ResearchCollectionDisposition.PARTIAL
+                if self.failures
+                else ResearchCollectionDisposition.COMPLETE
+            )
+        if any(item.retryable for item in self.failures):
+            return ResearchCollectionDisposition.RETRYABLE_FAILURE
+        return ResearchCollectionDisposition.PERMANENT_FAILURE
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,10 +173,21 @@ class ResearchCollectionTask:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchCurrency:
+    current_claim_ids: tuple[UUID, ...]
+    stale_claim_ids: tuple[UUID, ...]
+
+    @property
+    def fully_stale(self) -> bool:
+        return not self.current_claim_ids and bool(self.stale_claim_ids)
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchRequestResult:
     research_run_id: UUID
     event_id: UUID
     claim_ids: tuple[UUID, ...]
+    claim_generations: dict[UUID, int]
     created: bool
 
     def as_handler_result(self) -> dict[str, Any]:
@@ -146,6 +195,9 @@ class ResearchRequestResult:
             "research_run_id": str(self.research_run_id),
             "event_id": str(self.event_id),
             "claim_ids": [str(item) for item in self.claim_ids],
+            "claim_generations": {
+                str(claim_id): generation for claim_id, generation in self.claim_generations.items()
+            },
             "created": self.created,
         }
 
@@ -153,16 +205,20 @@ class ResearchRequestResult:
 @dataclass(frozen=True, slots=True)
 class EvidenceCollectionResult:
     research_run_id: UUID
-    event_id: UUID
+    event_id: UUID | None
     evidence_ids: tuple[UUID, ...]
+    current_claim_ids: tuple[UUID, ...]
+    stale_claim_ids: tuple[UUID, ...]
     claim_evidence_count: int
     query_failure_count: int
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
             "research_run_id": str(self.research_run_id),
-            "event_id": str(self.event_id),
+            "event_id": str(self.event_id) if self.event_id is not None else None,
             "evidence_ids": [str(item) for item in self.evidence_ids],
+            "current_claim_ids": [str(item) for item in self.current_claim_ids],
+            "stale_claim_ids": [str(item) for item in self.stale_claim_ids],
             "claim_evidence_count": self.claim_evidence_count,
             "query_failure_count": self.query_failure_count,
         }
@@ -256,20 +312,42 @@ class EvidenceEngine:
             claims=claims,
             breaking_news=breaking_news,
         )
-        session.add(
-            Job(
-                id=research_run_id,
-                job_type="RESEARCH",
-                status="PENDING",
-                priority=2,
-                payload={
-                    "plan": plan.model_dump(mode="json"),
-                    "methodology_version": self.methodology_version,
-                    "triggering_event_id": str(triggering_event.event_id),
-                },
-                semantic_key=operation_key,
-            )
+        job = Job(
+            id=research_run_id,
+            job_type="RESEARCH",
+            status="PENDING",
+            priority=2,
+            payload={
+                "plan": plan.model_dump(mode="json"),
+                "methodology_version": self.methodology_version,
+                "triggering_event_id": str(triggering_event.event_id),
+            },
+            semantic_key=operation_key,
         )
+        session.add(job)
+        session.flush()
+        claim_generations: dict[UUID, int] = {}
+        for claim in claims:
+            generation = claim.research_generation + 1
+            claim.research_generation = generation
+            claim.current_research_run_id = research_run_id
+            claim.current_fact_check_id = None
+            claim.status = ClaimVerificationStatus.UNASSESSED
+            claim_generations[claim.id] = generation
+            session.add(
+                ResearchRunClaim(
+                    research_run_id=research_run_id,
+                    claim_id=claim.id,
+                    research_generation=generation,
+                )
+            )
+        job.payload = {
+            **job.payload,
+            "claim_generations": {
+                str(claim_id): generation for claim_id, generation in claim_generations.items()
+            },
+        }
+        story.verification_semantic_key = None
         event = EventEnvelope(
             event_type=EventType.EVIDENCE_REQUESTED,
             producer=self.producer,
@@ -295,6 +373,7 @@ class EvidenceEngine:
             research_run_id=research_run_id,
             event_id=event.event_id,
             claim_ids=tuple(claim.id for claim in claims),
+            claim_generations=claim_generations,
             created=True,
         )
 
@@ -317,10 +396,19 @@ class EvidenceEngine:
         if raw_plan is None:
             raise ValueError("semantic research job is missing its persisted plan")
         plan = ResearchPlan.model_validate(raw_plan)
+        generations = {
+            row.claim_id: row.research_generation
+            for row in session.scalars(
+                select(ResearchRunClaim).where(ResearchRunClaim.research_run_id == job.id)
+            )
+        }
+        if set(generations) != set(plan.claim_ids):
+            raise ValueError("semantic research job is missing claim generation provenance")
         return ResearchRequestResult(
             research_run_id=job.id,
             event_id=outbox.event_id,
             claim_ids=plan.claim_ids,
+            claim_generations=generations,
             created=False,
         )
 
@@ -348,12 +436,84 @@ class EvidenceEngine:
             claim_texts={claim.id: claim.claim_text for claim in claims},
         )
 
-    async def collect(self, task: ResearchCollectionTask) -> ResearchCollection:
+    def collection_currency(
+        self,
+        session: Session,
+        task: ResearchCollectionTask,
+        *,
+        lock: bool = False,
+    ) -> ResearchCurrency:
+        claims = self._load_claims(session, task.plan.story_id, task.plan.claim_ids, lock=lock)
+        generations = {
+            row.claim_id: row.research_generation
+            for row in session.scalars(
+                select(ResearchRunClaim).where(
+                    ResearchRunClaim.research_run_id == task.plan.research_run_id
+                )
+            )
+        }
+        if set(generations) != set(task.plan.claim_ids):
+            raise ValueError("research run is missing claim generation provenance")
+        current = tuple(
+            claim.id
+            for claim in claims
+            if claim.current_research_run_id == task.plan.research_run_id
+            and claim.research_generation == generations[claim.id]
+        )
+        current_set = set(current)
+        return ResearchCurrency(
+            current_claim_ids=current,
+            stale_claim_ids=tuple(claim.id for claim in claims if claim.id not in current_set),
+        )
+
+    def persist_superseded_collection(
+        self,
+        session: Session,
+        event: EventEnvelope,
+        task: ResearchCollectionTask,
+    ) -> EvidenceCollectionResult:
+        self._validate_requested_event(event)
+        job = session.scalar(select(Job).where(Job.id == event.aggregate_id).with_for_update())
+        if job is None or job.job_type != "RESEARCH":
+            raise ValueError("research run disappeared before stale classification")
+        currency = self.collection_currency(session, task, lock=True)
+        if not currency.fully_stale:
+            raise ValueError("research run became current before stale classification")
+        job.status = "SUPERSEDED"
+        job.result = {
+            "evidence_ids": [],
+            "claim_evidence_count": 0,
+            "candidate_count": 0,
+            "unassessed_candidate_count": 0,
+            "query_failures": [],
+            "current_claim_ids": [],
+            "stale_claim_ids": [str(item) for item in currency.stale_claim_ids],
+        }
+        return EvidenceCollectionResult(
+            research_run_id=task.plan.research_run_id,
+            event_id=None,
+            evidence_ids=(),
+            current_claim_ids=(),
+            stale_claim_ids=currency.stale_claim_ids,
+            claim_evidence_count=0,
+            query_failure_count=0,
+        )
+
+    async def collect(
+        self,
+        task: ResearchCollectionTask,
+        *,
+        active_claim_ids: tuple[UUID, ...] | None = None,
+    ) -> ResearchCollection:
         candidates: list[ResearchCandidate] = []
         assessments: list[EvidenceAssessment] = []
         failures: list[ResearchQueryFailure] = []
+        successful_query_count = 0
+        active_claim_set = set(active_claim_ids or task.plan.claim_ids)
 
         for query in task.plan.queries:
+            if query.claim_id not in active_claim_set:
+                continue
             request = SearchRequest(
                 query=query.query,
                 query_family=query.query_family,
@@ -364,7 +524,13 @@ class EvidenceEngine:
                 max_results=query.max_results,
                 metadata={"target_role": query.target_role.value},
             )
-            constraints = self.enforcer.prepare(request, breaking_news=task.plan.breaking_news)
+            try:
+                constraints = self.enforcer.prepare(request, breaking_news=task.plan.breaking_news)
+            except (SearchProviderPolicyError, ValidationError, ValueError) as exc:
+                failures.append(
+                    self._query_failure(query, None, type(exc).__name__, str(exc), False)
+                )
+                continue
             compatible = self.registry.compatible_provider_ids(constraints.request)
             if not compatible:
                 failures.append(
@@ -373,15 +539,23 @@ class EvidenceEngine:
                         None,
                         "NO_COMPATIBLE_PROVIDER",
                         "no compatible provider",
+                        False,
                     )
                 )
                 continue
 
             provider_id = self.provider_selector(constraints.request, compatible)
             if provider_id not in compatible:
-                raise SearchProviderPolicyError(
-                    f"search provider selector returned unauthorized provider {provider_id!r}"
+                failures.append(
+                    self._query_failure(
+                        query,
+                        provider_id,
+                        "UNAUTHORIZED_PROVIDER_SELECTION",
+                        f"search provider selector returned unauthorized provider {provider_id!r}",
+                        False,
+                    )
                 )
+                continue
 
             try:
                 response = await asyncio.wait_for(
@@ -395,15 +569,43 @@ class EvidenceEngine:
                         provider_id,
                         "TIMEOUT",
                         "search provider exceeded research timeout",
+                        True,
                     )
                 )
                 continue
             except SearchProviderError as exc:
                 failures.append(
-                    self._query_failure(query, provider_id, type(exc).__name__, str(exc))
+                    self._query_failure(
+                        query,
+                        provider_id,
+                        type(exc).__name__,
+                        str(exc),
+                        isinstance(
+                            exc,
+                            (
+                                SearchProviderTimeoutError,
+                                SearchProviderUnavailableError,
+                                SearchProviderRateLimitError,
+                            ),
+                        )
+                        or not isinstance(
+                            exc,
+                            (
+                                SearchProviderPolicyError,
+                                SearchInvalidResponseError,
+                                SearchCapabilityError,
+                            ),
+                        ),
+                    )
+                )
+                continue
+            except (ValidationError, ValueError) as exc:
+                failures.append(
+                    self._query_failure(query, provider_id, type(exc).__name__, str(exc), False)
                 )
                 continue
 
+            successful_query_count += 1
             for result in response.results:
                 candidate = ResearchCandidate(
                     claim_id=query.claim_id,
@@ -431,6 +633,7 @@ class EvidenceEngine:
             candidates=tuple(candidates),
             assessments=tuple(assessments),
             failures=tuple(failures),
+            successful_query_count=successful_query_count,
         )
 
     def persist_collection(
@@ -451,16 +654,46 @@ class EvidenceEngine:
         if job.status not in {"PENDING", "RUNNING"}:
             raise ValueError(f"research run cannot complete from status {job.status!r}")
         self._validate_event_against_plan(event, task.plan)
-        self._load_claims(session, task.plan.story_id, task.plan.claim_ids)
+        currency = self.collection_currency(session, task, lock=True)
+        current_claim_ids = currency.current_claim_ids
+        stale_claim_ids = currency.stale_claim_ids
 
-        assessment_map = self._assessment_map(collection.assessments)
-        candidate_keys = {(item.claim_id, item.result.url) for item in collection.candidates}
+        if not current_claim_ids:
+            job.status = "SUPERSEDED"
+            job.result = {
+                "evidence_ids": [],
+                "claim_evidence_count": 0,
+                "candidate_count": len(collection.candidates),
+                "unassessed_candidate_count": len(collection.candidates),
+                "query_failures": [item.model_dump(mode="json") for item in collection.failures],
+                "current_claim_ids": [],
+                "stale_claim_ids": [str(item) for item in stale_claim_ids],
+            }
+            return EvidenceCollectionResult(
+                research_run_id=task.plan.research_run_id,
+                event_id=None,
+                evidence_ids=(),
+                current_claim_ids=(),
+                stale_claim_ids=stale_claim_ids,
+                claim_evidence_count=0,
+                query_failure_count=len(collection.failures),
+            )
+
+        current_claim_set = set(current_claim_ids)
+        current_candidates = tuple(
+            item for item in collection.candidates if item.claim_id in current_claim_set
+        )
+        current_assessments = tuple(
+            item for item in collection.assessments if item.claim_id in current_claim_set
+        )
+        assessment_map = self._assessment_map(current_assessments)
+        candidate_keys = {(item.claim_id, item.result.url) for item in current_candidates}
         if not set(assessment_map).issubset(candidate_keys):
             raise ValueError("evidence assessment references candidate outside research collection")
 
         assessed_candidates = tuple(
             item
-            for item in collection.candidates
+            for item in current_candidates
             if (item.claim_id, item.result.url) in assessment_map
         )
         grouped = self._group_candidates(assessed_candidates)
@@ -511,8 +744,10 @@ class EvidenceEngine:
             "evidence_ids": [str(item) for item in evidence_ids],
             "claim_evidence_count": relation_count,
             "candidate_count": len(collection.candidates),
-            "unassessed_candidate_count": len(collection.candidates) - len(assessed_candidates),
+            "unassessed_candidate_count": len(current_candidates) - len(assessed_candidates),
             "query_failures": [item.model_dump(mode="json") for item in collection.failures],
+            "current_claim_ids": [str(item) for item in current_claim_ids],
+            "stale_claim_ids": [str(item) for item in stale_claim_ids],
         }
         event_out = EventEnvelope(
             event_type=EventType.EVIDENCE_COLLECTED,
@@ -525,7 +760,7 @@ class EvidenceEngine:
             idempotency_key=f"evidence.collected:{task.plan.research_run_id}",
             payload={
                 "story_id": str(task.plan.story_id),
-                "claim_ids": [str(item) for item in task.plan.claim_ids],
+                "claim_ids": [str(item) for item in current_claim_ids],
                 "evidence_ids": [str(item) for item in evidence_ids],
                 "research_run_id": str(task.plan.research_run_id),
             },
@@ -536,6 +771,8 @@ class EvidenceEngine:
             research_run_id=task.plan.research_run_id,
             event_id=event_out.event_id,
             evidence_ids=tuple(evidence_ids),
+            current_claim_ids=current_claim_ids,
+            stale_claim_ids=stale_claim_ids,
             claim_evidence_count=relation_count,
             query_failure_count=len(collection.failures),
         )
@@ -547,7 +784,15 @@ class EvidenceEngine:
     ) -> dict[str, Any] | None:
         self._validate_requested_event(event)
         job = session.get(Job, event.aggregate_id)
-        if job is None or job.job_type != "RESEARCH" or job.status != "COMPLETED":
+        if (
+            job is None
+            or job.job_type != "RESEARCH"
+            or job.status
+            not in {
+                "COMPLETED",
+                "SUPERSEDED",
+            }
+        ):
             return None
         return job.result
 
@@ -655,17 +900,22 @@ class EvidenceEngine:
         story = session.scalar(statement)
         if story is None:
             raise ValueError("research story does not exist")
-        return story, EvidenceEngine._load_claims(session, story_id, claim_ids)
+        return story, EvidenceEngine._load_claims(session, story_id, claim_ids, lock=lock)
 
     @staticmethod
     def _load_claims(
         session: Session,
         story_id: UUID,
         claim_ids: tuple[UUID, ...],
+        *,
+        lock: bool = False,
     ) -> list[Claim]:
         if session.get(Story, story_id) is None:
             raise ValueError("research story does not exist")
-        claims = list(session.scalars(select(Claim).where(Claim.id.in_(claim_ids))))
+        statement = select(Claim).where(Claim.id.in_(claim_ids)).order_by(Claim.id)
+        if lock:
+            statement = statement.with_for_update()
+        claims = list(session.scalars(statement))
         by_id = {claim.id: claim for claim in claims}
         if set(by_id) != set(claim_ids):
             raise ValueError("research plan references missing claims")
@@ -697,6 +947,7 @@ class EvidenceEngine:
         provider_id: str | None,
         error_code: str,
         error_message: str,
+        retryable: bool,
     ) -> ResearchQueryFailure:
         return ResearchQueryFailure(
             claim_id=query.claim_id,
@@ -704,6 +955,7 @@ class EvidenceEngine:
             provider_id=provider_id,
             error_code=error_code,
             error_message=error_message[:1000],
+            retryable=retryable,
         )
 
     @staticmethod

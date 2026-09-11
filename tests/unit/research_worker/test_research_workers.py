@@ -6,9 +6,19 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from news_ai_database import Base, Claim, EventOutbox, Story
+import pytest
+from news_ai_database import (
+    Base,
+    Claim,
+    EventDeadLetter,
+    EventOutbox,
+    EvidenceItem,
+    Job,
+    JobAttempt,
+    Story,
+)
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
-from news_ai_events import EventEnvelope, EventType, StreamMessage
+from news_ai_events import EventEnvelope, EventType, StreamMessage, WorkerRetryPolicy
 from news_ai_events.outbox import envelope_from_outbox
 from news_ai_evidence import (
     EvidenceAssessment,
@@ -19,7 +29,11 @@ from news_ai_evidence import (
     SearchCapability,
     SearchPolicy,
     SearchProviderCapabilities,
+    SearchProviderPolicyError,
+    SearchProviderRateLimitError,
     SearchProviderRegistry,
+    SearchProviderTimeoutError,
+    SearchProviderUnavailableError,
     SearchQueryFamily,
     SearchRequest,
     SearchResponse,
@@ -32,7 +46,7 @@ from news_ai_research_worker import (
     EvidenceCollectionWorker,
     ResearchPlanningWorker,
 )
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -88,6 +102,47 @@ class Assessor:
         )
 
 
+class FailingAssessor:
+    async def assess(self, candidate: ResearchCandidate, claim_text: str):
+        raise RuntimeError("temporary assessor outage")
+
+
+@dataclass
+class CountingProvider(Provider):
+    failure: Exception | None = None
+    fail_news_only: bool = False
+    calls: list[SearchRequest] = field(default_factory=list)
+
+    async def search(self, request: SearchRequest) -> SearchResponse:
+        self.calls.append(request)
+        if self.failure is not None and (
+            not self.fail_news_only or request.capability is SearchCapability.NEWS
+        ):
+            raise self.failure
+        return await super().search(request)
+
+
+@dataclass
+class CountingAssessor(Assessor):
+    calls: list[ResearchCandidate] = field(default_factory=list)
+
+    async def assess(self, candidate: ResearchCandidate, claim_text: str):
+        self.calls.append(candidate)
+        return await super().assess(candidate, claim_text)
+
+
+class SupersedingAssessor(Assessor):
+    def __init__(self, supersede) -> None:
+        self.supersede = supersede
+        self.called = False
+
+    async def assess(self, candidate: ResearchCandidate, claim_text: str):
+        if not self.called:
+            self.called = True
+            self.supersede()
+        return await super().assess(candidate, claim_text)
+
+
 def _factory() -> sessionmaker[Session]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -105,6 +160,20 @@ def _engine() -> EvidenceEngine:
         policy,
         lambda _request, compatible: compatible[0],
         Assessor(),
+    )
+
+
+def _engine_with(provider, assessor) -> EvidenceEngine:
+    policy = SearchPolicy(
+        schema_version=1,
+        rules=SearchRules(),
+        budgets=SearchBudgets(default_timeout_seconds=90, breaking_news_timeout_seconds=45),
+    )
+    return EvidenceEngine(
+        SearchProviderRegistry([provider]),
+        policy,
+        lambda _request, compatible: compatible[0],
+        assessor,
     )
 
 
@@ -184,9 +253,14 @@ def test_planning_then_collection_workers_ack_only_after_durable_processing() ->
             select(EventOutbox).where(EventOutbox.event_type == EventType.EVIDENCE_COLLECTED.value)
         )
         assert collected is not None
+        job = session.get(Job, requested_event.aggregate_id)
+        assert job is not None
+        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job.id))
+        assert job.attempts == 1
+        assert attempt is not None and attempt.status == "COMPLETED"
 
 
-def test_collection_failure_remains_unacked_for_recovery() -> None:
+def test_collection_permanent_failure_is_dead_lettered_and_acked() -> None:
     factory = _factory()
     engine = _engine()
     bad_event = EventEnvelope(
@@ -215,5 +289,231 @@ def test_collection_failure_remains_unacked_for_recovery() -> None:
 
     result = asyncio.run(worker.run_once())
     assert result.failed == 1
+    assert result.dead_lettered == 1
     assert result.failed_message_ids == ("1-2",)
+    assert consumer.acked == ["1-2"]
+
+
+def test_exhausted_research_attempt_updates_job_attempt_and_dead_letters() -> None:
+    factory = _factory()
+    engine = _engine()
+    engine.assessor = FailingAssessor()
+    claims_event = _seed_claim_event(factory)
+    with factory() as session, session.begin():
+        planned = engine.request_research(session, claims_event)
+    with factory() as session:
+        outbox = session.scalar(select(EventOutbox).where(EventOutbox.event_id == planned.event_id))
+        assert outbox is not None
+        requested = envelope_from_outbox(outbox)
+
+    consumer = FakeConsumer(
+        stream="news:evidence",
+        group=EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        messages=[_stream_message("news:evidence", requested, "3")],
+    )
+    worker = EvidenceCollectionWorker(
+        consumer,
+        factory,
+        engine,
+        retry_policy=WorkerRetryPolicy(delays_seconds=(1,), jitter_ratio=0),
+    )
+    first = asyncio.run(worker.run_once())
+    assert first.retrying == 1
     assert consumer.acked == []
+    consumer.messages = [_stream_message("news:evidence", requested, "3")]
+    worker.reliability.clock = lambda: datetime(2100, 1, 1, tzinfo=UTC)
+    result = asyncio.run(worker.run_once())
+
+    assert result.dead_lettered == 1
+    assert consumer.acked == ["1-3"]
+    with factory() as session:
+        job = session.get(Job, planned.research_run_id)
+        assert job is not None and job.status == "FAILED" and job.attempts == 2
+        attempts = list(
+            session.scalars(select(JobAttempt).where(JobAttempt.job_id == planned.research_run_id))
+        )
+        assert len(attempts) == 2
+        assert all(attempt.status == "FAILED" for attempt in attempts)
+
+
+def test_fully_stale_research_skips_all_external_work_and_normal_attempts() -> None:
+    factory = _factory()
+    provider = CountingProvider()
+    assessor = CountingAssessor()
+    engine = _engine_with(provider, assessor)
+    trigger = _seed_claim_event(factory)
+    with factory() as session, session.begin():
+        old = engine.request_research(session, trigger)
+        newer_data = trigger.model_dump()
+        newer_data["event_id"] = uuid4()
+        newer_data["idempotency_key"] = f"claims.extracted:{uuid4()}"
+        newer_data["payload"] = {**trigger.payload, "ai_run_id": str(uuid4())}
+        engine.request_research(session, EventEnvelope.model_validate(newer_data))
+    with factory() as session:
+        row = session.scalar(select(EventOutbox).where(EventOutbox.event_id == old.event_id))
+        assert row is not None
+        requested = envelope_from_outbox(row)
+    consumer = FakeConsumer(
+        "news:evidence",
+        EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        [_stream_message("news:evidence", requested, "stale")],
+    )
+
+    result = asyncio.run(EvidenceCollectionWorker(consumer, factory, engine).run_once())
+
+    assert result.stale == 1
+    assert provider.calls == []
+    assert assessor.calls == []
+    assert consumer.acked == ["1-stale"]
+    with factory() as session:
+        job = session.get(Job, old.research_run_id)
+        assert job is not None and job.status == "SUPERSEDED"
+        assert session.scalar(select(func.count()).select_from(JobAttempt)) == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        SearchProviderTimeoutError("timeout"),
+        SearchProviderUnavailableError("unavailable"),
+        SearchProviderRateLimitError("rate limit"),
+    ],
+)
+def test_total_transient_search_failure_retries_without_collected_event(failure) -> None:
+    factory = _factory()
+    provider = CountingProvider(failure=failure)
+    engine = _engine_with(provider, CountingAssessor())
+    trigger = _seed_claim_event(factory)
+    with factory() as session, session.begin():
+        planned = engine.request_research(session, trigger)
+    with factory() as session:
+        row = session.scalar(select(EventOutbox).where(EventOutbox.event_id == planned.event_id))
+        assert row is not None
+        requested = envelope_from_outbox(row)
+    consumer = FakeConsumer(
+        "news:evidence",
+        EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        [_stream_message("news:evidence", requested, "transient")],
+    )
+
+    result = asyncio.run(EvidenceCollectionWorker(consumer, factory, engine).run_once())
+
+    assert result.retrying == 1
+    assert consumer.acked == []
+    with factory() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.EVIDENCE_COLLECTED.value)
+            )
+            == 0
+        )
+
+
+def test_total_policy_failure_is_permanent_and_dead_lettered() -> None:
+    factory = _factory()
+    engine = _engine_with(
+        CountingProvider(failure=SearchProviderPolicyError("policy rejected")),
+        CountingAssessor(),
+    )
+    trigger = _seed_claim_event(factory)
+    with factory() as session, session.begin():
+        planned = engine.request_research(session, trigger)
+    with factory() as session:
+        row = session.scalar(select(EventOutbox).where(EventOutbox.event_id == planned.event_id))
+        assert row is not None
+        requested = envelope_from_outbox(row)
+    consumer = FakeConsumer(
+        "news:evidence",
+        EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        [_stream_message("news:evidence", requested, "permanent")],
+    )
+
+    result = asyncio.run(EvidenceCollectionWorker(consumer, factory, engine).run_once())
+
+    assert result.dead_lettered == 1
+    assert consumer.acked == ["1-permanent"]
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 1
+
+
+def test_partial_provider_failure_persists_successful_collection() -> None:
+    factory = _factory()
+    provider = CountingProvider(
+        failure=SearchProviderUnavailableError("news unavailable"), fail_news_only=True
+    )
+    engine = _engine_with(provider, CountingAssessor())
+    trigger = _seed_claim_event(factory)
+    with factory() as session, session.begin():
+        planned = engine.request_research(session, trigger)
+    with factory() as session:
+        row = session.scalar(select(EventOutbox).where(EventOutbox.event_id == planned.event_id))
+        assert row is not None
+        requested = envelope_from_outbox(row)
+    consumer = FakeConsumer(
+        "news:evidence",
+        EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        [_stream_message("news:evidence", requested, "partial")],
+    )
+
+    result = asyncio.run(EvidenceCollectionWorker(consumer, factory, engine).run_once())
+
+    assert result.processed == 1
+    assert consumer.acked == ["1-partial"]
+    with factory() as session:
+        job = session.get(Job, planned.research_run_id)
+        assert job is not None and job.status == "COMPLETED"
+        assert job.result["query_failures"]
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.EVIDENCE_COLLECTED.value)
+            )
+            == 1
+        )
+
+
+def test_generation_becoming_stale_during_external_collection_is_rejected() -> None:
+    factory = _factory()
+    trigger = _seed_claim_event(factory)
+    engine: EvidenceEngine
+
+    def supersede() -> None:
+        newer_data = trigger.model_dump()
+        newer_data["event_id"] = uuid4()
+        newer_data["idempotency_key"] = f"claims.extracted:{uuid4()}"
+        newer_data["payload"] = {**trigger.payload, "ai_run_id": str(uuid4())}
+        with factory() as session, session.begin():
+            engine.request_research(session, EventEnvelope.model_validate(newer_data))
+
+    engine = _engine_with(CountingProvider(), SupersedingAssessor(supersede))
+    with factory() as session, session.begin():
+        planned = engine.request_research(session, trigger)
+    with factory() as session:
+        row = session.scalar(select(EventOutbox).where(EventOutbox.event_id == planned.event_id))
+        assert row is not None
+        requested = envelope_from_outbox(row)
+    consumer = FakeConsumer(
+        "news:evidence",
+        EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        [_stream_message("news:evidence", requested, "race")],
+    )
+
+    result = asyncio.run(EvidenceCollectionWorker(consumer, factory, engine).run_once())
+
+    assert result.stale == 1
+    assert consumer.acked == ["1-race"]
+    with factory() as session:
+        old_job = session.get(Job, planned.research_run_id)
+        assert old_job is not None and old_job.status == "SUPERSEDED"
+        assert session.scalar(select(func.count()).select_from(EvidenceItem)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.EVIDENCE_COLLECTED.value)
+            )
+            == 0
+        )

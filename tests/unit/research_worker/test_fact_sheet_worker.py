@@ -4,7 +4,16 @@ import asyncio
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from news_ai_database import Base, Claim, FactCheck, FactSheet, ProcessedEvent, Story
+from news_ai_database import (
+    Base,
+    Claim,
+    FactCheck,
+    FactSheet,
+    Job,
+    ProcessedEvent,
+    ResearchRunClaim,
+    Story,
+)
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
 from news_ai_events import EventEnvelope, EventType, StreamMessage
 from news_ai_evidence import FactSheetGenerator
@@ -41,6 +50,17 @@ def _factory() -> sessionmaker[Session]:
 
 def _verified_event(factory: sessionmaker[Session]) -> EventEnvelope:
     with factory() as session, session.begin():
+        research_run_id = uuid4()
+        session.add(
+            Job(
+                id=research_run_id,
+                job_type="RESEARCH",
+                status="COMPLETED",
+                priority=2,
+                payload={},
+                result={},
+            )
+        )
         story = Story(
             canonical_headline="Worker Fact Sheet",
             summary="Persisted summary",
@@ -57,6 +77,8 @@ def _verified_event(factory: sessionmaker[Session]) -> EventEnvelope:
             status=ClaimVerificationStatus.SUPPORTED,
             risk_level=RiskLevel.LOW,
             claim_metadata={},
+            research_generation=1,
+            current_research_run_id=research_run_id,
         )
         session.add(claim)
         session.flush()
@@ -67,9 +89,20 @@ def _verified_event(factory: sessionmaker[Session]) -> EventEnvelope:
             summary="Supported by evidence.",
             review_required=True,
             review_state=ReviewState.NOT_READY,
+            research_run_id=research_run_id,
+            research_generation=1,
+            methodology_version="fact-check-methodology-v1",
         )
         session.add(check)
         session.flush()
+        claim.current_fact_check_id = check.id
+        session.add(
+            ResearchRunClaim(
+                research_run_id=research_run_id,
+                claim_id=claim.id,
+                research_generation=1,
+            )
+        )
         story_id = story.id
         check_id = check.id
 
@@ -125,7 +158,7 @@ def test_fact_sheet_worker_acks_after_commit_and_replay_is_idempotent() -> None:
         assert processed is not None
 
 
-def test_fact_sheet_worker_leaves_invalid_event_unacked() -> None:
+def test_fact_sheet_worker_dead_letters_invalid_event() -> None:
     factory = _factory()
     event = _verified_event(factory)
     bad_event = event.model_copy(
@@ -143,8 +176,52 @@ def test_fact_sheet_worker_leaves_invalid_event_unacked() -> None:
 
     result = asyncio.run(worker.run_once())
     assert result.failed == 1
+    assert result.dead_lettered == 1
     assert result.failed_message_ids == ("2-0",)
-    assert consumer.acked == []
+    assert consumer.acked == ["2-0"]
 
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactSheet)) == 0
+
+
+def test_fact_sheet_worker_acks_superseded_verification_without_retry() -> None:
+    factory = _factory()
+    event = _verified_event(factory)
+    with factory() as session, session.begin():
+        claim = session.scalar(select(Claim).where(Claim.story_id == event.aggregate_id))
+        assert claim is not None
+        newer_run_id = uuid4()
+        session.add(
+            Job(
+                id=newer_run_id,
+                job_type="RESEARCH",
+                status="PENDING",
+                priority=2,
+                payload={},
+            )
+        )
+        session.add(
+            ResearchRunClaim(
+                research_run_id=newer_run_id,
+                claim_id=claim.id,
+                research_generation=2,
+            )
+        )
+        claim.research_generation = 2
+        claim.current_research_run_id = newer_run_id
+        claim.current_fact_check_id = None
+        claim.status = ClaimVerificationStatus.UNASSESSED
+
+    consumer = FakeConsumer(
+        stream="news:stories",
+        group=FACT_SHEET_CONSUMER_GROUP,
+        messages=[_message(event, "3-0")],
+    )
+    result = asyncio.run(FactSheetWorker(consumer, factory, FactSheetGenerator()).run_once())
+
+    assert result.stale == 1
+    assert result.retrying == 0
+    assert result.dead_lettered == 0
+    assert consumer.acked == ["3-0"]
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(FactSheet)) == 0

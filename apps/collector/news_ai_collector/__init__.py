@@ -1,6 +1,6 @@
 """News collection package."""
 
-from .ingestion import NormalizedArticleHandler
+from .ingestion import ArticleDiscoveryResult, DiscoveredArticleHandler
 from .models import CollectedArticle, CollectionBatchResult, FeedDefinition, FeedFetchResult
 from .registry import (
     CollectionConfig,
@@ -30,7 +30,8 @@ __all__ = [
     "FeedDefinition",
     "FeedFetchResult",
     "FeedRegistryConfig",
-    "NormalizedArticleHandler",
+    "ArticleDiscoveryResult",
+    "DiscoveredArticleHandler",
     "RSSCollector",
     "RegistrySyncResult",
     "SourceConfig",

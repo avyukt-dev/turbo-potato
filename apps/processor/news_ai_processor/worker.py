@@ -7,25 +7,34 @@ PostgreSQL transaction, marked durably as processed, and ACKed only after that t
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from news_ai_database import Article, ArticleVersion
+from news_ai_database import Article, ArticleDiscovery, ArticleVersion, EventOutbox
 from news_ai_events import (
     EventEnvelope,
     EventType,
+    ProcessingOutcome,
     RedisStreamConsumer,
+    ReliableMessageProcessor,
     StreamMessage,
+    WorkerBatchResult,
+    WorkerRetryPolicy,
 )
 from news_ai_events.idempotency import mark_processed, was_processed
-from news_ai_events.payloads import ArticleNormalizedV1
+from news_ai_events.payloads import ArticleDiscoveredV1, ArticleNormalizedV1
 from news_ai_events.streams import stream_for_event
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .models import ArticleNormalizationInput
+from .normalizer import ArticleNormalizer
+from .persistence import ArticlePersistenceService
+
 PROCESSOR_CONSUMER_GROUP = "processor"
+NORMALIZER_CONSUMER_GROUP = "normalizer"
 
 
 class ArticleNormalizedWorkItem(BaseModel):
@@ -57,13 +66,7 @@ ArticleNormalizedHandler = Callable[
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class ProcessorBatchResult:
-    received: int = 0
-    processed: int = 0
-    duplicates: int = 0
-    failed: int = 0
-    failed_message_ids: tuple[str, ...] = ()
+ProcessorBatchResult = WorkerBatchResult
 
 
 class ProcessorEventWorker:
@@ -76,6 +79,7 @@ class ProcessorEventWorker:
         handler: ArticleNormalizedHandler,
         *,
         consumer_group: str = PROCESSOR_CONSUMER_GROUP,
+        retry_policy: WorkerRetryPolicy | None = None,
     ) -> None:
         expected_stream = stream_for_event(EventType.ARTICLE_NORMALIZED)
         if consumer.stream != expected_stream:
@@ -90,6 +94,13 @@ class ProcessorEventWorker:
         self.session_factory = session_factory
         self.handler = handler
         self.consumer_group = consumer_group
+        self.reliability = ReliableMessageProcessor(
+            consumer,
+            session_factory,
+            consumer_group=consumer_group,
+            handled_event_types=frozenset({EventType.ARTICLE_NORMALIZED}),
+            retry_policy=retry_policy,
+        )
 
     async def ensure_ready(self) -> None:
         await self.consumer.ensure_group()
@@ -114,30 +125,13 @@ class ProcessorEventWorker:
         return next_start, await self._process_messages(messages)
 
     async def _process_messages(self, messages: Sequence[StreamMessage]) -> ProcessorBatchResult:
-        processed = 0
-        duplicates = 0
-        failed_ids: list[str] = []
+        return await self.reliability.process(messages, self._handle_event)
 
-        for message in messages:
-            try:
-                duplicate = self._process_event(message.event)
-            except Exception:
-                # Keep the message pending. Recovery/retry policy owns the next attempt.
-                failed_ids.append(message.message_id)
-                continue
-
-            await self.consumer.ack(message)
-            if duplicate:
-                duplicates += 1
-            else:
-                processed += 1
-
-        return ProcessorBatchResult(
-            received=len(messages),
-            processed=processed,
-            duplicates=duplicates,
-            failed=len(failed_ids),
-            failed_message_ids=tuple(failed_ids),
+    def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
+        return (
+            ProcessingOutcome.DUPLICATE
+            if self._process_event(event)
+            else ProcessingOutcome.PROCESSED
         )
 
     def _process_event(self, event: EventEnvelope) -> bool:
@@ -166,6 +160,147 @@ class ProcessorEventWorker:
             )
 
         return False
+
+
+class NormalizerEventWorker:
+    """Consume durable discovery inputs and emit article.normalized after persistence."""
+
+    def __init__(
+        self,
+        consumer: RedisStreamConsumer,
+        session_factory: Callable[[], Session],
+        normalizer: ArticleNormalizer | None = None,
+        *,
+        retry_policy: WorkerRetryPolicy | None = None,
+    ) -> None:
+        expected_stream = stream_for_event(EventType.ARTICLE_DISCOVERED)
+        if consumer.stream != expected_stream:
+            raise ValueError(
+                f"normalizer consumer must read {expected_stream!r}, got {consumer.stream!r}"
+            )
+        if consumer.group != NORMALIZER_CONSUMER_GROUP:
+            raise ValueError("normalizer consumer group is invalid")
+        self.consumer = consumer
+        self.session_factory = session_factory
+        self.normalizer = normalizer or ArticleNormalizer()
+        self.reliability = ReliableMessageProcessor(
+            consumer,
+            session_factory,
+            consumer_group=NORMALIZER_CONSUMER_GROUP,
+            handled_event_types=frozenset({EventType.ARTICLE_DISCOVERED}),
+            retry_policy=retry_policy,
+        )
+
+    async def ensure_ready(self) -> None:
+        await self.consumer.ensure_group()
+
+    async def run_once(self) -> ProcessorBatchResult:
+        return await self._process_messages(await self.consumer.read())
+
+    async def recover_once(
+        self,
+        *,
+        min_idle_ms: int,
+        start_id: str = "0-0",
+    ) -> tuple[str, ProcessorBatchResult]:
+        next_start, messages = await self.consumer.claim_stale(
+            min_idle_ms=min_idle_ms,
+            start_id=start_id,
+        )
+        return next_start, await self._process_messages(messages)
+
+    async def _process_messages(self, messages: Sequence[StreamMessage]) -> ProcessorBatchResult:
+        return await self.reliability.process(messages, self._handle_event)
+
+    def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
+        return (
+            ProcessingOutcome.DUPLICATE
+            if self._process_event(event)
+            else ProcessingOutcome.PROCESSED
+        )
+
+    def _process_event(self, event: EventEnvelope) -> bool:
+        payload = ArticleDiscoveredV1.model_validate(event.payload)
+        if event.aggregate_type != "article" or payload.article_id != event.aggregate_id:
+            raise ValueError("article.discovered aggregate does not match payload")
+        with self.session_factory() as session, session.begin():
+            if was_processed(
+                session,
+                event_id=event.event_id,
+                consumer_group=NORMALIZER_CONSUMER_GROUP,
+            ):
+                return True
+            discovery = session.scalar(
+                select(ArticleDiscovery)
+                .where(ArticleDiscovery.event_id == event.event_id)
+                .with_for_update()
+            )
+            article = session.get(Article, payload.article_id)
+            if discovery is None and article is not None:
+                legacy = session.scalar(
+                    select(EventOutbox)
+                    .where(
+                        EventOutbox.event_type == EventType.ARTICLE_NORMALIZED.value,
+                        EventOutbox.aggregate_id == article.id,
+                        EventOutbox.causation_id == event.event_id,
+                    )
+                    .limit(1)
+                )
+                if legacy is not None:
+                    normalized_payload = ArticleNormalizedV1.model_validate(legacy.payload)
+                    legacy_version = session.get(
+                        ArticleVersion, normalized_payload.article_version_id
+                    )
+                    if (
+                        normalized_payload.article_id == article.id
+                        and legacy_version is not None
+                        and legacy_version.article_id == article.id
+                        and legacy_version.content_hash == normalized_payload.content_hash
+                    ):
+                        mark_processed(
+                            session,
+                            event_id=event.event_id,
+                            consumer_group=NORMALIZER_CONSUMER_GROUP,
+                            result={
+                                "article_id": str(article.id),
+                                "article_version_id": str(normalized_payload.article_version_id),
+                                "legacy_completed": True,
+                                "event_id": str(legacy.event_id),
+                            },
+                        )
+                        return True
+            if discovery is None or article is None or discovery.article_id != article.id:
+                raise ValueError("article.discovered references missing durable discovery input")
+            if (
+                article.source_id != payload.source_id
+                or article.canonical_url != payload.canonical_url
+            ):
+                raise ValueError(
+                    "article.discovered payload does not match durable article identity"
+                )
+            normalized = self.normalizer.normalize(
+                ArticleNormalizationInput.model_validate(discovery.raw_payload)
+            )
+            if normalized.canonical_url != article.canonical_url:
+                raise ValueError("durable discovery URL normalizes to another Article identity")
+            result = ArticlePersistenceService(session).persist(
+                normalized,
+                correlation_id=event.correlation_id,
+                causation_id=event.event_id,
+                discovery_id=discovery.id,
+            )
+            mark_processed(
+                session,
+                event_id=event.event_id,
+                consumer_group=NORMALIZER_CONSUMER_GROUP,
+                result={
+                    "article_id": str(result.article_id),
+                    "article_version_id": str(result.version_id),
+                    "created_version": result.created_version,
+                    "event_id": str(result.event_id) if result.event_id is not None else None,
+                },
+            )
+        return not result.created_version
 
 
 def _load_work_item(session: Session, payload: ArticleNormalizedV1) -> ArticleNormalizedWorkItem:

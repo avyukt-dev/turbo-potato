@@ -1,41 +1,43 @@
-"""Integration boundary from collected feed items into article normalization/persistence."""
+"""Durable collection boundary that emits article.discovered before normalization."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import dataclass
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from news_ai_database import Article
+from news_ai_database import Article, ArticleDiscovery
 from news_ai_events import EventEnvelope, EventType
-from news_ai_processor import (
-    ArticleNormalizationInput,
-    ArticleNormalizer,
-    ArticlePersistenceResult,
-    ArticlePersistenceService,
-    NormalizedArticle,
-)
+from news_ai_events.outbox import build_outbox_record
+from news_ai_processor import canonicalize_url
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import CollectedArticle
 
 
-class NormalizedArticleHandler:
-    """Normalize and persist one collected article inside the caller-owned transaction."""
+@dataclass(frozen=True, slots=True)
+class ArticleDiscoveryResult:
+    article_id: UUID
+    discovery_id: UUID
+    event_id: UUID
+    created_article: bool
+    created_discovery: bool
+
+
+class DiscoveredArticleHandler:
+    """Persist raw discovery input and its outbox intent in the caller transaction."""
 
     def __init__(
         self,
-        normalizer: ArticleNormalizer | None = None,
         *,
-        producer: str = "processor",
+        producer: str = "collector",
         producer_version: str = "0.1.0",
-        collector_producer: str = "collector",
-        collector_producer_version: str = "0.1.0",
     ) -> None:
-        self.normalizer = normalizer or ArticleNormalizer()
         self.producer = producer
         self.producer_version = producer_version
-        self.collector_producer = collector_producer
-        self.collector_producer_version = collector_producer_version
 
     def __call__(
         self,
@@ -43,59 +45,90 @@ class NormalizedArticleHandler:
         article: CollectedArticle,
         *,
         retrieved_at: datetime,
-    ) -> ArticlePersistenceResult:
-        normalized = self.normalizer.normalize(
-            ArticleNormalizationInput(
-                source_id=article.source_id,
-                source_feed_id=article.source_feed_id,
-                url=article.url,
-                title=article.title,
-                author=article.author,
-                published_at=article.published_at,
-                summary=article.summary,
-                external_id=article.external_id,
-                retrieved_at=retrieved_at,
+    ) -> ArticleDiscoveryResult:
+        canonical_url = canonicalize_url(str(article.url))
+        persisted = session.scalar(
+            select(Article)
+            .where(
+                Article.source_id == article.source_id,
+                Article.canonical_url == canonical_url,
+            )
+            .with_for_update()
+        )
+        created_article = persisted is None
+        if persisted is None:
+            persisted = Article(source_id=article.source_id, canonical_url=canonical_url)
+            session.add(persisted)
+            session.flush()
+
+        raw_payload = {
+            "source_id": str(article.source_id),
+            "source_feed_id": str(article.source_feed_id),
+            "url": str(article.url),
+            "title": article.title,
+            "author": article.author,
+            "published_at": (
+                article.published_at.isoformat() if article.published_at is not None else None
+            ),
+            "language": article.language,
+            "summary": article.summary,
+            "body": article.body,
+            "external_id": article.external_id,
+            "retrieved_at": retrieved_at.isoformat(),
+        }
+        semantic_payload = {
+            key: value for key, value in raw_payload.items() if key != "retrieved_at"
+        }
+        raw_hash = hashlib.sha256(
+            json.dumps(semantic_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        existing = session.scalar(
+            select(ArticleDiscovery).where(
+                ArticleDiscovery.article_id == persisted.id,
+                ArticleDiscovery.raw_hash == raw_hash,
             )
         )
-        correlation_id = uuid4()
-
-        def discovered_event(
-            persisted_article: Article,
-            normalized_article: NormalizedArticle,
-        ) -> EventEnvelope:
-            return EventEnvelope(
-                event_type=EventType.ARTICLE_DISCOVERED,
-                occurred_at=retrieved_at,
-                producer=self.collector_producer,
-                producer_version=self.collector_producer_version,
-                aggregate_type="article",
-                aggregate_id=persisted_article.id,
-                correlation_id=correlation_id,
-                idempotency_key=f"article.discovered:{persisted_article.id}",
-                payload={
-                    "article_id": str(persisted_article.id),
-                    "source_id": str(normalized_article.source_id),
-                    "source_feed_id": (
-                        str(normalized_article.source_feed_id)
-                        if normalized_article.source_feed_id is not None
-                        else None
-                    ),
-                    "canonical_url": normalized_article.canonical_url,
-                    "title": normalized_article.title,
-                    "published_at": (
-                        normalized_article.published_at.isoformat()
-                        if normalized_article.published_at is not None
-                        else None
-                    ),
-                },
+        if existing is not None:
+            return ArticleDiscoveryResult(
+                article_id=persisted.id,
+                discovery_id=existing.id,
+                event_id=existing.event_id,
+                created_article=created_article,
+                created_discovery=False,
             )
 
-        return ArticlePersistenceService(
-            session,
+        correlation_id = uuid4()
+        event = EventEnvelope(
+            event_type=EventType.ARTICLE_DISCOVERED,
+            occurred_at=retrieved_at,
             producer=self.producer,
             producer_version=self.producer_version,
-        ).persist(
-            normalized,
+            aggregate_type="article",
+            aggregate_id=persisted.id,
             correlation_id=correlation_id,
-            predecessor_event_factory=discovered_event,
+            idempotency_key=f"article.discovered:{persisted.id}:{raw_hash}",
+            payload={
+                "article_id": str(persisted.id),
+                "source_id": str(article.source_id),
+                "source_feed_id": str(article.source_feed_id),
+                "canonical_url": canonical_url,
+                "title": article.title,
+                "published_at": raw_payload["published_at"],
+            },
+        )
+        discovery = ArticleDiscovery(
+            event_id=event.event_id,
+            article_id=persisted.id,
+            raw_hash=raw_hash,
+            raw_payload=raw_payload,
+            retrieved_at=retrieved_at,
+        )
+        session.add_all([discovery, build_outbox_record(event)])
+        session.flush()
+        return ArticleDiscoveryResult(
+            article_id=persisted.id,
+            discovery_id=discovery.id,
+            event_id=event.event_id,
+            created_article=created_article,
+            created_discovery=True,
         )

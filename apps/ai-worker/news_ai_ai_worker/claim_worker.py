@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from uuid import UUID
 
 from news_ai_ai import ClaimExtractionService
-from news_ai_events import EventEnvelope, EventType, RedisStreamConsumer, StreamMessage
+from news_ai_events import (
+    EventEnvelope,
+    EventType,
+    ProcessingOutcome,
+    RedisStreamConsumer,
+    ReliableMessageProcessor,
+    StreamMessage,
+    WorkerBatchResult,
+    WorkerRetryPolicy,
+)
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from sqlalchemy.orm import Session
@@ -16,14 +24,7 @@ CLAIM_CONSUMER_GROUP = "claim-worker"
 _HANDLED_EVENT_TYPES = frozenset({EventType.STORY_CREATED, EventType.STORY_CLUSTERED})
 
 
-@dataclass(frozen=True, slots=True)
-class ClaimWorkerBatchResult:
-    received: int = 0
-    processed: int = 0
-    duplicates: int = 0
-    ignored: int = 0
-    failed: int = 0
-    failed_message_ids: tuple[str, ...] = ()
+ClaimWorkerBatchResult = WorkerBatchResult
 
 
 class ClaimExtractionWorker:
@@ -36,6 +37,7 @@ class ClaimExtractionWorker:
         service: ClaimExtractionService,
         *,
         consumer_group: str = CLAIM_CONSUMER_GROUP,
+        retry_policy: WorkerRetryPolicy | None = None,
     ) -> None:
         expected_stream = stream_for_event(EventType.STORY_CREATED)
         if consumer.stream != expected_stream:
@@ -50,6 +52,13 @@ class ClaimExtractionWorker:
         self.session_factory = session_factory
         self.service = service
         self.consumer_group = consumer_group
+        self.reliability = ReliableMessageProcessor(
+            consumer,
+            session_factory,
+            consumer_group=consumer_group,
+            handled_event_types=_HANDLED_EVENT_TYPES,
+            retry_policy=retry_policy,
+        )
 
     async def ensure_ready(self) -> None:
         await self.consumer.ensure_group()
@@ -70,37 +79,10 @@ class ClaimExtractionWorker:
         return next_start, await self._process_messages(messages)
 
     async def _process_messages(self, messages: Sequence[StreamMessage]) -> ClaimWorkerBatchResult:
-        processed = 0
-        duplicates = 0
-        ignored = 0
-        failed_ids: list[str] = []
+        return await self.reliability.process(messages, self._handle_event)
 
-        for message in messages:
-            if message.event.event_type not in _HANDLED_EVENT_TYPES:
-                await self.consumer.ack(message)
-                ignored += 1
-                continue
-
-            try:
-                outcome = await self._process_event(message.event)
-            except Exception:
-                failed_ids.append(message.message_id)
-                continue
-
-            await self.consumer.ack(message)
-            if outcome == "duplicate":
-                duplicates += 1
-            else:
-                processed += 1
-
-        return ClaimWorkerBatchResult(
-            received=len(messages),
-            processed=processed,
-            duplicates=duplicates,
-            ignored=ignored,
-            failed=len(failed_ids),
-            failed_message_ids=tuple(failed_ids),
-        )
+    async def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
+        return ProcessingOutcome((await self._process_event(event)).upper())
 
     async def _process_event(self, event: EventEnvelope) -> str:
         story_id = _story_id(event)

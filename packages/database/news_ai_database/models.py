@@ -40,6 +40,19 @@ class OutboxStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class EventFailureClass(StrEnum):
+    TRANSIENT = "TRANSIENT"
+    PERMANENT = "PERMANENT"
+    STALE = "STALE"
+    EXHAUSTED = "EXHAUSTED"
+
+
+class EventAttemptStatus(StrEnum):
+    RETRY_PENDING = "RETRY_PENDING"
+    DEAD_LETTERED = "DEAD_LETTERED"
+    STALE = "STALE"
+
+
 class UUIDPrimaryKeyMixin:
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
 
@@ -115,6 +128,35 @@ class ArticleVersion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     body: Mapped[str | None] = mapped_column(Text)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version_metadata: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+
+
+class ArticleDiscovery(UUIDPrimaryKeyMixin, Base):
+    """Durable raw handoff from collection to asynchronous normalization."""
+
+    __tablename__ = "article_discoveries"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_article_discoveries_event_id"),
+        UniqueConstraint(
+            "article_id",
+            "raw_hash",
+            name="uq_article_discoveries_article_id_raw_hash",
+        ),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    article_id: Mapped[UUID] = mapped_column(ForeignKey("articles.id"), nullable=False, index=True)
+    raw_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    normalized_article_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "article_versions.id",
+            name="fk_article_discoveries_normalized_version",
+        ),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Story(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -203,6 +245,7 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')",
             name="ck_claims_risk_level",
         ),
+        CheckConstraint("research_generation >= 0", name="ck_claims_research_generation"),
     )
 
     story_id: Mapped[UUID] = mapped_column(ForeignKey("stories.id"), nullable=False, index=True)
@@ -231,7 +274,36 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     created_by_ai_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("ai_runs.id"), nullable=True, index=True
     )
+    research_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_research_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("jobs.id"), nullable=True, index=True
+    )
+    current_fact_check_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("fact_checks.id", use_alter=True), nullable=True, index=True
+    )
     claim_metadata: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+
+
+class ResearchRunClaim(Base):
+    """Generation assigned to one Claim within a potentially multi-Claim research run."""
+
+    __tablename__ = "research_run_claims"
+    __table_args__ = (
+        UniqueConstraint(
+            "claim_id",
+            "research_generation",
+            name="uq_research_run_claims_claim_generation",
+        ),
+        CheckConstraint(
+            "research_generation >= 1",
+            name="ck_research_run_claims_generation",
+        ),
+    )
+
+    research_run_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id"), primary_key=True)
+    claim_id: Mapped[UUID] = mapped_column(ForeignKey("claims.id"), primary_key=True)
+    research_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class EvidenceItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -283,6 +355,13 @@ class FactCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "contradicting_count >= 0",
             name="ck_fact_checks_contradicting_count_nonnegative",
         ),
+        CheckConstraint(
+            "(research_run_id IS NULL AND research_generation IS NULL AND "
+            "methodology_version IS NULL) OR "
+            "(research_run_id IS NOT NULL AND research_generation >= 1 AND "
+            "methodology_version IS NOT NULL)",
+            name="ck_fact_checks_research_provenance",
+        ),
         UniqueConstraint("semantic_key", name="uq_fact_checks_semantic_key"),
     )
 
@@ -307,6 +386,11 @@ class FactCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     ai_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("ai_runs.id"), nullable=True, index=True
     )
+    research_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("jobs.id"), nullable=True, index=True
+    )
+    research_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    methodology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     semantic_key: Mapped[str | None] = mapped_column(String(128), index=True)
 
 
@@ -442,3 +526,86 @@ class ProcessedEvent(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
+
+
+class EventProcessingAttempt(UUIDPrimaryKeyMixin, Base):
+    """One durable failed processing attempt for a stream delivery."""
+
+    __tablename__ = "event_processing_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "delivery_key",
+            "attempt_number",
+            name="uq_event_processing_attempts_delivery_attempt",
+        ),
+        CheckConstraint("attempt_number >= 1", name="ck_event_processing_attempts_number"),
+        CheckConstraint(
+            "failure_class IN ('TRANSIENT', 'PERMANENT', 'STALE', 'EXHAUSTED')",
+            name="ck_event_processing_attempts_failure_class",
+        ),
+        CheckConstraint(
+            "status IN ('RETRY_PENDING', 'DEAD_LETTERED', 'STALE')",
+            name="ck_event_processing_attempts_status",
+        ),
+    )
+
+    delivery_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    event_type: Mapped[str | None] = mapped_column(String(128), index=True)
+    consumer_group: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_stream: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_class: Mapped[EventFailureClass] = mapped_column(
+        SAEnum(EventFailureClass, native_enum=False, length=16, validate_strings=True),
+        nullable=False,
+    )
+    status: Mapped[EventAttemptStatus] = mapped_column(
+        SAEnum(EventAttemptStatus, native_enum=False, length=24, validate_strings=True),
+        nullable=False,
+    )
+    error_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EventDeadLetter(UUIDPrimaryKeyMixin, Base):
+    """Idempotent durable dead-letter record created before source-message ACK."""
+
+    __tablename__ = "event_dead_letters"
+    __table_args__ = (
+        UniqueConstraint("delivery_key", name="uq_event_dead_letters_delivery_key"),
+        CheckConstraint("attempt_count >= 1", name="ck_event_dead_letters_attempt_count"),
+        CheckConstraint(
+            "failure_class IN ('PERMANENT', 'EXHAUSTED')",
+            name="ck_event_dead_letters_failure_class",
+        ),
+        CheckConstraint(
+            "length(raw_event_hash) = 64",
+            name="ck_event_dead_letters_raw_event_hash",
+        ),
+    )
+
+    delivery_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    event_type: Mapped[str | None] = mapped_column(String(128), index=True)
+    aggregate_type: Mapped[str | None] = mapped_column(String(64))
+    aggregate_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    consumer_group: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_stream: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_class: Mapped[EventFailureClass] = mapped_column(
+        SAEnum(EventFailureClass, native_enum=False, length=16, validate_strings=True),
+        nullable=False,
+    )
+    error_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_event: Mapped[str | None] = mapped_column(Text)
+    raw_event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
+    failed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

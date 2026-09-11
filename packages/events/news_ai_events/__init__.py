@@ -14,6 +14,17 @@ from .payloads import (
     parse_event_payload,
     payload_model_for,
 )
+from .reliability import (
+    PermanentEventError,
+    ProcessingOutcome,
+    ReliableMessageProcessor,
+    StaleWorkError,
+    TransientEventError,
+    WorkerBatchResult,
+    WorkerRetryConfig,
+    WorkerRetryPolicy,
+    load_worker_retry_policy,
+)
 from .streams import RedisStreamPublisher, stream_for_event
 from .types import EventType
 
@@ -27,11 +38,20 @@ __all__ = [
     "EvidenceRequestedV1",
     "FactCheckCompletedV1",
     "OutboxDispatcher",
+    "PermanentEventError",
+    "ProcessingOutcome",
     "RedisStreamConsumer",
     "RedisStreamPublisher",
+    "ReliableMessageProcessor",
+    "StaleWorkError",
+    "TransientEventError",
     "RetryPolicy",
     "StreamMessage",
     "StoryVerifiedV1",
+    "WorkerBatchResult",
+    "WorkerRetryConfig",
+    "WorkerRetryPolicy",
+    "load_worker_retry_policy",
     "mark_processed",
     "parse_event_payload",
     "payload_model_for",

@@ -6,20 +6,17 @@ the caller's SQLAlchemy transaction so they succeed or roll back together.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
-from news_ai_database import Article, ArticleVersion
+from news_ai_database import Article, ArticleDiscovery, ArticleVersion
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import build_outbox_record
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import NormalizedArticle
-
-PredecessorEventFactory = Callable[[Article, NormalizedArticle], EventEnvelope]
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,23 +49,10 @@ class ArticlePersistenceService:
         *,
         correlation_id: UUID | None = None,
         causation_id: UUID | None = None,
-        predecessor_event_factory: PredecessorEventFactory | None = None,
+        discovery_id: UUID | None = None,
     ) -> ArticlePersistenceResult:
         article, created_article = self._get_or_create_article(normalized)
         self._apply_latest_metadata(article, normalized)
-
-        if created_article and predecessor_event_factory is not None:
-            predecessor = predecessor_event_factory(article, normalized)
-            if predecessor.aggregate_type != "article" or predecessor.aggregate_id != article.id:
-                raise ValueError("article predecessor event must reference the persisted article")
-            if correlation_id is not None and correlation_id != predecessor.correlation_id:
-                raise ValueError("article predecessor event correlation_id does not match")
-            if causation_id is not None and causation_id != predecessor.event_id:
-                raise ValueError("article predecessor event must be the normalized event causation")
-            correlation_id = predecessor.correlation_id
-            causation_id = predecessor.event_id
-            self.session.add(build_outbox_record(predecessor))
-            self.session.flush()
 
         existing_version = self.session.scalar(
             select(ArticleVersion)
@@ -80,6 +64,7 @@ class ArticlePersistenceService:
             .limit(1)
         )
         if existing_version is not None:
+            self._mark_discovery_normalized(discovery_id, existing_version)
             return ArticlePersistenceResult(
                 article_id=article.id,
                 version_id=existing_version.id,
@@ -105,6 +90,7 @@ class ArticlePersistenceService:
         )
         self.session.add(version)
         self.session.flush()
+        self._mark_discovery_normalized(discovery_id, version)
 
         event = EventEnvelope(
             event_type=EventType.ARTICLE_NORMALIZED,
@@ -130,6 +116,23 @@ class ArticlePersistenceService:
             created_version=True,
             event_id=event.event_id,
         )
+
+    def _mark_discovery_normalized(
+        self,
+        discovery_id: UUID | None,
+        version: ArticleVersion,
+    ) -> None:
+        if discovery_id is None:
+            return
+        discovery = self.session.get(ArticleDiscovery, discovery_id)
+        if discovery is None or discovery.article_id != version.article_id:
+            raise ValueError("normalization references missing or mismatched discovery")
+        if (
+            discovery.normalized_article_version_id is not None
+            and discovery.normalized_article_version_id != version.id
+        ):
+            raise ValueError("discovery was already normalized to another article version")
+        discovery.normalized_article_version_id = version.id
 
     def _get_or_create_article(self, normalized: NormalizedArticle) -> tuple[Article, bool]:
         lookup = (
