@@ -11,6 +11,11 @@ from .claim_extraction import (
     StoryArticleInput,
     StoryClaimContext,
 )
+from .configuration import (
+    AIProvidersConfig,
+    AIProvidersConfigLoader,
+    build_ai_router,
+)
 from .contracts import (
     AIRequest,
     AIResponse,
@@ -66,6 +71,8 @@ __all__ = [
     "AIProviderRegistry",
     "AIProviderTimeoutError",
     "AIProviderUnavailableError",
+    "AIProvidersConfig",
+    "AIProvidersConfigLoader",
     "AIRequest",
     "AIResponse",
     "AIResponseFormat",
@@ -97,5 +104,6 @@ __all__ = [
     "TaskRoutingPolicy",
     "TokenUsage",
     "metadata_contains_secret_key",
+    "build_ai_router",
     "require_provider_compatibility",
 ]

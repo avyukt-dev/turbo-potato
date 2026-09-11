@@ -6,7 +6,8 @@ The API reports dependency health but does not expose connection strings or prov
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from news_ai_common.config import AppSettings
+from news_ai_ai import AIRequest, AIResponseFormat, AITaskType, build_ai_router
+from news_ai_common.config import AppSettings, ConfigError, ConfigLoader
 from news_ai_database.session import create_database_engine
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -58,8 +59,35 @@ async def run_dependency_checks(settings: AppSettings) -> dict[str, bool]:
         if settings.redis_url
         else _false()
     )
-    database_ready, redis_ready = await asyncio.gather(database_task, redis_task)
-    return {"postgres": database_ready, "redis": redis_ready}
+    database_ready, redis_ready, ai_router_ready = await asyncio.gather(
+        database_task,
+        redis_task,
+        asyncio.to_thread(_check_ai_router, settings),
+    )
+    return {
+        "postgres": database_ready,
+        "redis": redis_ready,
+        "ai_router": ai_router_ready,
+    }
+
+
+def _check_ai_router(settings: AppSettings) -> bool:
+    """Resolve required production routes without making an inference request."""
+
+    try:
+        router = build_ai_router(ConfigLoader(settings.config_dir))
+        for task_type in (AITaskType.CLAIM_EXTRACTION, AITaskType.EVIDENCE_ASSESSMENT):
+            request = AIRequest(
+                task_type=task_type,
+                system_prompt="readiness route validation",
+                input={},
+                response_format=AIResponseFormat.STRUCTURED,
+            )
+            if not router.candidate_provider_ids(request):
+                return False
+    except (ConfigError, KeyError, OSError, ValueError):
+        return False
+    return True
 
 
 async def _false() -> bool:

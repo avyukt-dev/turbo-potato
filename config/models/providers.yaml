@@ -1,0 +1,11 @@
+schema_version: 1
+llama_cpp:
+  - provider_id: local-llama
+    base_url: http://127.0.0.1:8080
+    model: local-news-ai
+    task_types:
+      - CLAIM_EXTRACTION
+      - EVIDENCE_ASSESSMENT
+    request_timeout_seconds: 120
+    health_timeout_seconds: 2
+    max_context_tokens: 8192

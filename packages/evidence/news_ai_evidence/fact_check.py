@@ -665,7 +665,7 @@ class FactCheckEngine:
         ).all()
         links: list[_EvidenceLink] = []
         for relation, evidence in rows:
-            metadata = _assessment_metadata(evidence, claim_id)
+            metadata = _resolved_source_metadata(evidence)
             links.append(
                 _EvidenceLink(
                     evidence_id=evidence.id,
@@ -698,21 +698,18 @@ class FactCheckEngine:
         return story_id, claim_ids, evidence_ids, research_run_id
 
 
-def _assessment_metadata(evidence: EvidenceItem, claim_id: UUID) -> dict[str, Any]:
-    raw = evidence.evidence_metadata.get("relationship_assessments", [])
-    if not isinstance(raw, list):
-        return {}
-    for item in raw:
-        if isinstance(item, dict) and str(item.get("claim_id")) == str(claim_id):
-            source_level = item.get("source_level")
-            independence_group = item.get("independence_group")
-            return {
-                "source_level": source_level if isinstance(source_level, int) else None,
-                "independence_group": (
-                    independence_group if isinstance(independence_group, str) else None
-                ),
-            }
-    return {}
+def _resolved_source_metadata(evidence: EvidenceItem) -> dict[str, Any]:
+    metadata = evidence.evidence_metadata or {}
+    source_level = metadata.get("source_level")
+    independence_group = metadata.get("independence_group")
+    return {
+        "source_level": (
+            source_level
+            if isinstance(source_level, int) and not isinstance(source_level, bool)
+            else None
+        ),
+        "independence_group": (independence_group if isinstance(independence_group, str) else None),
+    }
 
 
 def _strongest(links: tuple[_EvidenceLink, ...]) -> Decimal:

@@ -15,4 +15,4 @@ def test_postgres_and_redis_are_reachable() -> None:
 
     result = asyncio.run(run_dependency_checks(settings))
 
-    assert result == {"postgres": True, "redis": True}
+    assert result == {"postgres": True, "redis": True, "ai_router": True}

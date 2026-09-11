@@ -77,7 +77,7 @@ class LlamaCppProvider:
     ) -> None:
         self.config = config
         self._base_url = str(config.base_url).rstrip("/")
-        self._client = client or httpx.AsyncClient()
+        self._client = client
         self._owns_client = client is None
         self._api_key = api_key
         self._capabilities = ProviderCapabilities(
@@ -100,14 +100,20 @@ class LlamaCppProvider:
         return self._capabilities
 
     async def close(self) -> None:
-        if self._owns_client:
+        if self._owns_client and self._client is not None:
             await self._client.aclose()
+            self._client = None
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient()
+        return self._client
 
     async def healthcheck(self) -> bool:
         """Return whether the configured llama.cpp endpoint reports ready."""
 
         try:
-            response = await self._client.get(
+            response = await self._http_client().get(
                 f"{self._base_url}/health",
                 headers=self._headers(),
                 timeout=self.config.health_timeout_seconds,
@@ -129,7 +135,7 @@ class LlamaCppProvider:
         payload = self._request_payload(request, selected_model)
         started_at = monotonic()
         try:
-            response = await self._client.post(
+            response = await self._http_client().post(
                 f"{self._base_url}/v1/chat/completions",
                 json=payload,
                 headers=self._headers(),

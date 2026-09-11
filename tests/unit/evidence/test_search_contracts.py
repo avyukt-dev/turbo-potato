@@ -72,6 +72,13 @@ def test_search_result_rejects_credentials_and_naive_dates() -> None:
             published_at=datetime(2026, 9, 10, 12, 0),
         )
 
+    with pytest.raises(ValidationError, match="must not contain secrets"):
+        SearchResult(
+            url="https://example.com/x",
+            rank=1,
+            metadata={"nested": {"authorization": "Bearer hidden"}},
+        )
+
 
 def test_response_rejects_duplicate_candidate_urls() -> None:
     request = _request()
