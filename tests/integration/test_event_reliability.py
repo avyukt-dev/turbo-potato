@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -83,13 +84,28 @@ async def _scenario(database_url: str, redis_url: str) -> None:
             consumer_group=group,
             handled_event_types=frozenset({EventType.ARTICLE_NORMALIZED}),
             retry_policy=WorkerRetryPolicy(delays_seconds=(1,), jitter_ratio=0),
+            clock=lambda: datetime(2026, 9, 11, tzinfo=UTC),
         )
 
         def fail(_event):
             raise RuntimeError("transient integration failure")
 
         result = await runner.process(messages, fail)
-        assert result.dead_lettered == 1
+        assert result.retrying == 1
+        assert result.dead_lettered == 0
+        assert (await client.xpending(stream, group))["pending"] == 1
+        await asyncio.sleep(0.01)
+        _, exhausted_messages = await second.claim_stale(min_idle_ms=1)
+        exhaustion = ReliableMessageProcessor(
+            second,
+            factory,
+            consumer_group=group,
+            handled_event_types=frozenset({EventType.ARTICLE_NORMALIZED}),
+            retry_policy=WorkerRetryPolicy(delays_seconds=(1,), jitter_ratio=0),
+            clock=lambda: datetime(2026, 9, 11, tzinfo=UTC) + timedelta(seconds=2),
+        )
+        exhausted = await exhaustion.process(exhausted_messages, fail)
+        assert exhausted.dead_lettered == 1
         assert (await client.xpending(stream, group))["pending"] == 0
         with factory() as session:
             dead = session.query(EventDeadLetter).filter_by(event_id=dead_event.event_id).one()

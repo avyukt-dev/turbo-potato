@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -88,6 +89,48 @@ def test_retry_policy_loads_from_typed_runtime_configuration() -> None:
     assert policy.jitter_ratio == 0.2
 
 
+def test_every_configured_retry_delay_is_reachable_before_exhaustion() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    policy = WorkerRetryPolicy(jitter_ratio=0)
+    runner = ReliableMessageProcessor(
+        consumer,
+        factory,
+        consumer_group=consumer.group,
+        handled_event_types=frozenset({EventType.ARTICLE_NORMALIZED}),
+        retry_policy=policy,
+        clock=clock,
+    )
+    message = _message()
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    for attempt_number, delay in enumerate(policy.delays_seconds, start=1):
+        result = asyncio.run(runner.process([message], fail))
+        assert result.retrying == 1
+        assert result.dead_lettered == 0
+        with factory() as session:
+            attempt = session.scalar(
+                select(EventProcessingAttempt).where(
+                    EventProcessingAttempt.attempt_number == attempt_number
+                )
+            )
+            assert attempt is not None and attempt.next_retry_at is not None
+            assert attempt.next_retry_at.replace(tzinfo=UTC) == clock.value + timedelta(
+                seconds=delay
+            )
+        clock.value += timedelta(seconds=delay + 1)
+
+    exhausted = asyncio.run(runner.process([message], fail))
+    assert exhausted.dead_lettered == 1
+    assert consumer.acked == [message.message_id]
+    with factory() as session:
+        dead = session.scalar(select(EventDeadLetter))
+        assert dead is not None and dead.attempt_count == len(policy.delays_seconds) + 1
+
+
 def test_transient_failure_remains_pending_below_budget_then_dead_letters_once() -> None:
     factory = _factory()
     consumer = FakeConsumer()
@@ -106,17 +149,31 @@ def test_transient_failure_remains_pending_below_budget_then_dead_letters_once()
         attempt = session.scalar(select(EventProcessingAttempt))
         assert attempt is not None
         assert attempt.error_message.endswith("token=[REDACTED]")
+        assert attempt.next_retry_at.replace(tzinfo=UTC) == clock.value + timedelta(seconds=10)
 
     clock.value += timedelta(seconds=11)
     second = asyncio.run(runner.process([message], fail))
-    assert second.dead_lettered == 1
-    assert consumer.acked == ["1-0"]
+    assert second.retrying == 1
+    assert second.dead_lettered == 0
+    assert consumer.acked == []
+    with factory() as session:
+        attempts = list(
+            session.scalars(
+                select(EventProcessingAttempt).order_by(EventProcessingAttempt.attempt_number)
+            )
+        )
+        assert attempts[1].next_retry_at.replace(tzinfo=UTC) == clock.value + timedelta(seconds=20)
+
+    clock.value += timedelta(seconds=21)
     third = asyncio.run(runner.process([message], fail))
     assert third.dead_lettered == 1
+    assert consumer.acked == ["1-0"]
+    fourth = asyncio.run(runner.process([message], fail))
+    assert fourth.dead_lettered == 1
     assert consumer.acked == ["1-0", "1-0"]
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 1
-        assert session.scalar(select(func.count()).select_from(EventProcessingAttempt)) == 2
+        assert session.scalar(select(func.count()).select_from(EventProcessingAttempt)) == 3
 
 
 def test_permanent_invalid_event_is_persisted_before_ack() -> None:
@@ -132,7 +189,13 @@ def test_permanent_invalid_event_is_persisted_before_ack() -> None:
         "news:articles",
         "bad-1",
         None,
-        raw_event='{"event_id":"not-a-uuid","event_type":"article.normalized"}',
+        raw_event=(
+            '{"event_id":"76edbfab-6b2e-47eb-b16f-091734035728",'
+            '"event_type":"article.normalized",'
+            '"authorization":"Bearer top-secret",'
+            '"nested":{"api_key":"sk_abcdefghijklmnop",'
+            '"note":"token=another-secret"}}'
+        ),
         decode_error="invalid envelope",
     )
     result = asyncio.run(runner.process([invalid], lambda _event: ProcessingOutcome.PROCESSED))
@@ -144,7 +207,36 @@ def test_permanent_invalid_event_is_persisted_before_ack() -> None:
         dead = session.scalar(select(EventDeadLetter))
         assert dead is not None
         assert dead.message_id == "bad-1"
-        assert dead.raw_event == invalid.raw_event
+        assert str(dead.event_id) == "76edbfab-6b2e-47eb-b16f-091734035728"
+        assert dead.event_type == "article.normalized"
+        assert dead.raw_event_hash is not None and len(dead.raw_event_hash) == 64
+        assert "top-secret" not in dead.raw_event
+        assert "abcdefghijklmnop" not in dead.raw_event
+        assert "another-secret" not in dead.raw_event
+        assert dead.event_payload is not None
+        assert dead.event_payload["authorization"] == "[REDACTED]"
+        assert dead.event_payload["nested"]["api_key"] == "[REDACTED]"
+
+
+def test_malformed_dead_letter_diagnostics_redact_embedded_secrets_and_are_bounded() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    runner = _runner(factory, consumer, MutableClock())
+    raw = "malformed authorization=Bearer-secret password=hunter2 " + ("x" * 20_000)
+    message = StreamMessage(
+        "news:articles", "bad-2", None, raw_event=raw, decode_error="invalid envelope"
+    )
+
+    result = asyncio.run(runner.process([message], lambda _event: ProcessingOutcome.PROCESSED))
+
+    assert result.dead_lettered == 1
+    with factory() as session:
+        dead = session.scalar(select(EventDeadLetter))
+        assert dead is not None
+        assert "Bearer-secret" not in dead.raw_event
+        assert "hunter2" not in dead.raw_event
+        assert len(dead.raw_event) <= 16_384
+        assert dead.raw_event_hash == hashlib.sha256(raw.encode()).hexdigest()
 
 
 def test_stale_work_is_classified_once_and_acked_without_retry() -> None:

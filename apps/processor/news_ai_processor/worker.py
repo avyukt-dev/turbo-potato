@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from news_ai_database import Article, ArticleDiscovery, ArticleVersion
+from news_ai_database import Article, ArticleDiscovery, ArticleVersion, EventOutbox
 from news_ai_events import (
     EventEnvelope,
     EventType,
@@ -236,6 +236,39 @@ class NormalizerEventWorker:
                 .with_for_update()
             )
             article = session.get(Article, payload.article_id)
+            if discovery is None and article is not None:
+                legacy = session.scalar(
+                    select(EventOutbox)
+                    .where(
+                        EventOutbox.event_type == EventType.ARTICLE_NORMALIZED.value,
+                        EventOutbox.aggregate_id == article.id,
+                        EventOutbox.causation_id == event.event_id,
+                    )
+                    .limit(1)
+                )
+                if legacy is not None:
+                    normalized_payload = ArticleNormalizedV1.model_validate(legacy.payload)
+                    legacy_version = session.get(
+                        ArticleVersion, normalized_payload.article_version_id
+                    )
+                    if (
+                        normalized_payload.article_id == article.id
+                        and legacy_version is not None
+                        and legacy_version.article_id == article.id
+                        and legacy_version.content_hash == normalized_payload.content_hash
+                    ):
+                        mark_processed(
+                            session,
+                            event_id=event.event_id,
+                            consumer_group=NORMALIZER_CONSUMER_GROUP,
+                            result={
+                                "article_id": str(article.id),
+                                "article_version_id": str(normalized_payload.article_version_id),
+                                "legacy_completed": True,
+                                "event_id": str(legacy.event_id),
+                            },
+                        )
+                        return True
             if discovery is None or article is None or discovery.article_id != article.id:
                 raise ValueError("article.discovered references missing durable discovery input")
             if (

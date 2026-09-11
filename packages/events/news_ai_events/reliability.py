@@ -29,7 +29,25 @@ from .consumer import RedisStreamConsumer, StreamMessage
 from .envelope import EventEnvelope
 from .types import EventType
 
-_SECRET_RE = re.compile(r"(?i)(authorization|api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]+")
+_SECRET_RE = re.compile(
+    r"(?i)(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)"
+    r"\s*[\"']?\s*[:=]\s*[\"']?[^\s,;\"'}]+"
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
+_TOKEN_PATTERN_RE = re.compile(r"\b(?:(?:sk|pk|rk)[_-]|(?:ghp|github_pat)_)[A-Za-z0-9_-]{12,}\b")
+_DIAGNOSTIC_LIMIT = 16_384
+_SENSITIVE_KEYS = {
+    "authorization",
+    "apikey",
+    "accesstoken",
+    "refreshtoken",
+    "token",
+    "password",
+    "secret",
+    "clientsecret",
+    "credential",
+    "credentials",
+}
 
 
 class ProcessingOutcome(StrEnum):
@@ -48,6 +66,10 @@ class PermanentEventError(ValueError):
     """Deterministic contract/domain failure that must not be retried."""
 
 
+class TransientEventError(RuntimeError):
+    """Retryable infrastructure/provider failure independent of provider packages."""
+
+
 class StaleWorkError(RuntimeError):
     """Valid but superseded work that is durably classified and acknowledged."""
 
@@ -64,8 +86,14 @@ class WorkerRetryPolicy:
             raise ValueError("worker retry jitter_ratio must be between 0 and 1")
 
     @property
-    def max_attempts(self) -> int:
+    def retry_budget(self) -> int:
         return len(self.delays_seconds)
+
+    @property
+    def failure_limit(self) -> int:
+        """Failures allowed before exhaustion: one per delay, then one terminal failure."""
+
+        return self.retry_budget + 1
 
     def next_retry_at(
         self,
@@ -285,7 +313,7 @@ class ReliableMessageProcessor:
             ) + 1
             stale = failure_class is EventFailureClass.STALE
             terminal = failure_class is EventFailureClass.PERMANENT
-            if not terminal and not stale and attempt_number >= self.retry_policy.max_attempts:
+            if not terminal and not stale and attempt_number > self.retry_policy.retry_budget:
                 failure_class = EventFailureClass.EXHAUSTED
                 terminal = True
             next_retry_at = None
@@ -327,9 +355,10 @@ class ReliableMessageProcessor:
                 job = session.get(Job, message.event.aggregate_id)
                 if job is not None and job.job_type == "RESEARCH":
                     job_id = job.id
-                    job.status = "FAILED" if terminal else "PENDING"
-                    job.error_code = error_code[:64]
-                    job.error_message = error_message
+                    if not stale:
+                        job.status = "FAILED" if terminal else "PENDING"
+                        job.error_code = error_code[:64]
+                        job.error_message = error_message
             if terminal:
                 session.add(
                     EventDeadLetter(
@@ -350,8 +379,9 @@ class ReliableMessageProcessor:
                         failure_class=failure_class,
                         error_code=error_code,
                         error_message=error_message,
-                        raw_event=message.raw_event,
-                        event_payload=event_payload,
+                        raw_event=_safe_raw_event(message),
+                        raw_event_hash=_raw_event_hash(message),
+                        event_payload=_safe_payload(event_payload),
                         failed_at=now,
                     )
                 )
@@ -398,7 +428,7 @@ def _event_identity(
     except (TypeError, ValueError):
         event_id = None
     event_type = payload.get("event_type")
-    return event_id, event_type if isinstance(event_type, str) else None, payload
+    return event_id, event_type[:128] if isinstance(event_type, str) else None, payload
 
 
 def _classify(exc: Exception, message: StreamMessage) -> EventFailureClass:
@@ -410,8 +440,69 @@ def _classify(exc: Exception, message: StreamMessage) -> EventFailureClass:
 
 
 def _safe_message(exc: Exception) -> str:
-    value = _SECRET_RE.sub(r"\1=[REDACTED]", str(exc))
+    value = _redact_string(str(exc))
     return value[:1000] or type(exc).__name__
+
+
+def _redact_string(value: str) -> str:
+    value = _SECRET_RE.sub(r"\1=[REDACTED]", value)
+    value = _BEARER_RE.sub("Bearer [REDACTED]", value)
+    return _TOKEN_PATTERN_RE.sub("[REDACTED]", value)
+
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+    return normalized in _SENSITIVE_KEYS or normalized.endswith(
+        ("authorization", "apikey", "token", "password", "secret", "credential", "credentials")
+    )
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): "[REDACTED]" if _is_sensitive_key(key) else _redact_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(item) for item in value]
+    if isinstance(value, str):
+        return _redact_string(value)
+    return value
+
+
+def _safe_raw_event(message: StreamMessage) -> str | None:
+    raw = message.raw_event
+    if raw is None and message.event is not None:
+        raw = message.event.model_dump_json()
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        redacted = _redact_string(raw)
+    else:
+        redacted = json.dumps(_redact_value(parsed), separators=(",", ":"), sort_keys=True)
+    return redacted[:_DIAGNOSTIC_LIMIT]
+
+
+def _raw_event_hash(message: StreamMessage) -> str:
+    raw = message.raw_event
+    if raw is None and message.event is not None:
+        raw = message.event.model_dump_json()
+    return hashlib.sha256((raw or "").encode("utf-8")).hexdigest()
+
+
+def _safe_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    redacted = _redact_value(payload)
+    serialized = json.dumps(redacted, separators=(",", ":"), sort_keys=True)
+    if len(serialized) <= _DIAGNOSTIC_LIMIT:
+        return redacted
+    return {
+        "diagnostic_truncated": True,
+        "redacted_payload_hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+    }
 
 
 def _as_utc(value: datetime) -> datetime:

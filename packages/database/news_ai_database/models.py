@@ -581,6 +581,10 @@ class EventDeadLetter(UUIDPrimaryKeyMixin, Base):
             "failure_class IN ('PERMANENT', 'EXHAUSTED')",
             name="ck_event_dead_letters_failure_class",
         ),
+        CheckConstraint(
+            "length(raw_event_hash) = 64",
+            name="ck_event_dead_letters_raw_event_hash",
+        ),
     )
 
     delivery_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -600,6 +604,7 @@ class EventDeadLetter(UUIDPrimaryKeyMixin, Base):
     error_code: Mapped[str] = mapped_column(String(128), nullable=False)
     error_message: Mapped[str] = mapped_column(Text, nullable=False)
     raw_event: Mapped[str | None] = mapped_column(Text)
+    raw_event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     event_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
     failed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

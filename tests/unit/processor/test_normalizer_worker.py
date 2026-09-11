@@ -10,12 +10,14 @@ from news_ai_database import (
     ArticleDiscovery,
     ArticleVersion,
     Base,
+    EventDeadLetter,
     EventOutbox,
+    ProcessedEvent,
     Source,
     SourceFeed,
 )
-from news_ai_events import EventType, StreamMessage
-from news_ai_events.outbox import envelope_from_outbox
+from news_ai_events import EventEnvelope, EventType, StreamMessage
+from news_ai_events.outbox import build_outbox_record, envelope_from_outbox
 from news_ai_processor import NORMALIZER_CONSUMER_GROUP, NormalizerEventWorker
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -172,3 +174,74 @@ def test_discovery_replay_is_idempotent_and_changed_content_creates_new_version(
         )
         assert [row.version_number for row in versions] == [1, 2]
         assert normalized_count == 2
+
+
+def test_legacy_discovery_with_causal_normalized_outbox_is_safely_completed() -> None:
+    factory = _factory()
+    source_id, feed_id = _seed_registry(factory)
+    now = datetime(2026, 9, 11, tzinfo=UTC)
+    with factory() as session, session.begin():
+        article = Article(
+            source_id=source_id,
+            canonical_url="https://example.com/legacy",
+            title="Legacy headline",
+            language="en",
+        )
+        session.add(article)
+        session.flush()
+        version = ArticleVersion(
+            article_id=article.id,
+            version_number=1,
+            content_hash="a" * 64,
+            body="Already normalized before migration 0006.",
+            retrieved_at=now,
+            version_metadata={"source_feed_id": str(feed_id)},
+        )
+        session.add(version)
+        session.flush()
+        discovered = EventEnvelope(
+            event_type=EventType.ARTICLE_DISCOVERED,
+            producer="collector",
+            producer_version="0.1.0",
+            aggregate_type="article",
+            aggregate_id=article.id,
+            idempotency_key=f"article.discovered:legacy:{article.id}",
+            payload={
+                "article_id": str(article.id),
+                "source_id": str(source_id),
+                "source_feed_id": str(feed_id),
+                "canonical_url": article.canonical_url,
+                "title": article.title,
+                "published_at": None,
+            },
+        )
+        normalized = EventEnvelope(
+            event_type=EventType.ARTICLE_NORMALIZED,
+            producer="collector",
+            producer_version="0.1.0",
+            aggregate_type="article",
+            aggregate_id=article.id,
+            correlation_id=discovered.correlation_id,
+            causation_id=discovered.event_id,
+            idempotency_key=f"article.normalized:legacy:{version.id}",
+            payload={
+                "article_id": str(article.id),
+                "article_version_id": str(version.id),
+                "content_hash": version.content_hash,
+                "language": article.language,
+                "title": article.title,
+            },
+        )
+        session.add_all([build_outbox_record(discovered), build_outbox_record(normalized)])
+
+    consumer = FakeConsumer(messages=[StreamMessage("news:articles", "legacy-1", discovered)])
+    result = asyncio.run(NormalizerEventWorker(consumer, factory).run_once())
+
+    assert result.duplicates == 1
+    assert result.dead_lettered == 0
+    assert consumer.acked == ["legacy-1"]
+    with factory() as session:
+        processed = session.get(ProcessedEvent, (discovered.event_id, NORMALIZER_CONSUMER_GROUP))
+        assert processed is not None
+        assert processed.result["legacy_completed"] is True
+        assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 0

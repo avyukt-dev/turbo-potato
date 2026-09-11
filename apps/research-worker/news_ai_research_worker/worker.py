@@ -10,16 +10,18 @@ from news_ai_database import Job, JobAttempt
 from news_ai_events import (
     EventEnvelope,
     EventType,
+    PermanentEventError,
     ProcessingOutcome,
     RedisStreamConsumer,
     ReliableMessageProcessor,
     StreamMessage,
+    TransientEventError,
     WorkerBatchResult,
     WorkerRetryPolicy,
 )
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
-from news_ai_evidence import EvidenceEngine
+from news_ai_evidence import EvidenceEngine, ResearchCollectionDisposition
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -162,7 +164,8 @@ class EvidenceCollectionWorker:
         return ProcessingOutcome(outcome.upper())
 
     async def _process_event(self, event: EventEnvelope) -> str:
-        with self.session_factory() as session:
+        active_claim_ids: tuple[UUID, ...] | None = None
+        with self.session_factory() as session, session.begin():
             if was_processed(
                 session,
                 event_id=event.event_id,
@@ -174,6 +177,17 @@ class EvidenceCollectionWorker:
                 task = None
             else:
                 task = self.engine.load_collection_task(session, event)
+                currency = self.engine.collection_currency(session, task)
+                if currency.fully_stale:
+                    result = self.engine.persist_superseded_collection(session, event, task)
+                    mark_processed(
+                        session,
+                        event_id=event.event_id,
+                        consumer_group=EVIDENCE_COLLECTION_CONSUMER_GROUP,
+                        result=result.as_handler_result(),
+                    )
+                    return "stale"
+                active_claim_ids = currency.current_claim_ids
 
         if existing is not None:
             with self.session_factory() as session, session.begin():
@@ -189,12 +203,20 @@ class EvidenceCollectionWorker:
                     consumer_group=EVIDENCE_COLLECTION_CONSUMER_GROUP,
                     result=existing,
                 )
-            return "processed"
+            return (
+                "stale"
+                if not existing.get("current_claim_ids") and existing.get("stale_claim_ids")
+                else "processed"
+            )
 
-        assert task is not None
+        assert task is not None and active_claim_ids is not None
         attempt_id = self._begin_attempt(task.plan.research_run_id)
         try:
-            collection = await self.engine.collect(task)
+            collection = await self.engine.collect(task, active_claim_ids=active_claim_ids)
+            if collection.disposition is ResearchCollectionDisposition.RETRYABLE_FAILURE:
+                raise TransientEventError("research collection has no successful query")
+            if collection.disposition is ResearchCollectionDisposition.PERMANENT_FAILURE:
+                raise PermanentEventError("research collection cannot succeed without correction")
         except Exception as exc:
             self._fail_attempt(attempt_id, exc)
             raise

@@ -29,7 +29,7 @@ class RetryPolicy:
             raise ValueError("jitter_ratio must be between 0 and 1")
 
     @property
-    def max_attempts(self) -> int:
+    def retry_budget(self) -> int:
         return len(self.delays_seconds)
 
     def next_attempt_at(self, attempt_count: int, *, now: datetime) -> datetime:
@@ -87,7 +87,7 @@ class OutboxDispatcher:
                 )
             )
             for record in records:
-                if record.attempt_count >= self.retry_policy.max_attempts:
+                if record.attempt_count > self.retry_policy.retry_budget:
                     mark_failed(record, error="stale publishing lease exhausted retry budget")
                 else:
                     mark_retry(
@@ -140,7 +140,7 @@ class OutboxDispatcher:
             if record is None or record.status != OutboxStatus.PUBLISHING:
                 return False
             message = f"{type(error).__name__}: {error}"
-            if record.attempt_count >= self.retry_policy.max_attempts:
+            if record.attempt_count > self.retry_policy.retry_budget:
                 mark_failed(record, error=message)
                 return False
             mark_retry(

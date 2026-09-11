@@ -132,6 +132,13 @@ def test_retry_budget_exhaustion_marks_failed() -> None:
         retry_policy=RetryPolicy(delays_seconds=(1,), jitter_ratio=0),
     )
 
+    first = asyncio.run(dispatcher.dispatch_once())
+    assert first.retried == 1
+    with factory() as session, session.begin():
+        persisted = session.get(EventOutbox, record.id)
+        assert persisted is not None
+        persisted.next_attempt_at = None
+
     stats = asyncio.run(dispatcher.dispatch_once())
 
     assert stats.failed == 1

@@ -207,6 +207,7 @@ def upgrade() -> None:
         sa.Column("error_code", sa.String(length=128), nullable=False),
         sa.Column("error_message", sa.Text(), nullable=False),
         sa.Column("raw_event", sa.Text(), nullable=True),
+        sa.Column("raw_event_hash", sa.String(length=64), nullable=False),
         sa.Column("event_payload", JSONB, nullable=True),
         sa.Column(
             "failed_at",
@@ -218,6 +219,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "failure_class IN ('PERMANENT', 'EXHAUSTED')",
             name="ck_event_dead_letters_failure_class",
+        ),
+        sa.CheckConstraint(
+            "length(raw_event_hash) = 64",
+            name="ck_event_dead_letters_raw_event_hash",
         ),
         sa.ForeignKeyConstraint(["job_id"], ["jobs.id"], name="fk_event_dead_letters_job_id_jobs"),
         sa.PrimaryKeyConstraint("id", name="pk_event_dead_letters"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -45,6 +45,7 @@ from sqlalchemy.orm import Session, sessionmaker
 class FakeSearchProvider:
     provider_id: str = "search-a"
     fail_news: bool = False
+    calls: list[SearchRequest] = field(default_factory=list)
 
     @property
     def capabilities(self) -> SearchProviderCapabilities:
@@ -59,6 +60,7 @@ class FakeSearchProvider:
         )
 
     async def search(self, request: SearchRequest) -> SearchResponse:
+        self.calls.append(request)
         if self.fail_news and request.capability is SearchCapability.NEWS:
             from news_ai_evidence import SearchProviderUnavailableError
 
@@ -83,12 +85,16 @@ class FakeSearchProvider:
         )
 
 
+@dataclass
 class ExplicitAssessor:
+    calls: list[ResearchCandidate] = field(default_factory=list)
+
     async def assess(
         self,
         candidate: ResearchCandidate,
         claim_text: str,
     ) -> EvidenceAssessment | None:
+        self.calls.append(candidate)
         relation = (
             EvidenceRelation.CONTRADICTS
             if candidate.target_role is ResearchTargetRole.CONTRADICTION
@@ -372,6 +378,52 @@ def test_multi_claim_collection_persists_only_claims_still_current_for_that_run(
         assert first is not None and first.current_research_run_id == newer.research_run_id
         assert second is not None
         assert second.current_research_run_id == initial.research_run_id
+
+
+def test_partial_stale_collection_skips_queries_and_assessment_for_stale_claim() -> None:
+    factory = _factory()
+    provider = FakeSearchProvider()
+    assessor = ExplicitAssessor()
+    engine = EvidenceEngine(
+        SearchProviderRegistry([provider]),
+        _policy(),
+        lambda _request, compatible: compatible[0],
+        assessor,
+    )
+    story, first_claim = _seed(factory)
+    with factory() as session, session.begin():
+        second_claim = Claim(
+            story_id=story.id,
+            claim_text="A second current claim.",
+            status=ClaimVerificationStatus.UNASSESSED,
+            risk_level=RiskLevel.LOW,
+            claim_metadata={},
+        )
+        session.add(second_claim)
+        session.flush()
+        second_id = second_claim.id
+    both = _claims_event(story, first_claim)
+    both.payload["claim_ids"] = [str(first_claim.id), str(second_id)]
+    with factory() as session, session.begin():
+        initial = engine.request_research(session, both)
+    with factory() as session:
+        row = session.scalar(select(EventOutbox).where(EventOutbox.event_id == initial.event_id))
+        assert row is not None
+        requested = _requested_event(row)
+        task = engine.load_collection_task(session, requested)
+    newer_event = _claims_event(story, first_claim)
+    newer_event.payload["ai_run_id"] = str(uuid4())
+    with factory() as session, session.begin():
+        engine.request_research(session, newer_event)
+    with factory() as session:
+        currency = engine.collection_currency(session, task)
+
+    asyncio.run(engine.collect(task, active_claim_ids=currency.current_claim_ids))
+
+    assert currency.current_claim_ids == (second_id,)
+    assert currency.stale_claim_ids == (first_claim.id,)
+    assert provider.calls and {request.claim_id for request in provider.calls} == {second_id}
+    assert assessor.calls and {candidate.claim_id for candidate in assessor.calls} == {second_id}
 
 
 def test_research_policy_change_invalidates_semantic_operation_independently() -> None:
