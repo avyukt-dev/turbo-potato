@@ -40,7 +40,9 @@ class CollectedArticle(BaseModel):
     title: str = Field(min_length=1)
     author: str | None = None
     published_at: datetime | None = None
+    language: str | None = None
     summary: str | None = None
+    body: str | None = None
     external_id: str | None = None
 
 

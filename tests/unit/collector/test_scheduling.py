@@ -9,15 +9,15 @@ from news_ai_collector import (
     CollectionConfig,
     CollectionDefaults,
     CollectorScheduler,
+    DiscoveredArticleHandler,
     FeedConfig,
     FeedFetchResult,
     FeedRegistryConfig,
-    NormalizedArticleHandler,
     SourceConfig,
     SourceConfigSnapshot,
     SourceRegistryConfig,
 )
-from news_ai_database import Article, ArticleVersion, Base, EventOutbox, SourceFeed
+from news_ai_database import Article, ArticleDiscovery, Base, EventOutbox, SourceFeed
 from news_ai_events import EventType
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -143,7 +143,7 @@ def test_cycle_syncs_registry_collects_persists_and_advances_poll_state() -> Non
         session_factory=factory,
         snapshot_loader=StaticSnapshotLoader(_snapshot()),
         collector=collector,
-        article_handler=NormalizedArticleHandler(),
+        article_handler=DiscoveredArticleHandler(),
         clock=clock,
     )
 
@@ -159,26 +159,20 @@ def test_cycle_syncs_registry_collects_persists_and_advances_poll_state() -> Non
     with Session(engine) as session:
         feed = session.scalar(select(SourceFeed))
         article = session.scalar(select(Article))
-        version = session.scalar(select(ArticleVersion))
+        discovery = session.scalar(select(ArticleDiscovery))
         outboxes = {row.event_type: row for row in session.scalars(select(EventOutbox))}
         assert feed is not None
         assert article is not None
-        assert version is not None
-        assert set(outboxes) == {
-            EventType.ARTICLE_DISCOVERED,
-            EventType.ARTICLE_NORMALIZED,
-        }
+        assert discovery is not None
+        assert set(outboxes) == {EventType.ARTICLE_DISCOVERED}
         assert feed.last_polled_at == clock.value.replace(tzinfo=None)
         assert feed.etag == '"etag-1"'
-        assert article.title == "Main RSS headline"
-        assert version.version_number == 1
+        assert article.title is None
         discovered = outboxes[EventType.ARTICLE_DISCOVERED]
-        normalized = outboxes[EventType.ARTICLE_NORMALIZED]
         assert discovered.producer == "collector"
-        assert normalized.producer == "processor"
-        assert discovered.correlation_id == normalized.correlation_id
-        assert normalized.causation_id == discovered.event_id
         assert discovered.payload["article_id"] == str(article.id)
+        assert discovery.event_id == discovered.event_id
+        assert discovery.raw_payload["title"] == "Main RSS headline"
     engine.dispose()
 
 
@@ -216,7 +210,7 @@ def test_failure_isolated_and_failed_feed_poll_state_is_not_advanced() -> None:
         session_factory=factory,
         snapshot_loader=StaticSnapshotLoader(_snapshot(two_feeds=True)),
         collector=collector,
-        article_handler=NormalizedArticleHandler(),
+        article_handler=DiscoveredArticleHandler(),
         clock=clock,
     )
 

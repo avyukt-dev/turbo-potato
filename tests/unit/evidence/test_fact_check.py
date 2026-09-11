@@ -5,7 +5,6 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import pytest
 from news_ai_common.config import ConfigLoader
 from news_ai_database import (
     Base,
@@ -15,6 +14,7 @@ from news_ai_database import (
     EvidenceItem,
     FactCheck,
     Job,
+    ResearchRunClaim,
     Story,
 )
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
@@ -55,6 +55,7 @@ def _seed(
     *,
     risk: RiskLevel = RiskLevel.LOW,
     evidence: tuple[tuple[EvidenceRelation, str, str | None, int | None], ...] = (),
+    research_generation: int = 1,
 ) -> tuple[EventEnvelope, UUID, UUID]:
     research_run_id = uuid4()
     evidence_ids: list[UUID] = []
@@ -73,6 +74,8 @@ def _seed(
             status=ClaimVerificationStatus.UNASSESSED,
             risk_level=risk,
             claim_metadata={},
+            research_generation=research_generation,
+            current_research_run_id=research_run_id,
         )
         session.add(claim)
         session.add(
@@ -86,6 +89,13 @@ def _seed(
             )
         )
         session.flush()
+        session.add(
+            ResearchRunClaim(
+                research_run_id=research_run_id,
+                claim_id=claim.id,
+                research_generation=research_generation,
+            )
+        )
         for index, (relation, strength, group, source_level) in enumerate(evidence):
             url = f"https://example.com/evidence-{index}"
             item = EvidenceItem(
@@ -284,6 +294,9 @@ def test_fact_check_persists_evidence_counts_and_canonical_event() -> None:
     assert fact_check.supporting_count == 1
     assert fact_check.contradicting_count == 1
     assert fact_check.ai_run_id is None
+    assert fact_check.research_run_id is not None
+    assert fact_check.research_generation == 1
+    assert fact_check.methodology_version == FACT_CHECK_METHODOLOGY_VERSION
     assert set(event.payload) == {
         "story_id",
         "fact_check_id",
@@ -354,18 +367,12 @@ def test_fact_check_policy_change_invalidates_semantic_operation_independently()
     assert second.fact_check_ids != first.fact_check_ids
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Remediation Slice 2 requires an explicit per-claim current research generation "
-        "and FactCheck research-run provenance"
-    ),
-)
 def test_superseded_research_run_cannot_replace_current_fact_check() -> None:
     factory = _factory()
     current_event, story_id, claim_id = _seed(
         factory,
         evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "current-source", 1),),
+        research_generation=2,
     )
     superseded_run_id = uuid4()
     with factory() as session, session.begin():
@@ -411,6 +418,13 @@ def test_superseded_research_run_cannot_replace_current_fact_check() -> None:
                 strength_score=Decimal("0.90"),
             )
         )
+        session.add(
+            ResearchRunClaim(
+                research_run_id=superseded_run_id,
+                claim_id=claim_id,
+                research_generation=1,
+            )
+        )
         superseded_evidence_id = item.id
 
     superseded_event = EventEnvelope(
@@ -438,8 +452,18 @@ def test_superseded_research_run_cannot_replace_current_fact_check() -> None:
         assert claim is not None
         assert claim.status is ClaimVerificationStatus.SUPPORTED
         assert session.scalar(select(func.count()).select_from(FactCheck)) == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.FACT_CHECK_COMPLETED)
+            )
+            == 1
+        )
     assert superseded.created_count == 0
-    assert superseded.fact_check_ids == current.fact_check_ids
+    assert superseded.fact_check_ids == ()
+    assert superseded.stale_claim_ids == (claim_id,)
+    assert current.created_count == 1
 
 
 def test_fact_check_material_evidence_change_creates_new_result() -> None:
@@ -468,6 +492,96 @@ def test_fact_check_material_evidence_change_creates_new_result() -> None:
     assert second.fact_check_ids != first.fact_check_ids
 
 
+def test_newer_research_generation_legitimately_replaces_current_fact_check() -> None:
+    factory = _factory()
+    old_event, story_id, claim_id = _seed(
+        factory,
+        evidence=((EvidenceRelation.DIRECT_SUPPORT, "0.90", "source-a", 1),),
+    )
+    with factory() as session, session.begin():
+        old = _engine().verify_evidence_collection(session, old_event)
+
+    new_run_id = uuid4()
+    with factory() as session, session.begin():
+        claim = session.get(Claim, claim_id)
+        assert claim is not None
+        claim.research_generation = 2
+        claim.current_research_run_id = new_run_id
+        claim.current_fact_check_id = None
+        claim.status = ClaimVerificationStatus.UNASSESSED
+        session.add(
+            Job(
+                id=new_run_id,
+                job_type="RESEARCH",
+                status="COMPLETED",
+                priority=2,
+                payload={},
+                result={},
+            )
+        )
+        session.add(
+            ResearchRunClaim(
+                research_run_id=new_run_id,
+                claim_id=claim_id,
+                research_generation=2,
+            )
+        )
+        evidence = EvidenceItem(
+            title="Authoritative contradiction",
+            url="https://example.com/new-contradiction",
+            evidence_type="OFFICIAL_DOCUMENT",
+            evidence_metadata={
+                "relationship_assessments": [
+                    {
+                        "claim_id": str(claim_id),
+                        "candidate_url": "https://example.com/new-contradiction",
+                        "relation": EvidenceRelation.CONTRADICTS.value,
+                        "strength_score": "0.95",
+                        "source_level": 1,
+                        "independence_group": "official-new",
+                    }
+                ]
+            },
+        )
+        session.add(evidence)
+        session.flush()
+        session.add(
+            ClaimEvidence(
+                claim_id=claim_id,
+                evidence_id=evidence.id,
+                relation=EvidenceRelation.CONTRADICTS.value,
+                strength_score=Decimal("0.95"),
+            )
+        )
+        evidence_id = evidence.id
+
+    new_event = old_event.model_copy(
+        update={
+            "event_id": uuid4(),
+            "aggregate_id": new_run_id,
+            "idempotency_key": f"evidence.collected:{new_run_id}",
+            "payload": {
+                "story_id": str(story_id),
+                "claim_ids": [str(claim_id)],
+                "evidence_ids": [str(evidence_id)],
+                "research_run_id": str(new_run_id),
+            },
+        }
+    )
+    with factory() as session, session.begin():
+        new = _engine().verify_evidence_collection(session, new_event)
+
+    with factory() as session:
+        claim = session.get(Claim, claim_id)
+        current = session.get(FactCheck, new.fact_check_ids[0])
+        assert claim is not None and claim.status is ClaimVerificationStatus.REFUTED
+        assert claim.current_fact_check_id == current.id
+        assert current is not None and current.research_generation == 2
+        assert current.research_run_id == new_run_id
+        assert session.scalar(select(func.count()).select_from(FactCheck)) == 2
+    assert new.fact_check_ids != old.fact_check_ids
+
+
 def test_story_verification_semantic_replay_with_new_event_id_is_safe() -> None:
     factory, _, _, _, _, completed_outbox = _verify()
     completed = envelope_from_outbox(completed_outbox)
@@ -492,9 +606,44 @@ def test_story_verification_semantic_replay_with_new_event_id_is_safe() -> None:
     assert second.event_id == first.event_id
 
 
+def test_story_verification_uses_explicit_current_fact_check_not_created_at() -> None:
+    factory, _, _, _, current_check, completed_outbox = _verify()
+    completed = envelope_from_outbox(completed_outbox)
+    with factory() as session, session.begin():
+        session.add(
+            FactCheck(
+                story_id=current_check.story_id,
+                claim_id=current_check.claim_id,
+                label=FactCheckLabel.FALSE,
+                review_required=True,
+                review_state=ReviewState.NOT_READY,
+                research_run_id=current_check.research_run_id,
+                research_generation=current_check.research_generation,
+                methodology_version="unselected-future-methodology",
+                created_at=current_check.created_at + timedelta(days=1),
+            )
+        )
+    with factory() as session, session.begin():
+        result = _engine().mark_story_verified(session, completed)
+
+    assert result.ready is True
+    assert result.fact_check_ids == (current_check.id,)
+
+
 def test_story_verification_waits_for_all_durable_claim_assessments() -> None:
     factory = _factory()
     with factory() as session, session.begin():
+        research_run_id = uuid4()
+        session.add(
+            Job(
+                id=research_run_id,
+                job_type="RESEARCH",
+                status="COMPLETED",
+                priority=2,
+                payload={},
+                result={},
+            )
+        )
         story = Story(
             canonical_headline="Out-of-order verification",
             status="DISCOVERED",
@@ -509,6 +658,8 @@ def test_story_verification_waits_for_all_durable_claim_assessments() -> None:
             status=ClaimVerificationStatus.SUPPORTED,
             risk_level=RiskLevel.LOW,
             claim_metadata={},
+            research_generation=1,
+            current_research_run_id=research_run_id,
         )
         second_claim = Claim(
             story_id=story.id,
@@ -516,6 +667,8 @@ def test_story_verification_waits_for_all_durable_claim_assessments() -> None:
             status=ClaimVerificationStatus.UNASSESSED,
             risk_level=RiskLevel.LOW,
             claim_metadata={},
+            research_generation=1,
+            current_research_run_id=research_run_id,
         )
         session.add_all([first_claim, second_claim])
         session.flush()
@@ -525,9 +678,27 @@ def test_story_verification_waits_for_all_durable_claim_assessments() -> None:
             label=FactCheckLabel.TRUE,
             review_required=False,
             review_state=ReviewState.NOT_READY,
+            research_run_id=research_run_id,
+            research_generation=1,
+            methodology_version=FACT_CHECK_METHODOLOGY_VERSION,
         )
         session.add(first_check)
         session.flush()
+        first_claim.current_fact_check_id = first_check.id
+        session.add_all(
+            [
+                ResearchRunClaim(
+                    research_run_id=research_run_id,
+                    claim_id=first_claim.id,
+                    research_generation=1,
+                ),
+                ResearchRunClaim(
+                    research_run_id=research_run_id,
+                    claim_id=second_claim.id,
+                    research_generation=1,
+                ),
+            ]
+        )
         story_id = story.id
         second_claim_id = second_claim.id
 
@@ -563,9 +734,13 @@ def test_story_verification_waits_for_all_durable_claim_assessments() -> None:
             label=FactCheckLabel.UNVERIFIED,
             review_required=False,
             review_state=ReviewState.NOT_READY,
+            research_run_id=research_run_id,
+            research_generation=1,
+            methodology_version=FACT_CHECK_METHODOLOGY_VERSION,
         )
         session.add(second_check)
         session.flush()
+        second_claim.current_fact_check_id = second_check.id
         second_event = completed_event(second_check)
     with factory() as session, session.begin():
         completed = _engine().mark_story_verified(session, second_event)

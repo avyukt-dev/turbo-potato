@@ -6,7 +6,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from news_ai_common.config import ConfigLoader
-from news_ai_database import Base, Claim, EventOutbox, Job, ProcessedEvent, Story
+from news_ai_database import (
+    Base,
+    Claim,
+    EventOutbox,
+    Job,
+    ProcessedEvent,
+    ResearchRunClaim,
+    Story,
+)
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
 from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import EventEnvelope, EventType, StreamMessage
@@ -73,6 +81,8 @@ def _evidence_event(factory: sessionmaker[Session]) -> EventEnvelope:
             status=ClaimVerificationStatus.UNASSESSED,
             risk_level=RiskLevel.LOW,
             claim_metadata={},
+            research_generation=1,
+            current_research_run_id=research_run_id,
         )
         session.add(claim)
         session.add(
@@ -86,6 +96,13 @@ def _evidence_event(factory: sessionmaker[Session]) -> EventEnvelope:
             )
         )
         session.flush()
+        session.add(
+            ResearchRunClaim(
+                research_run_id=research_run_id,
+                claim_id=claim.id,
+                research_generation=1,
+            )
+        )
     return EventEnvelope(
         event_type=EventType.EVIDENCE_COLLECTED,
         producer="research-worker",
@@ -153,7 +170,7 @@ def test_fact_check_and_story_verification_workers_ack_after_commit() -> None:
         assert verified is not None
 
 
-def test_fact_check_failure_remains_unacked() -> None:
+def test_fact_check_permanent_failure_is_dead_lettered_and_acked() -> None:
     factory = _factory()
     bad_event = EventEnvelope(
         event_type=EventType.EVIDENCE_COLLECTED,
@@ -178,5 +195,6 @@ def test_fact_check_failure_remains_unacked() -> None:
 
     result = asyncio.run(worker.run_once())
     assert result.failed == 1
+    assert result.dead_lettered == 1
     assert result.failed_message_ids == ("1-2",)
-    assert consumer.acked == []
+    assert consumer.acked == ["1-2"]

@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from news_ai_database import Base, Claim, EventOutbox, Story
+from news_ai_database import Base, Claim, EventOutbox, Job, JobAttempt, Story
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
-from news_ai_events import EventEnvelope, EventType, StreamMessage
+from news_ai_events import EventEnvelope, EventType, StreamMessage, WorkerRetryPolicy
 from news_ai_events.outbox import envelope_from_outbox
 from news_ai_evidence import (
     EvidenceAssessment,
@@ -86,6 +86,11 @@ class Assessor:
             relation=EvidenceRelation.CONTEXT,
             strength_score=Decimal("0.25"),
         )
+
+
+class FailingAssessor:
+    async def assess(self, candidate: ResearchCandidate, claim_text: str):
+        raise RuntimeError("temporary assessor outage")
 
 
 def _factory() -> sessionmaker[Session]:
@@ -184,9 +189,14 @@ def test_planning_then_collection_workers_ack_only_after_durable_processing() ->
             select(EventOutbox).where(EventOutbox.event_type == EventType.EVIDENCE_COLLECTED.value)
         )
         assert collected is not None
+        job = session.get(Job, requested_event.aggregate_id)
+        assert job is not None
+        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job.id))
+        assert job.attempts == 1
+        assert attempt is not None and attempt.status == "COMPLETED"
 
 
-def test_collection_failure_remains_unacked_for_recovery() -> None:
+def test_collection_permanent_failure_is_dead_lettered_and_acked() -> None:
     factory = _factory()
     engine = _engine()
     bad_event = EventEnvelope(
@@ -215,5 +225,42 @@ def test_collection_failure_remains_unacked_for_recovery() -> None:
 
     result = asyncio.run(worker.run_once())
     assert result.failed == 1
+    assert result.dead_lettered == 1
     assert result.failed_message_ids == ("1-2",)
-    assert consumer.acked == []
+    assert consumer.acked == ["1-2"]
+
+
+def test_exhausted_research_attempt_updates_job_attempt_and_dead_letters() -> None:
+    factory = _factory()
+    engine = _engine()
+    engine.assessor = FailingAssessor()
+    claims_event = _seed_claim_event(factory)
+    with factory() as session, session.begin():
+        planned = engine.request_research(session, claims_event)
+    with factory() as session:
+        outbox = session.scalar(select(EventOutbox).where(EventOutbox.event_id == planned.event_id))
+        assert outbox is not None
+        requested = envelope_from_outbox(outbox)
+
+    consumer = FakeConsumer(
+        stream="news:evidence",
+        group=EVIDENCE_COLLECTION_CONSUMER_GROUP,
+        messages=[_stream_message("news:evidence", requested, "3")],
+    )
+    worker = EvidenceCollectionWorker(
+        consumer,
+        factory,
+        engine,
+        retry_policy=WorkerRetryPolicy(delays_seconds=(1,), jitter_ratio=0),
+    )
+    result = asyncio.run(worker.run_once())
+
+    assert result.dead_lettered == 1
+    assert consumer.acked == ["1-3"]
+    with factory() as session:
+        job = session.get(Job, planned.research_run_id)
+        attempt = session.scalar(
+            select(JobAttempt).where(JobAttempt.job_id == planned.research_run_id)
+        )
+        assert job is not None and job.status == "FAILED" and job.attempts == 1
+        assert attempt is not None and attempt.status == "FAILED"

@@ -21,7 +21,13 @@ from news_ai_database import (
     StorySource,
 )
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
-from news_ai_events import EventEnvelope, EventType, StoryVerifiedV1, parse_event_payload
+from news_ai_events import (
+    EventEnvelope,
+    EventType,
+    StaleWorkError,
+    StoryVerifiedV1,
+    parse_event_payload,
+)
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -174,6 +180,8 @@ class FactSheetGenerator:
         claims = self._load_claims(session, story_id)
         claim_ids = tuple(claim.id for claim in claims)
         checks = self._load_fact_checks(session, story_id, claims, fact_check_ids)
+        if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
+            raise ValueError("Fact Sheet cannot include UNASSESSED claim state")
         links, evidence = self._load_evidence(session, claim_ids)
         claim_snapshots = self._claim_snapshots(claims, links)
         evidence_snapshots = self._evidence_snapshots(links, evidence)
@@ -348,8 +356,6 @@ class FactSheetGenerator:
         )
         if not claims:
             raise ValueError("Fact Sheet requires at least one durable story claim")
-        if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
-            raise ValueError("Fact Sheet cannot include UNASSESSED claim state")
         return claims
 
     @staticmethod
@@ -374,18 +380,17 @@ class FactSheetGenerator:
         claim_ids = tuple(claim.id for claim in claims)
         if set(selected_by_claim) != set(claim_ids):
             raise ValueError("story.verified FactChecks do not cover current durable claims")
-
-        latest: dict[UUID, FactCheck] = {}
-        for check in session.scalars(
-            select(FactCheck)
-            .where(FactCheck.story_id == story_id, FactCheck.claim_id.is_not(None))
-            .order_by(FactCheck.created_at, FactCheck.id)
-        ):
-            assert check.claim_id is not None
-            latest[check.claim_id] = check
-        latest_ids = {check.id for check in latest.values()}
-        if latest_ids != set(fact_check_ids):
-            raise ValueError("story.verified references stale FactChecks")
+        current_ids = {claim.current_fact_check_id for claim in claims}
+        if None in current_ids or current_ids != set(fact_check_ids):
+            raise StaleWorkError("story.verified references stale FactChecks")
+        for claim in claims:
+            check = selected_by_claim[claim.id]
+            if (
+                check.id != claim.current_fact_check_id
+                or check.research_run_id != claim.current_research_run_id
+                or check.research_generation != claim.research_generation
+            ):
+                raise StaleWorkError("story.verified FactCheck provenance is not current")
         return [selected_by_claim[claim_id] for claim_id in claim_ids]
 
     @staticmethod

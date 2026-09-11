@@ -41,7 +41,9 @@ class AsyncConsumerClient(Protocol):
 class StreamMessage:
     stream: str
     message_id: str
-    event: EventEnvelope
+    event: EventEnvelope | None
+    raw_event: str | None = None
+    decode_error: str | None = None
 
 
 def _text(value: Any) -> str:
@@ -54,13 +56,29 @@ def decode_stream_message(stream: Any, message_id: Any, fields: dict[Any, Any]) 
     normalized = {_text(key): value for key, value in fields.items()}
     raw_event = normalized.get("event")
     if raw_event is None:
-        raise ValueError("Redis stream message is missing 'event' field")
+        return StreamMessage(
+            stream=_text(stream),
+            message_id=_text(message_id),
+            event=None,
+            decode_error="Redis stream message is missing 'event' field",
+        )
     payload = _text(raw_event)
     try:
         event = EventEnvelope.model_validate_json(payload)
-    except ValidationError as exc:
-        raise ValueError("Redis stream event envelope is invalid") from exc
-    return StreamMessage(stream=_text(stream), message_id=_text(message_id), event=event)
+    except (ValidationError, ValueError) as exc:
+        return StreamMessage(
+            stream=_text(stream),
+            message_id=_text(message_id),
+            event=None,
+            raw_event=payload,
+            decode_error=f"Redis stream event envelope is invalid: {type(exc).__name__}",
+        )
+    return StreamMessage(
+        stream=_text(stream),
+        message_id=_text(message_id),
+        event=event,
+        raw_event=payload,
+    )
 
 
 class RedisStreamConsumer:
@@ -140,6 +158,8 @@ class RedisStreamConsumer:
     ) -> int:
         processed = 0
         for message in await self.read():
+            if message.event is None:
+                raise ValueError(message.decode_error or "Redis stream event envelope is invalid")
             await handler(message.event)
             await self.ack(message)
             processed += 1

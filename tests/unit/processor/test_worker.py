@@ -237,6 +237,8 @@ def test_handler_failure_rolls_back_marker_and_leaves_message_pending(
     assert result.processed == 0
     assert result.failed == 1
     assert result.failed_message_ids == ("1-0",)
+    assert result.retrying == 1
+    assert result.dead_lettered == 0
     assert consumer.acked == []
     assert _processed_count(session_factory) == 0
 
@@ -260,7 +262,8 @@ def test_invalid_payload_remains_pending(session_factory: Callable[[], Session])
 
     assert result.failed == 1
     assert called is False
-    assert consumer.acked == []
+    assert result.dead_lettered == 1
+    assert consumer.acked == ["1-0"]
 
 
 def test_payload_article_id_must_match_event_aggregate(
@@ -278,11 +281,12 @@ def test_payload_article_id_must_match_event_aggregate(
     result = asyncio.run(worker.run_once())
 
     assert result.failed == 1
-    assert consumer.acked == []
+    assert result.dead_lettered == 1
+    assert consumer.acked == ["1-0"]
     assert _processed_count(session_factory) == 0
 
 
-def test_legacy_extra_event_field_remains_pending(
+def test_legacy_extra_event_field_is_dead_lettered(
     session_factory: Callable[[], Session],
 ) -> None:
     event = _event(session_factory)
@@ -297,10 +301,11 @@ def test_legacy_extra_event_field_remains_pending(
     result = asyncio.run(worker.run_once())
 
     assert result.failed == 1
-    assert consumer.acked == []
+    assert result.dead_lettered == 1
+    assert consumer.acked == ["1-0"]
 
 
-def test_wrong_event_type_remains_pending(session_factory: Callable[[], Session]) -> None:
+def test_wrong_event_type_is_ignored_and_acked(session_factory: Callable[[], Session]) -> None:
     event = _event(session_factory, event_type=EventType.STORY_CREATED)
     consumer = FakeConsumer([_message(event)])
     worker = ProcessorEventWorker(
@@ -311,8 +316,9 @@ def test_wrong_event_type_remains_pending(session_factory: Callable[[], Session]
 
     result = asyncio.run(worker.run_once())
 
-    assert result.failed == 1
-    assert consumer.acked == []
+    assert result.ignored == 1
+    assert result.failed == 0
+    assert consumer.acked == ["1-0"]
     assert _processed_count(session_factory) == 0
 
 

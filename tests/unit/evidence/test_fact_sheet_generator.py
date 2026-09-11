@@ -14,6 +14,8 @@ from news_ai_database import (
     EvidenceItem,
     FactCheck,
     FactSheet,
+    Job,
+    ResearchRunClaim,
     Source,
     Story,
     StorySource,
@@ -44,6 +46,17 @@ def _seed_verified_story(
     factory: sessionmaker[Session],
 ) -> tuple[EventEnvelope, UUID, tuple[UUID, ...], tuple[UUID, ...]]:
     with factory() as session, session.begin():
+        research_run_id = uuid4()
+        session.add(
+            Job(
+                id=research_run_id,
+                job_type="RESEARCH",
+                status="COMPLETED",
+                priority=2,
+                payload={},
+                result={},
+            )
+        )
         source = Source(
             name="Example News",
             domain="example.com",
@@ -99,6 +112,8 @@ def _seed_verified_story(
                 claim_metadata={
                     "sensitive_topics": ["COMMUNAL_VIOLENCE"] if index == 4 else [],
                 },
+                research_generation=1,
+                current_research_run_id=research_run_id,
             )
             session.add(claim)
             session.flush()
@@ -111,8 +126,20 @@ def _seed_verified_story(
                 reasoning_summary="Deterministic evidence evaluation.",
                 review_required=True,
                 review_state=ReviewState.NOT_READY,
+                research_run_id=research_run_id,
+                research_generation=1,
+                methodology_version="fact-check-methodology-v1",
             )
             session.add(check)
+            session.flush()
+            claim.current_fact_check_id = check.id
+            session.add(
+                ResearchRunClaim(
+                    research_run_id=research_run_id,
+                    claim_id=claim.id,
+                    research_generation=1,
+                )
+            )
             claims.append(claim)
             checks.append(check)
         session.flush()
@@ -282,19 +309,25 @@ def test_generator_rejects_stale_fact_check_reference() -> None:
     factory = _factory()
     event, story_id, claim_ids, _ = _seed_verified_story(factory)
     with factory() as session, session.begin():
-        session.add(
-            FactCheck(
-                story_id=story_id,
-                claim_id=claim_ids[0],
-                label=FactCheckLabel.TRUE,
-                summary="Newer durable assessment.",
-                review_required=True,
-                review_state=ReviewState.NOT_READY,
-                created_at=datetime.now(UTC) + timedelta(seconds=1),
-            )
+        claim = session.get(Claim, claim_ids[0])
+        assert claim is not None
+        check = FactCheck(
+            story_id=story_id,
+            claim_id=claim.id,
+            label=FactCheckLabel.TRUE,
+            summary="Newer durable assessment.",
+            review_required=True,
+            review_state=ReviewState.NOT_READY,
+            research_run_id=claim.current_research_run_id,
+            research_generation=claim.research_generation,
+            methodology_version="fact-check-methodology-v2",
+            created_at=datetime.now(UTC) + timedelta(seconds=1),
         )
+        session.add(check)
+        session.flush()
+        claim.current_fact_check_id = check.id
 
-    with factory() as session, session.begin(), pytest.raises(ValueError, match="stale"):
+    with factory() as session, session.begin(), pytest.raises(RuntimeError, match="stale"):
         FactSheetGenerator().generate(session, event)
 
 

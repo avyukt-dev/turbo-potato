@@ -19,6 +19,7 @@ from news_ai_database import (
     EvidenceItem,
     FactCheck,
     Job,
+    ResearchRunClaim,
     Story,
 )
 from news_ai_domain import (
@@ -129,17 +130,19 @@ class FactCheckBatchResult:
     event_ids: tuple[UUID, ...]
     fact_check_ids: tuple[UUID, ...]
     claim_results: tuple[ClaimVerificationResult, ...]
+    stale_claim_ids: tuple[UUID, ...]
     created_count: int
 
     @property
-    def event_id(self) -> UUID:
-        return self.event_ids[0]
+    def event_id(self) -> UUID | None:
+        return self.event_ids[0] if self.event_ids else None
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
             "story_id": str(self.story_id),
             "event_ids": [str(item) for item in self.event_ids],
             "fact_check_ids": [str(item) for item in self.fact_check_ids],
+            "stale_claim_ids": [str(item) for item in self.stale_claim_ids],
             "claim_statuses": {
                 str(item.claim_id): item.status.value for item in self.claim_results
             },
@@ -154,6 +157,7 @@ class StoryVerificationResult:
     fact_check_ids: tuple[UUID, ...]
     ready: bool
     created: bool
+    stale: bool = False
 
     def as_handler_result(self) -> dict[str, Any]:
         return {
@@ -163,6 +167,7 @@ class StoryVerificationResult:
             "fact_check_ids": [str(item) for item in self.fact_check_ids],
             "ready": self.ready,
             "created": self.created,
+            "stale": self.stale,
         }
 
 
@@ -227,12 +232,30 @@ class FactCheckEngine:
         if research_job.status != "COMPLETED":
             raise ValueError("fact checking requires a completed research run")
 
-        claims = self._load_claims(session, story_id, claim_ids)
+        claims = self._load_claims(session, story_id, claim_ids, lock=True)
+        generations = {
+            row.claim_id: row.research_generation
+            for row in session.scalars(
+                select(ResearchRunClaim).where(
+                    ResearchRunClaim.research_run_id == research_run_id,
+                    ResearchRunClaim.claim_id.in_(claim_ids),
+                )
+            )
+        }
+        if set(generations) != set(claim_ids):
+            raise ValueError("evidence.collected research run lacks claim generation provenance")
+        current_claims = [
+            claim
+            for claim in claims
+            if claim.current_research_run_id == research_run_id
+            and claim.research_generation == generations[claim.id]
+        ]
+        stale_claim_ids = tuple(claim.id for claim in claims if claim not in current_claims)
         results: list[ClaimVerificationResult] = []
         fact_checks: list[FactCheck] = []
         event_ids: list[UUID] = []
         created_count = 0
-        for claim in claims:
+        for claim in current_claims:
             links = self._load_links(session, claim.id, evidence_ids)
             result = self._evaluate_claim(claim, links)
             claim.status = result.status
@@ -246,6 +269,8 @@ class FactCheckEngine:
                 select(FactCheck).where(FactCheck.semantic_key == operation_key)
             )
             if existing is not None:
+                claim.status = result.status
+                claim.current_fact_check_id = existing.id
                 fact_checks.append(existing)
                 results.append(result)
                 event_ids.append(self._fact_check_event_id(session, existing))
@@ -263,10 +288,14 @@ class FactCheckEngine:
                 review_required=True,
                 review_state=ReviewState.NOT_READY,
                 ai_run_id=None,
+                research_run_id=research_run_id,
+                research_generation=generations[claim.id],
+                methodology_version=self.methodology_version,
                 semantic_key=operation_key,
             )
             session.add(fact_check)
             session.flush()
+            claim.current_fact_check_id = fact_check.id
             fact_checks.append(fact_check)
             results.append(result)
             completed = EventEnvelope(
@@ -299,6 +328,7 @@ class FactCheckEngine:
             event_ids=tuple(event_ids),
             fact_check_ids=tuple(item.id for item in fact_checks),
             claim_results=tuple(results),
+            stale_claim_ids=stale_claim_ids,
             created_count=created_count,
         )
 
@@ -331,6 +361,19 @@ class FactCheckEngine:
             or trigger.review_required is not payload.review_required
         ):
             raise ValueError("fact_check.completed payload does not match durable FactCheck state")
+        trigger_claim = session.get(Claim, trigger.claim_id, with_for_update=True)
+        if trigger_claim is None:
+            raise ValueError("fact_check.completed references missing durable Claim")
+        if trigger_claim.current_fact_check_id != trigger.id:
+            return StoryVerificationResult(
+                story_id,
+                None,
+                (trigger_claim.id,),
+                (),
+                False,
+                False,
+                True,
+            )
 
         claims = list(
             session.scalars(select(Claim).where(Claim.story_id == story_id).order_by(Claim.id))
@@ -341,7 +384,7 @@ class FactCheckEngine:
         if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
             return StoryVerificationResult(story_id, None, claim_ids, (), False, False)
 
-        checks = self._latest_fact_checks(session, story_id)
+        checks = self._current_fact_checks(session, claims)
         if set(checks) != set(claim_ids):
             return StoryVerificationResult(story_id, None, claim_ids, (), False, False)
         if checks[trigger.claim_id].id != trigger.id:
@@ -468,17 +511,30 @@ class FactCheckEngine:
         return outbox.event_id
 
     @staticmethod
-    def _latest_fact_checks(session: Session, story_id: UUID) -> dict[UUID, FactCheck]:
-        rows = session.scalars(
-            select(FactCheck)
-            .where(FactCheck.story_id == story_id, FactCheck.claim_id.is_not(None))
-            .order_by(FactCheck.created_at, FactCheck.id)
-        )
-        latest: dict[UUID, FactCheck] = {}
-        for check in rows:
-            assert check.claim_id is not None
-            latest[check.claim_id] = check
-        return latest
+    def _current_fact_checks(session: Session, claims: list[Claim]) -> dict[UUID, FactCheck]:
+        check_ids = {
+            claim.current_fact_check_id
+            for claim in claims
+            if claim.current_fact_check_id is not None
+        }
+        checks = {
+            check.id: check
+            for check in session.scalars(select(FactCheck).where(FactCheck.id.in_(check_ids)))
+        }
+        current: dict[UUID, FactCheck] = {}
+        for claim in claims:
+            if claim.current_fact_check_id is None:
+                continue
+            check = checks.get(claim.current_fact_check_id)
+            if (
+                check is None
+                or check.claim_id != claim.id
+                or check.research_run_id != claim.current_research_run_id
+                or check.research_generation != claim.research_generation
+            ):
+                raise ValueError("Claim current FactCheck provenance is inconsistent")
+            current[claim.id] = check
+        return current
 
     def _evaluate_claim(
         self,
@@ -576,8 +632,13 @@ class FactCheckEngine:
         session: Session,
         story_id: UUID,
         claim_ids: tuple[UUID, ...],
+        *,
+        lock: bool = False,
     ) -> list[Claim]:
-        claims = list(session.scalars(select(Claim).where(Claim.id.in_(claim_ids))))
+        statement = select(Claim).where(Claim.id.in_(claim_ids)).order_by(Claim.id)
+        if lock:
+            statement = statement.with_for_update()
+        claims = list(session.scalars(statement))
         by_id = {item.id: item for item in claims}
         if set(by_id) != set(claim_ids):
             raise ValueError("verification event references missing claims")

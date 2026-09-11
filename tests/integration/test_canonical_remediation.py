@@ -8,7 +8,15 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from news_ai_database import Claim, EventOutbox, FactCheck, FactSheet, Job, Story
+from news_ai_database import (
+    Claim,
+    EventOutbox,
+    FactCheck,
+    FactSheet,
+    Job,
+    ResearchRunClaim,
+    Story,
+)
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
 from news_ai_events import EventEnvelope, EventType
 from news_ai_events.outbox import build_outbox_record
@@ -72,6 +80,13 @@ def _claims_event(story_id, claim_id) -> EventEnvelope:
 
 def _delete_rows(factory: sessionmaker[Session], *, story_id) -> None:
     with factory() as session, session.begin():
+        session.execute(
+            text(
+                "UPDATE claims SET current_research_run_id=NULL, "
+                "current_fact_check_id=NULL WHERE story_id=:story_id"
+            ),
+            {"story_id": story_id},
+        )
         job_ids = tuple(
             session.scalars(
                 select(Job.id).where(Job.payload["plan"]["story_id"].as_string() == str(story_id))
@@ -79,6 +94,9 @@ def _delete_rows(factory: sessionmaker[Session], *, story_id) -> None:
         )
         if job_ids:
             session.execute(delete(EventOutbox).where(EventOutbox.aggregate_id.in_(job_ids)))
+            session.execute(
+                delete(ResearchRunClaim).where(ResearchRunClaim.research_run_id.in_(job_ids))
+            )
             session.execute(delete(Job).where(Job.id.in_(job_ids)))
         session.execute(delete(EventOutbox).where(EventOutbox.aggregate_id == story_id))
         session.execute(delete(FactSheet).where(FactSheet.story_id == story_id))
@@ -259,6 +277,56 @@ def test_concurrent_research_planning_persists_one_semantic_operation() -> None:
         _delete_rows(factory, story_id=story_id)
 
 
+def test_concurrent_distinct_research_operations_assign_monotonic_generations() -> None:
+    factory = _factory()
+    engine = _engine()
+    with factory() as session, session.begin():
+        story = Story(
+            canonical_headline="Concurrent generations",
+            status="DISCOVERED",
+            risk_level=RiskLevel.LOW,
+            story_metadata={},
+        )
+        session.add(story)
+        session.flush()
+        claim = Claim(
+            story_id=story.id,
+            claim_text="One evolving claim",
+            status=ClaimVerificationStatus.UNASSESSED,
+            risk_level=RiskLevel.LOW,
+            claim_metadata={},
+        )
+        session.add(claim)
+        session.flush()
+        story_id, claim_id = story.id, claim.id
+
+    def run_once(_index: int):
+        event = _claims_event(story_id, claim_id)
+        with factory() as session, session.begin():
+            return engine.request_research(session, event)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = tuple(executor.map(run_once, range(2)))
+        with factory() as session:
+            stored = session.get(Claim, claim_id)
+            mappings = list(
+                session.scalars(
+                    select(ResearchRunClaim)
+                    .where(ResearchRunClaim.claim_id == claim_id)
+                    .order_by(ResearchRunClaim.research_generation)
+                )
+            )
+            assert stored is not None and stored.research_generation == 2
+            assert [row.research_generation for row in mappings] == [1, 2]
+            assert stored.current_research_run_id == mappings[-1].research_run_id
+            assert {row.research_run_id for row in mappings} == {
+                result.research_run_id for result in results
+            }
+    finally:
+        _delete_rows(factory, story_id=story_id)
+
+
 def test_migration_upgrade_downgrade_reupgrade_round_trip() -> None:
     assert DATABASE_URL is not None
     base_url = make_url(DATABASE_URL)
@@ -279,9 +347,18 @@ def test_migration_upgrade_downgrade_reupgrade_round_trip() -> None:
         command.check(config)
         migrated_engine = create_engine(test_url)
         try:
-            assert "semantic_key" in {
-                column["name"] for column in inspect(migrated_engine).get_columns("fact_checks")
-            }
+            assert {
+                "research_run_id",
+                "research_generation",
+                "methodology_version",
+                "semantic_key",
+            } <= {column["name"] for column in inspect(migrated_engine).get_columns("fact_checks")}
+            assert {
+                "article_discoveries",
+                "research_run_claims",
+                "event_processing_attempts",
+                "event_dead_letters",
+            } <= set(inspect(migrated_engine).get_table_names())
         finally:
             migrated_engine.dispose()
 
@@ -289,7 +366,7 @@ def test_migration_upgrade_downgrade_reupgrade_round_trip() -> None:
         command.upgrade(config, "head")
         reupgraded_engine = create_engine(test_url)
         try:
-            assert "primary_evidence_count" in {
+            assert {"primary_evidence_count", "research_generation"} <= {
                 column["name"] for column in inspect(reupgraded_engine).get_columns("fact_checks")
             }
         finally:
