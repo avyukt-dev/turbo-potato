@@ -16,18 +16,17 @@ from sqlalchemy.orm import Session
 from .engine import ResearchCandidate
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
-_SHARED_REFERENCE_KEYS = (
-    "originating_url",
-    "wire_origin",
-    "primary_document_id",
-    "dataset_id",
-    "citation_source_url",
-)
 _POSITIVE_ORIGIN_KEYS = (
     "primary_document_id",
     "dataset_id",
     "eyewitness_record_id",
     "source_record_id",
+)
+_SHARED_REFERENCE_KEYS = (
+    "originating_url",
+    "wire_origin",
+    *_POSITIVE_ORIGIN_KEYS,
+    "citation_source_url",
 )
 _LINEAGE_REFERENCE_KEYS = tuple(dict.fromkeys((*_SHARED_REFERENCE_KEYS, *_POSITIVE_ORIGIN_KEYS)))
 

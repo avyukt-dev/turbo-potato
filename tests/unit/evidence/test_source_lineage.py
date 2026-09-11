@@ -228,6 +228,66 @@ def test_distinct_primary_records_remain_distinct_and_unknown_authority_is_conse
     assert values[1].authority.effective_level is SourceAuthorityLevel.DISCOVERY
 
 
+@pytest.mark.parametrize(
+    "identity_key",
+    ("primary_document_id", "dataset_id", "eyewitness_record_id", "source_record_id"),
+)
+def test_same_explicit_origin_identity_is_known_shared(identity_key: str) -> None:
+    factory = _factory()
+    claim_id = uuid4()
+    with factory() as session, session.begin():
+        first = _record(
+            session,
+            1,
+            body="The first outlet describes the originating record.",
+            version_metadata={identity_key: "origin-record:shared"},
+        )
+        second = _record(
+            session,
+            2,
+            body="A differently worded account cites that same record.",
+            version_metadata={identity_key: "origin-record:shared"},
+        )
+        result = _resolver().resolve(
+            session, (_candidate(claim_id, *first), _candidate(claim_id, *second))
+        )
+
+    values = tuple(result.values())
+    assert {item.lineage.status for item in values} == {LineageStatus.KNOWN_SHARED}
+    assert {item.lineage.basis for item in values} == {f"shared-{identity_key}"}
+    assert len({item.lineage.independence_group for item in values}) == 1
+
+
+@pytest.mark.parametrize(
+    "identity_key",
+    ("primary_document_id", "dataset_id", "eyewitness_record_id", "source_record_id"),
+)
+def test_distinct_explicit_origin_identities_are_independent(identity_key: str) -> None:
+    factory = _factory()
+    claim_id = uuid4()
+    with factory() as session, session.begin():
+        first = _record(
+            session,
+            1,
+            body="The first originating record contains one observation.",
+            version_metadata={identity_key: "origin-record:first"},
+        )
+        second = _record(
+            session,
+            2,
+            body="The second originating record contains another observation.",
+            version_metadata={identity_key: "origin-record:second"},
+        )
+        result = _resolver().resolve(
+            session, (_candidate(claim_id, *first), _candidate(claim_id, *second))
+        )
+
+    values = tuple(result.values())
+    assert {item.lineage.status for item in values} == {LineageStatus.INDEPENDENT}
+    assert {item.lineage.basis for item in values} == {f"explicit-{identity_key}"}
+    assert len({item.lineage.independence_group for item in values}) == 2
+
+
 def test_distinct_durable_records_without_positive_origin_are_unresolved() -> None:
     factory = _factory()
     claim_id = uuid4()
