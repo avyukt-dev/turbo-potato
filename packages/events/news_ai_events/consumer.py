@@ -124,6 +124,20 @@ class RedisStreamConsumer:
                 messages.append(decode_stream_message(stream, message_id, fields))
         return messages
 
+    async def read_own_pending(self) -> list[StreamMessage]:
+        """Redeliver a bounded batch owned by this consumer, without claiming peers' work."""
+        response = await self.client.xreadgroup(
+            self.group,
+            self.consumer,
+            {self.stream: "0"},
+            count=self.count,
+        )
+        return [
+            decode_stream_message(stream, message_id, fields)
+            for stream, entries in response or []
+            for message_id, fields in entries
+        ]
+
     async def claim_stale(
         self,
         *,

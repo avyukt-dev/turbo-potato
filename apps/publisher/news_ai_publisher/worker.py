@@ -27,11 +27,19 @@ class PublisherWorker:
         return await self.reliability.process(await self.consumer.read(), self._handle)
 
     async def run_batch(self):
-        """One bounded operational tick: durable retries, stale pending, new work."""
+        """Resume own pending work promptly; reclaim peers only after the stale threshold."""
         retried = await self.service.retry_due()
-        _, recovered = await self.recover_once()
+        pending = await self.consumer.read_own_pending()
+        resumed = await self.reliability.process(pending, self._handle)
+        _, messages = await self.consumer.claim_stale(
+            min_idle_ms=self.service.config.pending_reclaim_idle_ms,
+        )
+        seen = {message.message_id for message in pending}
+        recovered = await self.reliability.process(
+            [message for message in messages if message.message_id not in seen], self._handle
+        )
         received = await self.run_once()
-        return retried, recovered, received
+        return retried, resumed, recovered, received
 
     async def recover_once(self, *, min_idle_ms=None, start_id="0-0"):
         cursor, messages = await self.consumer.claim_stale(

@@ -143,3 +143,30 @@ def test_stale_pending_messages_can_be_claimed() -> None:
     assert messages[0].message_id == "2-0"
     assert messages[0].event.event_id == client.event.event_id
     assert client.claim_calls == [("news:articles", "processor", "worker-1", 60_000, "0-0", 5)]
+
+
+@pytest.mark.parametrize("payload", [_event().model_dump_json(), "invalid", None])
+def test_own_pending_read_is_scoped_bounded_nonblocking_and_uses_decoder(payload):
+    calls = []
+
+    class Client:
+        async def xreadgroup(self, group, consumer, streams, **kwargs):
+            calls.append((group, consumer, streams, kwargs))
+            if payload is None:
+                return None
+            return [(b"news:articles", [(b"3-0", {b"event": payload.encode()})])]
+
+    consumer = RedisStreamConsumer(
+        Client(), stream="news:articles", group="processor", consumer="worker-1", count=5
+    )
+    messages = asyncio.run(consumer.read_own_pending())
+    assert calls == [("processor", "worker-1", {"news:articles": "0"}, {"count": 5})]
+    if payload is None:
+        assert messages == []
+    else:
+        assert messages[0].message_id == "3-0"
+        assert messages[0].stream == "news:articles"
+        if payload == "invalid":
+            assert messages[0].event is None and messages[0].decode_error
+        else:
+            assert messages[0].event == EventEnvelope.model_validate_json(payload)

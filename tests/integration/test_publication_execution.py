@@ -147,18 +147,24 @@ def test_real_postgres_redis_execution_composition_and_ack(factory, monkeypatch,
             dispatcher = OutboxDispatcher(factory, RedisStreamPublisher(client))
             assert (await dispatcher.dispatch_once()).published == 1
             monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "true")
-            deferred = await stack.worker.run_once()
+            _, _, _, deferred = await stack.worker.run_batch()
             assert deferred.retrying == 1 and deferred.dead_lettered == 0
             assert service.get(row.id).status == PublicationStatus.SCHEDULED
             assert service.attempts(row.id) == ()
             assert (await client.xpending("news:publishing", "publisher"))["pending"] == 1
             assert transport.calls == []
+            for _ in range(100):
+                _, resumed, _, _ = await stack.worker.run_batch()
+                assert resumed.retrying == 1
+            from news_ai_database import EventDeadLetter, EventProcessingAttempt, ProcessedEvent
+
+            with factory() as session:
+                for model in (EventDeadLetter, EventProcessingAttempt, ProcessedEvent):
+                    assert session.scalar(select(func.count()).select_from(model)) == 0
+            assert transport.calls == [] and service.attempts(row.id) == ()
+            assert stack.service.config.pending_reclaim_idle_ms == 7_200_000
             monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "false")
-            pending = await client.xpending_range("news:publishing", "publisher", "-", "+", 1)
-            await client.xclaim(
-                "news:publishing", "publisher", "test", 0, [pending[0]["message_id"]], idle=10000
-            )
-            _, first = await stack.worker.recover_once(min_idle_ms=1)
+            _, first, _, _ = await stack.worker.run_batch()
             assert first.processed == 1
             assert service.get(row.id).status == PublicationStatus.PUBLISHED
             assert (await client.xpending("news:publishing", "publisher"))["pending"] == 0
@@ -226,11 +232,120 @@ def test_real_redis_reclaims_crashed_publisher_before_preparation(factory, monke
                 [messages[0].message_id],
                 idle=10000,
             )
+            _, resumed, recovered, received = await stack.worker.run_batch()
+            assert resumed.received == recovered.received == received.received == 0
+            assert service.get(row.id).status == PublicationStatus.PUBLISHING
             _, result = await stack.worker.recover_once(min_idle_ms=1)
             assert result.processed == 1
             assert service.get(row.id).status == PublicationStatus.PUBLISHED
             assert (await client.xpending("news:publishing", "publisher"))["pending"] == 0
             assert len(service.attempts(row.id)) == 1
+        finally:
+            await client.xgroup_destroy("news:publishing", "publisher")
+            await client.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("scenario", ["prepared_pause", "in_progress", "ack_failure"])
+def test_normal_batch_resumes_prepared_and_ack_failures(factory, monkeypatch, scenario):
+    from news_ai_database import PublicationAttemptPhase as Phase
+    from news_ai_social import InstagramContainerStatus, InstagramContainerStatusResult
+
+    redis_url = os.getenv("NEWS_AI_REDIS_URL")
+    if not redis_url:
+        pytest.skip("Redis test service required")
+    _, clock, _, _, _, row, _, service, _, _ = setup_execution(factory)
+    monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "false")
+
+    async def run():
+        client = Redis.from_url(redis_url, decode_responses=True)
+        try:
+            await client.delete("news:publishing")
+            stack = build_production_publisher_stack(
+                AppSettings(environment="test", config_dir="config"),
+                session_factory=factory,
+                redis_client=client,
+                clock=clock,
+            )
+            stack.worker.consumer.block_ms = 1
+            stack.service.config = stack.service.config.model_copy(
+                update={"verification_max_attempts": 1}
+            )
+            adapter = stack.service.adapter
+            prepare, publish, check = (
+                adapter.prepare_publication,
+                adapter.publish_prepared,
+                adapter.get_container_status,
+            )
+            calls = []
+
+            async def wrapped_prepare(request):
+                calls.append("prepare")
+                result = await prepare(request)
+                if scenario != "ack_failure":
+                    monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "true")
+                return result
+
+            async def wrapped_publish(prepared, **kwargs):
+                calls.append("publish")
+                return await publish(prepared, **kwargs)
+
+            async def wrapped_check(identifier):
+                calls.append("check")
+                if scenario == "in_progress" and calls.count("check") == 1:
+                    return InstagramContainerStatusResult(
+                        container_id=identifier, status=InstagramContainerStatus.IN_PROGRESS
+                    )
+                return await check(identifier)
+
+            adapter.prepare_publication = wrapped_prepare
+            adapter.publish_prepared = wrapped_publish
+            adapter.get_container_status = wrapped_check
+            ack = stack.worker.consumer.ack
+
+            async def failed_ack(message):
+                raise ConnectionError("simulated ACK outage")
+
+            await stack.worker.ensure_ready()
+            assert (
+                await OutboxDispatcher(factory, RedisStreamPublisher(client)).dispatch_once()
+            ).published == 1
+            if scenario == "ack_failure":
+                stack.worker.consumer.ack = failed_ack
+                with pytest.raises(ConnectionError):
+                    await stack.worker.run_batch()
+                assert service.get(row.id).status == PublicationStatus.PUBLISHED
+                stack.worker.consumer.ack = ack
+            else:
+                await stack.worker.run_batch()
+                attempt = service.attempts(row.id)[0]
+                assert attempt.phase == Phase.PREPARED and calls == ["prepare"]
+                with factory() as session:
+                    assert session.get(PublicationAttempt, attempt.id).lease_expires_at == clock.now
+                monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "false")
+                if scenario == "in_progress":
+                    _, resumed, _, _ = await stack.worker.run_batch()
+                    assert resumed.retrying == 1 and calls == ["prepare", "check"]
+                    assert service.attempts(row.id)[0].phase == Phase.PREPARED
+            assert (await client.xpending("news:publishing", "publisher"))["pending"] == 1
+            _, resumed, _, _ = await stack.worker.run_batch()
+            assert resumed.duplicates == 1 if scenario == "ack_failure" else resumed.processed == 1
+            assert service.get(row.id).status == PublicationStatus.PUBLISHED
+            assert len(service.attempts(row.id)) == 1
+            assert calls.count("prepare") == calls.count("publish") == 1
+            if scenario != "ack_failure":
+                assert calls.index("check") < calls.index("publish")
+            assert (await client.xpending("news:publishing", "publisher"))["pending"] == 0
+            with factory() as session:
+                assert (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(EventOutbox)
+                        .where(EventOutbox.event_type == "publication.executed")
+                    )
+                    == 1
+                )
         finally:
             await client.xgroup_destroy("news:publishing", "publisher")
             await client.aclose()

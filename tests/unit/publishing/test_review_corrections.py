@@ -215,6 +215,47 @@ def test_long_pause_does_not_exhaust_reliability_or_mark_processed():
     asyncio.run(exercise())
 
 
+def test_batch_resumes_owned_pending_then_reclaims_stale_then_reads_new_once():
+    _, _, _, _, _, _, event, _, _, execution = setup_execution()
+    from news_ai_events.reliability import WorkerBatchResult
+
+    calls = []
+    message = StreamMessage("news:publishing", "1-0", event)
+
+    async def retry():
+        calls.append("retry")
+        return 0
+
+    async def pending():
+        calls.append("pending")
+        return [message]
+
+    async def stale(**kwargs):
+        calls.append(("stale", kwargs["min_idle_ms"]))
+        return "0-0", [message]
+
+    async def read():
+        calls.append("new")
+        return []
+
+    async def process(messages, handler):
+        calls.append(tuple(item.message_id for item in messages))
+        return WorkerBatchResult(received=len(messages))
+
+    consumer = SimpleNamespace(
+        stream="news:publishing",
+        group="publisher",
+        read_own_pending=pending,
+        claim_stale=stale,
+        read=read,
+    )
+    execution.retry_due = retry
+    worker = PublisherWorker(consumer, execution)
+    worker.reliability.process = process
+    asyncio.run(worker.run_batch())
+    assert calls == ["retry", "pending", ("1-0",), ("stale", 7_200_000), (), "new", ()]
+
+
 def test_runner_retries_safely_waits_and_closes_without_secret_logging(caplog):
     calls = []
 
