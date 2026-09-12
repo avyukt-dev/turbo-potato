@@ -1,0 +1,28 @@
+schema_version: 1
+enabled: true
+graph_base_url: https://graph.instagram.com
+api_version: v26.0
+supported_formats:
+  - CAROUSEL
+capabilities:
+  text: false
+  image: true
+  video: false
+  carousel: true
+  reel: false
+  scheduled_publish: false
+required_permissions:
+  - instagram_business_basic
+  - instagram_business_content_publish
+request_timeout_seconds: 30
+live_environments:
+  - production
+polling:
+  interval_seconds: 2
+  max_attempts: 30
+constraints:
+  min_carousel_items: 2
+  max_carousel_items: 10
+  caption_max_characters: 2200
+  allowed_media_types:
+    - IMAGE

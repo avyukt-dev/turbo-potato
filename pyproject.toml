@@ -37,6 +37,7 @@ where = [
   "apps/processor",
   "apps/ai-worker",
   "apps/research-worker",
+  "apps/publisher",
   "packages/common",
   "packages/domain",
   "packages/database",
@@ -47,6 +48,7 @@ where = [
   "packages/content",
   "packages/quality",
   "packages/review",
+  "packages/social",
 ]
 include = [
   "news_ai_api*",
@@ -54,6 +56,7 @@ include = [
   "news_ai_processor*",
   "news_ai_ai_worker*",
   "news_ai_research_worker*",
+  "news_ai_publisher*",
   "news_ai_common*",
   "news_ai_domain*",
   "news_ai_database*",
@@ -64,6 +67,7 @@ include = [
   "news_ai_content*",
   "news_ai_quality*",
   "news_ai_review*",
+  "news_ai_social*",
 ]
 
 [tool.pytest.ini_options]
@@ -74,6 +78,7 @@ pythonpath = [
   "apps/processor",
   "apps/ai-worker",
   "apps/research-worker",
+  "apps/publisher",
   "packages/common",
   "packages/domain",
   "packages/database",
@@ -84,6 +89,7 @@ pythonpath = [
   "packages/content",
   "packages/quality",
   "packages/review",
+  "packages/social",
 ]
 testpaths = ["tests"]
 addopts = "-q"
