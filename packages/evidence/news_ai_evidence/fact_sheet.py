@@ -84,6 +84,8 @@ class FactSheetEvidenceSnapshot(BaseModel):
     evidence_id: UUID
     claim_id: UUID
     source_id: UUID | None = None
+    article_id: UUID | None = None
+    article_version_id: UUID | None = None
     title: str | None = None
     url: str | None = None
     published_at: datetime | None = None
@@ -92,6 +94,14 @@ class FactSheetEvidenceSnapshot(BaseModel):
     strength_score: float | None = None
     excerpt: str | None = None
     provenance_note: str | None = None
+    content_hash: str | None = None
+    source_level: int | None = None
+    source_policy_basis: str | None = None
+    lineage_status: str | None = None
+    lineage_basis: str | None = None
+    independence_group: str | None = None
+    originating_reference: str | None = None
+    assessment_ai_run_ids: tuple[UUID, ...] = ()
 
 
 class FactSheetSourceSnapshot(BaseModel):
@@ -178,11 +188,10 @@ class FactSheetGenerator:
             raise ValueError("Fact Sheet generation requires VERIFIED story state")
 
         claims = self._load_claims(session, story_id)
-        claim_ids = tuple(claim.id for claim in claims)
         checks = self._load_fact_checks(session, story_id, claims, fact_check_ids)
         if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in claims):
             raise ValueError("Fact Sheet cannot include UNASSESSED claim state")
-        links, evidence = self._load_evidence(session, claim_ids)
+        links, evidence = self._load_evidence(session, checks)
         claim_snapshots = self._claim_snapshots(claims, links)
         evidence_snapshots = self._evidence_snapshots(links, evidence)
         fact_check_snapshots = self._fact_check_snapshots(checks, links)
@@ -396,15 +405,34 @@ class FactSheetGenerator:
     @staticmethod
     def _load_evidence(
         session: Session,
-        claim_ids: tuple[UUID, ...],
+        checks: list[FactCheck],
     ) -> tuple[list[ClaimEvidence], dict[UUID, EvidenceItem]]:
-        links = list(
+        claim_ids = tuple(check.claim_id for check in checks if check.claim_id is not None)
+        candidates = list(
             session.scalars(
                 select(ClaimEvidence)
                 .where(ClaimEvidence.claim_id.in_(claim_ids))
                 .order_by(ClaimEvidence.claim_id, ClaimEvidence.evidence_id)
             )
         )
+        candidate_ids = {link.evidence_id for link in candidates}
+        candidate_evidence = {
+            item.id: item
+            for item in session.scalars(
+                select(EvidenceItem).where(EvidenceItem.id.in_(candidate_ids))
+            )
+        }
+        checks_by_claim = {check.claim_id: check for check in checks}
+        links = []
+        for link in candidates:
+            item = candidate_evidence.get(link.evidence_id)
+            if item is None:
+                raise ValueError("claim evidence references missing evidence item")
+            check = checks_by_claim[link.claim_id]
+            research_run_id = (item.evidence_metadata or {}).get("research_run_id")
+            if check.research_run_id is not None and research_run_id != str(check.research_run_id):
+                continue
+            links.append(link)
         evidence_ids = {link.evidence_id for link in links}
         if not evidence_ids:
             return links, {}
@@ -465,11 +493,14 @@ class FactSheetGenerator:
         snapshots: list[FactSheetEvidenceSnapshot] = []
         for link in links:
             item = evidence[link.evidence_id]
+            metadata = dict(item.evidence_metadata or {})
             snapshots.append(
                 FactSheetEvidenceSnapshot(
                     evidence_id=item.id,
                     claim_id=link.claim_id,
                     source_id=item.source_id,
+                    article_id=_metadata_optional_uuid(metadata, "article_id"),
+                    article_version_id=_metadata_optional_uuid(metadata, "article_version_id"),
                     title=item.title,
                     url=item.url,
                     published_at=item.published_at,
@@ -478,6 +509,14 @@ class FactSheetGenerator:
                     strength_score=_decimal_float(link.strength_score),
                     excerpt=item.excerpt,
                     provenance_note=_assessment_note(item, link.claim_id, link.relation),
+                    content_hash=item.content_hash,
+                    source_level=_metadata_optional_int(metadata, "source_level"),
+                    source_policy_basis=_metadata_optional_str(metadata, "source_policy_basis"),
+                    lineage_status=_metadata_optional_str(metadata, "lineage_status"),
+                    lineage_basis=_metadata_optional_str(metadata, "lineage_basis"),
+                    independence_group=_metadata_optional_str(metadata, "independence_group"),
+                    originating_reference=_metadata_optional_str(metadata, "originating_reference"),
+                    assessment_ai_run_ids=_metadata_uuid_list(metadata, "assessment_ai_run_ids"),
                 )
             )
         return tuple(snapshots)
@@ -645,6 +684,20 @@ def _metadata_optional_str(metadata: dict[str, Any] | None, key: str) -> str | N
     if value is None:
         return None
     return str(value).strip() or None
+
+
+def _metadata_optional_uuid(metadata: dict[str, Any], key: str) -> UUID | None:
+    value = metadata.get(key)
+    return UUID(str(value)) if value is not None else None
+
+
+def _metadata_optional_int(metadata: dict[str, Any], key: str) -> int | None:
+    value = metadata.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{key} metadata must be an integer")
+    return int(value)
 
 
 def _assessment_note(item: EvidenceItem, claim_id: UUID, relation: str) -> str | None:

@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
 from news_ai_common.config import ConfigLoader
 from news_ai_database import (
     Base,
@@ -103,16 +104,16 @@ def _seed(
                 url=url,
                 evidence_type="ARTICLE",
                 evidence_metadata={
+                    "source_level": source_level,
+                    "independence_group": group,
                     "relationship_assessments": [
                         {
                             "claim_id": str(claim.id),
                             "candidate_url": url,
                             "relation": relation.value,
                             "strength_score": strength,
-                            "source_level": source_level,
-                            "independence_group": group,
                         }
-                    ]
+                    ],
                 },
             )
             session.add(item)
@@ -213,6 +214,35 @@ def test_high_risk_support_requires_independent_groups() -> None:
     assert result.claim_results[0].independent_support_groups == 2
     assert claim.status is ClaimVerificationStatus.SUPPORTED
     assert fact_check.label is FactCheckLabel.TRUE
+
+
+def test_many_unresolved_sources_do_not_satisfy_high_risk_corroboration() -> None:
+    _, result, _, claim, fact_check, _ = _verify(
+        risk=RiskLevel.HIGH,
+        evidence=tuple((EvidenceRelation.DIRECT_SUPPORT, "0.90", None, 4) for _index in range(20)),
+    )
+
+    assert result.claim_results[0].independent_support_groups == 0
+    assert claim.status is ClaimVerificationStatus.PARTIALLY_SUPPORTED
+    assert fact_check.label is FactCheckLabel.PARTIALLY_TRUE
+
+
+@pytest.mark.parametrize("risk", (RiskLevel.HIGH, RiskLevel.CRITICAL))
+def test_discovery_sources_remain_distinct_but_cannot_decide_serious_claim(
+    risk: RiskLevel,
+) -> None:
+    _, result, _, claim, fact_check, _ = _verify(
+        risk=risk,
+        evidence=tuple(
+            (EvidenceRelation.DIRECT_SUPPORT, "0.95", f"explicit-primary-record:{index}", 4)
+            for index in range(6)
+        ),
+    )
+
+    assert result.claim_results[0].independent_support_groups == 6
+    assert "authority_qualified_support_groups=0" in result.claim_results[0].reasoning_summary
+    assert claim.status is ClaimVerificationStatus.PARTIALLY_SUPPORTED
+    assert fact_check.label is FactCheckLabel.PARTIALLY_TRUE
 
 
 def test_primary_evidence_can_satisfy_corroboration() -> None:
@@ -383,16 +413,16 @@ def test_superseded_research_run_cannot_replace_current_fact_check() -> None:
             url="https://example.com/superseded-evidence",
             evidence_type="ARTICLE",
             evidence_metadata={
+                "source_level": 1,
+                "independence_group": "superseded-source",
                 "relationship_assessments": [
                     {
                         "claim_id": str(claim_id),
                         "candidate_url": "https://example.com/superseded-evidence",
                         "relation": EvidenceRelation.CONTRADICTS.value,
                         "strength_score": "0.90",
-                        "source_level": 1,
-                        "independence_group": "superseded-source",
                     }
-                ]
+                ],
             },
         )
         session.add_all(
@@ -531,16 +561,16 @@ def test_newer_research_generation_legitimately_replaces_current_fact_check() ->
             url="https://example.com/new-contradiction",
             evidence_type="OFFICIAL_DOCUMENT",
             evidence_metadata={
+                "source_level": 1,
+                "independence_group": "official-new",
                 "relationship_assessments": [
                     {
                         "claim_id": str(claim_id),
                         "candidate_url": "https://example.com/new-contradiction",
                         "relation": EvidenceRelation.CONTRADICTS.value,
                         "strength_score": "0.95",
-                        "source_level": 1,
-                        "independence_group": "official-new",
                     }
-                ]
+                ],
             },
         )
         session.add(evidence)

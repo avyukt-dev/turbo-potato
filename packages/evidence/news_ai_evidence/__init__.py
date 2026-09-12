@@ -1,5 +1,10 @@
 """Provider-neutral search, evidence-acquisition, verification, and Fact Sheet boundaries."""
 
+from .assessment import (
+    AIRouterEvidenceAssessor,
+    EvidenceAssessmentOutput,
+    EvidenceAssessmentPrompt,
+)
 from .contracts import (
     CandidateSourceType,
     SearchCapability,
@@ -10,9 +15,11 @@ from .contracts import (
     SearchResult,
     metadata_contains_secret_key,
 )
+from .corpus import PostgresArticleSearchProvider
 from .engine import (
     RESEARCH_PLANNER_METHODOLOGY_VERSION,
     EvidenceAssessment,
+    EvidenceAssessmentAIProvenance,
     EvidenceAssessor,
     EvidenceCollectionResult,
     EvidenceEngine,
@@ -69,11 +76,27 @@ from .provider import (
     require_provider_compatibility,
 )
 from .registry import SearchProviderNotRegisteredError, SearchProviderRegistry
+from .source_policy import (
+    CandidateSourceResolution,
+    CorroborationConfig,
+    LineageResolution,
+    LineageStatus,
+    ResearchPolicyLoader,
+    ResearchPolicySnapshot,
+    SourceAuthorityLevel,
+    SourceEvidenceResolver,
+    SourcePolicyConfig,
+    SourcePolicyResolution,
+)
 
 __all__ = [
     "CandidateSourceType",
     "ClaimVerificationResult",
     "EvidenceAssessment",
+    "EvidenceAssessmentAIProvenance",
+    "EvidenceAssessmentOutput",
+    "EvidenceAssessmentPrompt",
+    "AIRouterEvidenceAssessor",
     "EvidenceAssessor",
     "EvidenceCollectionResult",
     "EvidenceEngine",
@@ -92,6 +115,7 @@ __all__ = [
     "FactSheetGenerationResult",
     "FactSheetGenerator",
     "FactSheetSourceSnapshot",
+    "PostgresArticleSearchProvider",
     "ResearchCandidate",
     "RESEARCH_PLANNER_METHODOLOGY_VERSION",
     "ResearchCollection",
@@ -126,6 +150,16 @@ __all__ = [
     "SearchResponse",
     "SearchResult",
     "SearchRules",
+    "CandidateSourceResolution",
+    "CorroborationConfig",
+    "LineageResolution",
+    "LineageStatus",
+    "ResearchPolicyLoader",
+    "ResearchPolicySnapshot",
+    "SourceAuthorityLevel",
+    "SourceEvidenceResolver",
+    "SourcePolicyConfig",
+    "SourcePolicyResolution",
     "StoryVerificationResult",
     "metadata_contains_secret_key",
     "require_provider_compatibility",

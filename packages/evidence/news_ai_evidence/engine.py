@@ -13,6 +13,8 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from news_ai_database import (
+    AIModel,
+    AIRun,
     Claim,
     ClaimEvidence,
     EventOutbox,
@@ -112,6 +114,25 @@ class ResearchCandidate(BaseModel):
     result: SearchResult
 
 
+class EvidenceAssessmentAIProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: str = Field(min_length=1, max_length=64)
+    model_name: str = Field(min_length=1, max_length=255)
+    locality: str = Field(min_length=1, max_length=16)
+    capabilities: dict[str, Any]
+    prompt_id: str = Field(min_length=1, max_length=128)
+    prompt_version: str = Field(min_length=1, max_length=64)
+    prompt_checksum: str = Field(min_length=1, max_length=128)
+    input_hash: str = Field(min_length=64, max_length=64)
+    input_artifact_ids: tuple[str, ...]
+    output_payload: dict[str, Any]
+    latency_ms: int = Field(ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    routing_attempts: tuple[dict[str, Any], ...]
+
+
 class EvidenceAssessment(BaseModel):
     """Explicit claim-specific assessment; search intent never creates this implicitly."""
 
@@ -121,9 +142,18 @@ class EvidenceAssessment(BaseModel):
     candidate_url: str = Field(min_length=1, max_length=4096)
     relation: EvidenceRelation
     strength_score: Decimal | None = Field(default=None, ge=0, le=1)
-    source_level: int | None = Field(default=None, ge=1, le=4)
-    independence_group: str | None = Field(default=None, min_length=1, max_length=255)
+    relevant_excerpt: str | None = Field(default=None, max_length=4000)
     notes: str | None = Field(default=None, max_length=4000)
+    ai_provenance: EvidenceAssessmentAIProvenance | None = None
+
+    @model_validator(mode="after")
+    def forbid_source_policy_relations(self) -> EvidenceAssessment:
+        if self.relation in {
+            EvidenceRelation.PRIMARY_EVIDENCE,
+            EvidenceRelation.SECONDARY_EVIDENCE,
+        }:
+            raise ValueError("evidence assessor cannot assign source-authority relations")
+        return self
 
 
 class ResearchQueryFailure(BaseModel):
@@ -248,6 +278,7 @@ class EvidenceEngine:
         provider_selector: SearchProviderSelector,
         assessor: EvidenceAssessor,
         *,
+        source_resolver: Any | None = None,
         producer: str = "research-worker",
         producer_version: str = "0.1.0",
         methodology_version: str = RESEARCH_PLANNER_METHODOLOGY_VERSION,
@@ -259,6 +290,7 @@ class EvidenceEngine:
         self.enforcer = SearchPolicyEnforcer(search_policy)
         self.provider_selector = provider_selector
         self.assessor = assessor
+        self.source_resolver = source_resolver
         self.producer = producer
         self.producer_version = producer_version
         self.methodology_version = methodology_version
@@ -696,28 +728,78 @@ class EvidenceEngine:
             for item in current_candidates
             if (item.claim_id, item.result.url) in assessment_map
         )
+        resolutions = (
+            self.source_resolver.resolve(session, assessed_candidates)
+            if self.source_resolver is not None
+            else {}
+        )
         grouped = self._group_candidates(assessed_candidates)
         evidence_ids: list[UUID] = []
         relation_count = 0
 
-        for url, candidates in grouped.items():
+        for (claim_id, url), candidates in grouped.items():
             first = candidates[0]
-            assessment_records = [
-                assessment for key, assessment in assessment_map.items() if key[1] == url
+            assessment_records = [assessment_map[(claim_id, url)]]
+            resolution = resolutions.get((claim_id, url))
+            source = resolution.source if resolution is not None else None
+            version = resolution.version if resolution is not None else None
+            article = resolution.article if resolution is not None else None
+            authority = resolution.authority if resolution is not None else None
+            lineage = resolution.lineage if resolution is not None else None
+            assessment_ai_run_ids = [
+                str(self._persist_assessment_ai_run(session, event, assessment))
+                for assessment in assessment_records
+                if assessment.ai_provenance is not None
             ]
             evidence = EvidenceItem(
-                source_id=None,
+                source_id=source.id if source is not None else None,
                 title=first.result.title,
                 url=url,
                 evidence_type=first.result.candidate_type.value,
-                published_at=first.result.published_at,
-                retrieved_at=_earliest_retrieved(candidates),
-                content_hash=_candidate_hash(first.result),
-                excerpt=first.result.snippet,
+                published_at=(
+                    article.published_at if article is not None else first.result.published_at
+                ),
+                retrieved_at=(
+                    version.retrieved_at if version is not None else _earliest_retrieved(candidates)
+                ),
+                content_hash=(
+                    version.content_hash if version is not None else _candidate_hash(first.result)
+                ),
+                excerpt=assessment_records[0].relevant_excerpt or first.result.snippet,
                 evidence_metadata={
                     "source_name": first.result.source_name,
                     "language": first.result.language,
-                    "lineage_status": "UNASSESSED",
+                    "research_run_id": str(task.plan.research_run_id),
+                    "research_generation": int(job.payload["claim_generations"][str(claim_id)]),
+                    "source_id": str(source.id) if source is not None else None,
+                    "article_id": str(article.id) if article is not None else None,
+                    "article_version_id": str(version.id) if version is not None else None,
+                    "article_version_number": (
+                        version.version_number if version is not None else None
+                    ),
+                    "canonical_url": article.canonical_url if article is not None else url,
+                    "content_hash": (
+                        version.content_hash
+                        if version is not None
+                        else _candidate_hash(first.result)
+                    ),
+                    "source_level": (
+                        int(authority.effective_level) if authority is not None else None
+                    ),
+                    "source_policy_basis": authority.basis if authority is not None else None,
+                    "lineage_status": lineage.status.value if lineage is not None else "UNRESOLVED",
+                    "lineage_basis": (
+                        lineage.basis
+                        if lineage is not None
+                        else "source-policy-resolver-not-configured"
+                    ),
+                    "independence_group": (
+                        lineage.independence_group if lineage is not None else None
+                    ),
+                    "originating_reference": (
+                        lineage.originating_reference if lineage is not None else None
+                    ),
+                    "assessment_ai_run_ids": assessment_ai_run_ids,
                     "search_provenance": [self._candidate_provenance(item) for item in candidates],
                     "relationship_assessments": [
                         assessment.model_dump(mode="json") for assessment in assessment_records
@@ -961,10 +1043,10 @@ class EvidenceEngine:
     @staticmethod
     def _group_candidates(
         candidates: tuple[ResearchCandidate, ...],
-    ) -> dict[str, list[ResearchCandidate]]:
-        grouped: dict[str, list[ResearchCandidate]] = {}
+    ) -> dict[tuple[UUID, str], list[ResearchCandidate]]:
+        grouped: dict[tuple[UUID, str], list[ResearchCandidate]] = {}
         for candidate in candidates:
-            grouped.setdefault(candidate.result.url, []).append(candidate)
+            grouped.setdefault((candidate.claim_id, candidate.result.url), []).append(candidate)
         return grouped
 
     @staticmethod
@@ -990,7 +1072,57 @@ class EvidenceEngine:
             "provider_id": candidate.provider_id,
             "rank": candidate.result.rank,
             "retrieved_at": candidate.retrieved_at.isoformat(),
+            "source_version": candidate.result.metadata,
         }
+
+    @staticmethod
+    def _persist_assessment_ai_run(
+        session: Session,
+        event: EventEnvelope,
+        assessment: EvidenceAssessment,
+    ) -> UUID:
+        provenance = assessment.ai_provenance
+        if provenance is None:
+            raise ValueError("assessment has no AI provenance")
+        model = session.scalar(
+            select(AIModel)
+            .where(
+                AIModel.provider == provenance.provider_id,
+                AIModel.model_name == provenance.model_name,
+            )
+            .with_for_update()
+        )
+        if model is None:
+            model = AIModel(
+                provider=provenance.provider_id,
+                model_name=provenance.model_name,
+                locality=provenance.locality,
+                capabilities=provenance.capabilities,
+                enabled=True,
+                model_metadata={},
+            )
+            session.add(model)
+            session.flush()
+        run = AIRun(
+            ai_model_id=model.id,
+            task_type="EVIDENCE_ASSESSMENT",
+            prompt_id=provenance.prompt_id,
+            prompt_version=provenance.prompt_version,
+            prompt_checksum=provenance.prompt_checksum,
+            input_artifact_ids=list(provenance.input_artifact_ids),
+            input_hash=provenance.input_hash,
+            output_payload=provenance.output_payload,
+            status="SUCCEEDED",
+            validation_status="VALIDATED",
+            latency_ms=provenance.latency_ms,
+            input_tokens=provenance.input_tokens,
+            output_tokens=provenance.output_tokens,
+            correlation_id=event.correlation_id,
+            routing_attempts=list(provenance.routing_attempts),
+        )
+        session.add(run)
+        session.flush()
+        return run.id
 
 
 def _bounded_query(value: str) -> str:

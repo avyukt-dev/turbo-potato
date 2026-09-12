@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
+from news_ai_common.config import ConfigLoader
 from news_ai_database import (
+    AIRun,
+    Article,
+    ArticleVersion,
     Base,
     Claim,
     ClaimEvidence,
@@ -14,6 +18,7 @@ from news_ai_database import (
     EvidenceItem,
     Job,
     ResearchRunClaim,
+    Source,
     Story,
 )
 from news_ai_domain import ClaimVerificationStatus, RiskLevel
@@ -22,9 +27,12 @@ from news_ai_evidence import (
     RESEARCH_PLANNER_METHODOLOGY_VERSION,
     CandidateSourceType,
     EvidenceAssessment,
+    EvidenceAssessmentAIProvenance,
     EvidenceEngine,
     EvidenceRelation,
     ResearchCandidate,
+    ResearchCollection,
+    ResearchPolicyLoader,
     ResearchTargetRole,
     SearchBudgets,
     SearchCapability,
@@ -36,6 +44,7 @@ from news_ai_evidence import (
     SearchResponse,
     SearchResult,
     SearchRules,
+    SourceEvidenceResolver,
 )
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -105,8 +114,6 @@ class ExplicitAssessor:
             candidate_url=candidate.result.url,
             relation=relation,
             strength_score=Decimal("0.60"),
-            source_level=2,
-            independence_group=candidate.result.url,
             notes=f"Explicit test assessment for: {claim_text}",
         )
 
@@ -520,7 +527,8 @@ def test_collection_persists_explicit_relations_and_contradictions() -> None:
     assert evidence
     assert len(links) == len(evidence)
     assert any(link.relation == EvidenceRelation.CONTRADICTS.value for link in links)
-    assert all(item.evidence_metadata["lineage_status"] == "UNASSESSED" for item in evidence)
+    assert all(item.evidence_metadata["lineage_status"] == "UNRESOLVED" for item in evidence)
+    assert all(item.evidence_metadata["independence_group"] is None for item in evidence)
     assert all(item.evidence_metadata["search_provenance"] for item in evidence)
     assert job is not None and job.status == "COMPLETED"
     assert stored_claim is not None
@@ -528,6 +536,103 @@ def test_collection_persists_explicit_relations_and_contradictions() -> None:
     assert collected_event is not None
     assert collected_event.payload["research_run_id"] == str(result.research_run_id)
     assert collected_event.payload["claim_ids"] == [str(claim.id)]
+
+
+def test_collection_persists_exact_source_version_lineage_and_ai_run() -> None:
+    factory = _factory()
+    engine = _engine()
+    engine.source_resolver = SourceEvidenceResolver(
+        ResearchPolicyLoader(ConfigLoader("config")).load()
+    )
+    _, claim, _, requested, task, _ = _prepare(factory, engine)
+    collected = asyncio.run(engine.collect(task))
+    candidate = collected.candidates[0]
+    with factory() as session, session.begin():
+        source = Source(
+            name="Explicit primary record",
+            domain="records.example",
+            source_type="PRIMARY",
+            authority_level=1,
+            source_metadata={},
+        )
+        session.add(source)
+        session.flush()
+        article = Article(
+            source_id=source.id,
+            canonical_url="https://records.example/document",
+            title="Official document",
+            language="en",
+        )
+        session.add(article)
+        session.flush()
+        version = ArticleVersion(
+            article_id=article.id,
+            version_number=1,
+            content_hash="d" * 64,
+            body="The government announced a new policy.",
+            retrieved_at=datetime(2026, 9, 11, tzinfo=UTC),
+            version_metadata={"primary_document_id": "document:policy-1"},
+        )
+        session.add(version)
+        session.flush()
+        version_id = version.id
+        source_id = source.id
+
+    result = candidate.result.model_copy(
+        update={
+            "url": article.canonical_url,
+            "snippet": version.body,
+            "metadata": {
+                "source_id": str(source.id),
+                "article_id": str(article.id),
+                "article_version_id": str(version.id),
+                "content_hash": version.content_hash,
+            },
+        }
+    )
+    candidate = candidate.model_copy(update={"result": result})
+    assessment = EvidenceAssessment(
+        claim_id=claim.id,
+        candidate_url=result.url,
+        relation=EvidenceRelation.DIRECT_SUPPORT,
+        strength_score=Decimal("0.90"),
+        relevant_excerpt="government announced a new policy",
+        ai_provenance=EvidenceAssessmentAIProvenance(
+            provider_id="assessment-ai",
+            model_name="assessment-model-v1",
+            locality="LOCAL",
+            capabilities={"task": "EVIDENCE_ASSESSMENT"},
+            prompt_id="evidence-assessment",
+            prompt_version="v1",
+            prompt_checksum="e" * 64,
+            input_hash="f" * 64,
+            input_artifact_ids=(f"article_version:{version_id}",),
+            output_payload={"relation": "DIRECT_SUPPORT"},
+            latency_ms=3,
+            routing_attempts=({"provider_id": "assessment-ai", "outcome": "SUCCESS"},),
+        ),
+    )
+    collection = ResearchCollection(
+        research_run_id=task.plan.research_run_id,
+        candidates=(candidate,),
+        assessments=(assessment,),
+        successful_query_count=1,
+    )
+
+    with factory() as session, session.begin():
+        persisted = engine.persist_collection(session, requested, task, collection)
+
+    with factory() as session:
+        evidence = session.get(EvidenceItem, persisted.evidence_ids[0])
+        ai_run = session.scalar(select(AIRun))
+        assert evidence is not None
+        assert evidence.source_id == source_id
+        assert evidence.content_hash == "d" * 64
+        assert evidence.evidence_metadata["article_version_id"] == str(version_id)
+        assert evidence.evidence_metadata["lineage_status"] == "INDEPENDENT"
+        assert evidence.evidence_metadata["source_level"] == 1
+        assert evidence.evidence_metadata["assessment_ai_run_ids"] == [str(ai_run.id)]
+        assert ai_run is not None and ai_run.task_type == "EVIDENCE_ASSESSMENT"
 
 
 def test_query_intent_alone_never_promotes_candidate_to_evidence() -> None:

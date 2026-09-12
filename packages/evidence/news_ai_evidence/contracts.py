@@ -175,6 +175,13 @@ class SearchResult(BaseModel):
     def validate_timestamps(cls, value: datetime | None) -> datetime | None:
         return _require_aware(value)
 
+    @field_validator("metadata")
+    @classmethod
+    def reject_secret_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if metadata_contains_secret_key(value):
+            raise ValueError("search result metadata must not contain secrets")
+        return value
+
 
 class SearchResponse(BaseModel):
     """Normalized provider response containing candidate sources."""
@@ -193,6 +200,13 @@ class SearchResponse(BaseModel):
         result = _require_aware(value)
         assert result is not None
         return result
+
+    @field_validator("metadata")
+    @classmethod
+    def reject_secret_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if metadata_contains_secret_key(value):
+            raise ValueError("search response metadata must not contain secrets")
+        return value
 
     @model_validator(mode="after")
     def reject_duplicate_urls(self) -> SearchResponse:

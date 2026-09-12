@@ -151,13 +151,14 @@ def _seed_verified_story(
             evidence_type="ARTICLE",
             excerpt="Supporting excerpt",
             evidence_metadata={
+                "research_run_id": str(research_run_id),
                 "relationship_assessments": [
                     {
                         "claim_id": str(claims[0].id),
                         "relation": EvidenceRelation.DIRECT_SUPPORT.value,
                         "notes": "Directly supports the claim.",
                     }
-                ]
+                ],
             },
         )
         contradiction = EvidenceItem(
@@ -166,7 +167,7 @@ def _seed_verified_story(
             url="https://example.com/contradiction",
             evidence_type="OFFICIAL_DOCUMENT",
             excerpt="Contradicting excerpt",
-            evidence_metadata={},
+            evidence_metadata={"research_run_id": str(research_run_id)},
         )
         session.add_all([support, contradiction])
         session.flush()

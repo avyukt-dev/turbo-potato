@@ -1,5 +1,6 @@
 """Research, verification, and Fact Sheet worker application package."""
 
+from .composition import ProductionResearchStack, build_production_research_stack
 from .fact_sheet import FACT_SHEET_CONSUMER_GROUP, FactSheetWorker
 from .verification import (
     FACT_CHECK_CONSUMER_GROUP,
@@ -27,4 +28,6 @@ __all__ = [
     "ResearchPlanningWorker",
     "ResearchWorkerBatchResult",
     "StoryVerificationWorker",
+    "ProductionResearchStack",
+    "build_production_research_stack",
 ]
