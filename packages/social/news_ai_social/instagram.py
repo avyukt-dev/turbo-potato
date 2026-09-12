@@ -20,6 +20,7 @@ from .contracts import (
     InstagramCarouselRequest,
     InstagramContainerStatus,
     InstagramContainerStatusResult,
+    InstagramPreparedPublication,
     InstagramPublishResult,
     PublicationVerificationResult,
     PublicationVerificationStatus,
@@ -151,6 +152,12 @@ class InstagramAdapter:
         validate_instagram_request(request, self.config)
 
     async def publish(self, request: InstagramCarouselRequest) -> InstagramPublishResult:
+        prepared = await self.prepare_publication(request)
+        return await self.publish_prepared(prepared)
+
+    async def prepare_publication(
+        self, request: InstagramCarouselRequest
+    ) -> InstagramPreparedPublication:
         self.validate_content(request)
         children: list[str] = []
         for item in request.media_items:
@@ -175,9 +182,28 @@ class InstagramAdapter:
         )
         parent_id = self._required_id(parent, operation="carousel container creation")
         await self._wait_until_ready(parent_id)
+        return InstagramPreparedPublication(
+            container_id=parent_id,
+            child_container_ids=tuple(children),
+            request_hash=instagram_request_hash(request),
+        )
 
-        published = await self._post(f"{self.account_id}/media_publish", {"creation_id": parent_id})
+    async def publish_prepared(
+        self, prepared: InstagramPreparedPublication, *, verify: bool = True
+    ) -> InstagramPublishResult:
+        if prepared.mock or not _GRAPH_ID_RE.fullmatch(prepared.container_id):
+            raise _validation_error("Instagram prepared container is invalid")
+        published = await self._post(
+            f"{self.account_id}/media_publish", {"creation_id": prepared.container_id}
+        )
         external_id = self._required_id(published, operation="carousel publication")
+
+        if not verify:
+            return InstagramPublishResult(
+                status=SocialPublishStatus.CREATED,
+                external_post_id=external_id,
+                provider_metadata={"container_id": prepared.container_id},
+            )
 
         verification: PublicationVerificationResult | None = None
         with suppress(SocialAdapterError):
@@ -193,7 +219,7 @@ class InstagramAdapter:
             external_post_id=external_id,
             external_url=verification.external_url if confirmed and verification else None,
             provider_metadata={
-                "container_id": parent_id,
+                "container_id": prepared.container_id,
                 "verification_status": verification_status.value,
             },
         )
@@ -346,11 +372,28 @@ class MockInstagramAdapter:
         validate_instagram_request(request, self.config)
 
     async def publish(self, request: InstagramCarouselRequest) -> InstagramPublishResult:
+        return await self.publish_prepared(await self.prepare_publication(request))
+
+    async def prepare_publication(
+        self, request: InstagramCarouselRequest
+    ) -> InstagramPreparedPublication:
         self.validate_content(request)
-        canonical = json.dumps(
-            request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-        ).encode()
-        external_id = f"mock_ig_{hashlib.sha256(canonical).hexdigest()[:24]}"
+        request_hash = instagram_request_hash(request)
+        return InstagramPreparedPublication(
+            container_id=f"mock_container_{request_hash[:24]}",
+            child_container_ids=tuple(
+                f"mock_child_{request_hash[:24]}_{item.position}" for item in request.media_items
+            ),
+            request_hash=request_hash,
+            mock=True,
+        )
+
+    async def publish_prepared(
+        self, prepared: InstagramPreparedPublication, *, verify: bool = True
+    ) -> InstagramPublishResult:
+        if not prepared.mock:
+            raise _validation_error("MOCK adapter requires a MOCK container")
+        external_id = f"mock_ig_{prepared.request_hash[:24]}"
         self._published.add(external_id)
         return InstagramPublishResult(
             status=SocialPublishStatus.PUBLISHED,
@@ -361,7 +404,8 @@ class MockInstagramAdapter:
         )
 
     async def verify_publication(self, external_post_id: str) -> PublicationVerificationResult:
-        found = external_post_id in self._published
+        # MOCK identities are deterministic and recoverable across process restarts.
+        found = bool(re.fullmatch(r"mock_ig_[0-9a-f]{24}", external_post_id))
         return PublicationVerificationResult(
             external_post_id=external_post_id,
             status=(
@@ -375,6 +419,20 @@ class MockInstagramAdapter:
             mock=True,
             provider_metadata={"mode": "MOCK"},
         )
+
+    async def get_container_status(self, container_id: str) -> InstagramContainerStatusResult:
+        return InstagramContainerStatusResult(
+            container_id=container_id, status=InstagramContainerStatus.UNKNOWN
+        )
+
+
+def instagram_request_hash(request: InstagramCarouselRequest) -> str:
+    """Identity of the exact validated command, including ordered delivery references."""
+
+    canonical = json.dumps(
+        request.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _classify_graph_error(

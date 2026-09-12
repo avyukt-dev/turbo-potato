@@ -207,8 +207,12 @@ def test_real_postgres_redis_scheduling_handoff_stops_before_execution(factory):
             await client.aclose()
 
     asyncio.run(dispatch())
-    assert "publication_attempts" not in Base.metadata.tables
-    assert "external_post_id" not in Publication.__table__.columns
+    # Scheduling still performs no execution; Stage 26 now owns these columns.
+    from news_ai_database import PublicationAttempt
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(PublicationAttempt)) == 0
+        assert session.get(Publication, row.id).external_post_id is None
 
 
 @pytest.mark.parametrize("first", ["cancel", "facts"])

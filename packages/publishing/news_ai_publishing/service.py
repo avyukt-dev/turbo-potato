@@ -10,6 +10,10 @@ from news_ai_database import (
     AuditLog,
     ContentVariant,
     Publication,
+    PublicationAttempt,
+    PublicationAttemptPhase,
+    PublicationAttemptStatus,
+    PublicationRetryOperation,
     SocialAccount,
     SocialAccountStatus,
 )
@@ -20,7 +24,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .contracts import CreatePublicationRequest, PublicationView, system_clock, utc
+from .contracts import (
+    CreatePublicationRequest,
+    PublicationAttemptView,
+    PublicationView,
+    system_clock,
+    utc,
+)
 from .errors import PublicationError
 from .instagram_request import build_instagram_publication_request
 
@@ -146,6 +156,105 @@ class PublicationService:
     def get(self, publication_id: UUID) -> PublicationView:
         with self.session_factory() as session:
             return PublicationView.model_validate(self.load(session, publication_id))
+
+    def attempts(self, publication_id: UUID, *, limit: int = 100):
+        if not 1 <= limit <= 100:
+            raise PublicationError("INVALID_LIMIT")
+        with self.session_factory() as session:
+            self.load(session, publication_id)
+            return tuple(
+                PublicationAttemptView.model_validate(attempt)
+                for attempt in session.scalars(
+                    select(PublicationAttempt)
+                    .where(PublicationAttempt.publication_id == publication_id)
+                    .order_by(PublicationAttempt.attempt_number)
+                    .limit(limit)
+                )
+            )
+
+    def retry(self, publication_id, actor, *, idempotency_key, request_id=None):
+        self.authorize(actor)
+        if (
+            not idempotency_key
+            or len(idempotency_key) > 128
+            or any(character.isspace() for character in idempotency_key)
+        ):
+            raise PublicationError("INVALID_IDEMPOTENCY_KEY")
+        request_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "operation": "RETRY",
+                    "publication_id": str(publication_id),
+                    "actor_id": str(actor.reviewer_id),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        with self.session_factory() as session, session.begin():
+            row = self.load(session, publication_id, lock=True)
+            previous = session.scalar(
+                select(PublicationRetryOperation).where(
+                    PublicationRetryOperation.actor_id == actor.reviewer_id,
+                    PublicationRetryOperation.idempotency_key == idempotency_key,
+                )
+            )
+            if previous:
+                if previous.request_hash != request_hash:
+                    raise PublicationError("IDEMPOTENCY_CONFLICT")
+                return PublicationView.model_validate(row)
+            attempt = session.scalar(
+                select(PublicationAttempt)
+                .where(PublicationAttempt.publication_id == row.id)
+                .order_by(PublicationAttempt.attempt_number.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if (
+                row.status
+                not in {
+                    PublicationStatus.RETRYING,
+                    PublicationStatus.FAILED,
+                    PublicationStatus.BLOCKED,
+                }
+                or row.external_post_id is not None
+                or row.scheduled_event_id is None
+                or attempt is None
+                or attempt.ambiguous
+                or attempt.external_post_id is not None
+                or attempt.phase
+                not in {PublicationAttemptPhase.PREPARING, PublicationAttemptPhase.PREPARED}
+                or attempt.status
+                not in {
+                    PublicationAttemptStatus.RETRYABLE_FAILED,
+                    PublicationAttemptStatus.TERMINAL_FAILED,
+                }
+                or attempt.error_code not in {"TRANSIENT", "RATE_LIMIT"}
+            ):
+                raise PublicationError("UNSAFE_RETRY")
+            self.revalidate(session, row)
+            now = utc(self.clock())
+            row.status = PublicationStatus.RETRYING
+            row.next_retry_at = now
+            row.updated_at = now
+            session.add(
+                PublicationRetryOperation(
+                    publication_id=row.id,
+                    actor_id=actor.reviewer_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    created_at=now,
+                )
+            )
+            self.audit(
+                session,
+                row,
+                "PUBLICATION_MANUAL_RETRY",
+                actor.reviewer_id,
+                now,
+                request_id=request_id,
+            )
+            return PublicationView.model_validate(row)
 
     def cancel(
         self,

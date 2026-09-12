@@ -3,11 +3,12 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from news_ai_publishing import (
     CancelPublicationRequest,
     CreatePublicationRequest,
+    PublicationAttemptView,
     PublicationService,
     PublicationView,
 )
@@ -56,6 +57,32 @@ def create_publication_router(
         require_capability(actor, ReviewCapability.PUBLISH)
         return service.cancel(
             publication_id, actor, reason=body.reason, request_id=request.state.request_id
+        )
+
+    @router.get("/{publication_id}/attempts", response_model=list[PublicationAttemptView])
+    def attempts(
+        publication_id: UUID,
+        actor: Annotated[ReviewerPrincipal, Depends(principal)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    ):
+        require_capability(actor, ReviewCapability.VIEW, ReviewCapability.PUBLISH)
+        return service.attempts(publication_id, limit=limit)
+
+    @router.post("/{publication_id}/retry", response_model=PublicationView)
+    def retry(
+        publication_id: UUID,
+        request: Request,
+        actor: Annotated[ReviewerPrincipal, Depends(principal)],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^\S+$")
+        ],
+    ):
+        require_capability(actor, ReviewCapability.PUBLISH)
+        return service.retry(
+            publication_id,
+            actor,
+            idempotency_key=idempotency_key,
+            request_id=request.state.request_id,
         )
 
     @router.post("/{publication_id}/publish-now", response_model=PublicationView)

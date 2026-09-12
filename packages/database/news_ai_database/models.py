@@ -626,7 +626,9 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
         CheckConstraint("artifact_version >= 1", name="ck_audit_artifact_version"),
         CheckConstraint("result IN ('SUCCESS', 'BLOCKED')", name="ck_audit_result"),
         CheckConstraint(
-            "actor_id IS NOT NULL OR action IN ('PUBLICATION_SCHEDULED','PUBLICATION_BLOCKED')",
+            "actor_id IS NOT NULL OR action IN ('PUBLICATION_SCHEDULED','PUBLICATION_BLOCKED',"
+            "'PUBLICATION_EXECUTION_STARTED','PUBLICATION_EXECUTED','PUBLICATION_FAILED',"
+            "'PUBLICATION_RETRY_SCHEDULED','PUBLICATION_RECOVERY')",
             name="audit_system_actor",
         ),
     )

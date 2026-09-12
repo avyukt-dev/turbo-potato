@@ -57,7 +57,7 @@ def test_publication_api_auth_closed_request_safe_state_and_scheduling_only():
     response = api.post("/api/v1/publications", json=body, headers=headers)
     assert response.status_code == 201
     data = response.json()
-    assert "credential_reference" not in data and "external_post_id" not in data
+    assert "credential_reference" not in data and data["external_post_id"] is None
     identifier = data["id"]
     assert api.get(f"/api/v1/publications/{identifier}", headers=headers).status_code == 200
     assert (
@@ -97,9 +97,9 @@ def test_publication_api_auth_closed_request_safe_state_and_scheduling_only():
         ).json()["status"]
         == "CANCELLED"
     )
-    assert api.post(f"/api/v1/publications/{identifier}/retry", headers=headers).status_code == 404
+    assert api.post(f"/api/v1/publications/{identifier}/retry", headers=headers).status_code == 422
     assert (
-        api.get(f"/api/v1/publications/{identifier}/attempts", headers=headers).status_code == 404
+        api.get(f"/api/v1/publications/{identifier}/attempts", headers=headers).status_code == 200
     )
     missing = api.get(f"/api/v1/publications/{uuid4()}", headers=headers)
     assert missing.status_code == 404 and missing.json()["error"]["code"] == "PUBLICATION_NOT_FOUND"

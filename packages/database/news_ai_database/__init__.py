@@ -31,13 +31,26 @@ from .models import (
     Story,
     StorySource,
 )
-from .publication_models import MediaAsset, Publication, SocialAccount, SocialAccountStatus
+from .publication_models import (
+    MediaAsset,
+    Publication,
+    PublicationAttempt,
+    PublicationAttemptPhase,
+    PublicationAttemptStatus,
+    PublicationRetryOperation,
+    SocialAccount,
+    SocialAccountStatus,
+)
 from .registry_models import SourceFeedRegistryEntry, SourceRegistryEntry
 from .session import create_database_engine, create_session_factory
 
 __all__ = [
     "MediaAsset",
     "Publication",
+    "PublicationAttempt",
+    "PublicationAttemptPhase",
+    "PublicationAttemptStatus",
+    "PublicationRetryOperation",
     "SocialAccount",
     "SocialAccountStatus",
     "AIModel",
