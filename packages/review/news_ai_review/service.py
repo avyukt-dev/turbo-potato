@@ -18,6 +18,7 @@ from news_ai_database import (
     ContentQualityCheck,
     ContentVariant,
     FactSheet,
+    MediaAsset,
     ReviewDecisionRecord,
     Story,
 )
@@ -28,7 +29,7 @@ from news_ai_quality import QUALITY_METHODOLOGY_VERSION
 from pydantic import ValidationError
 from sqlalchemy import String, and_, case, cast, exists, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .contracts import (
     TERMINAL_DECISIONS,
@@ -351,7 +352,7 @@ class ReviewService:
             if self._precondition_error(graph, allow_approved=True) is not None:
                 return False
             current_hash = self._artifact_hash(self._artifact_snapshot(graph))
-        except (ValidationError, ValueError, TypeError):
+        except (ValidationError, ValueError, TypeError, ReviewPreconditionError):
             return False
         return current_hash == decision.artifact_hash
 
@@ -498,7 +499,7 @@ class ReviewService:
     def _artifact_snapshot(self, graph: _ReviewGraph) -> dict[str, Any]:
         variant = graph.variant
         draft = graph.draft
-        return {
+        snapshot = {
             "content_variant_id": str(variant.id),
             "content_draft_id": str(draft.id),
             "version": variant.version,
@@ -519,6 +520,33 @@ class ReviewService:
             "risk_level": graph.fact_sheet.risk_level.value,
             "sensitive_topics": graph.fact_sheet.sensitive_topics,
         }
+        # Empty-media historical approvals retain their original hash. Once
+        # caller-owned media exists, approval binds the reviewed bytes/format,
+        # not merely an ID that could later resolve to different material.
+        if variant.media_asset_ids:
+            session = object_session(variant)
+            media = []
+            for identifier in variant.media_asset_ids:
+                asset = session.scalar(
+                    select(MediaAsset)
+                    .where(MediaAsset.id == UUID(identifier))
+                    .execution_options(populate_existing=True)
+                )
+                if asset is None:
+                    raise ReviewPreconditionError("reviewed media reference is missing")
+                media.append(
+                    {
+                        "id": str(asset.id),
+                        "file_hash": asset.file_hash,
+                        "asset_type": asset.asset_type,
+                        "mime_type": asset.mime_type,
+                        "media_format": asset.source_metadata.get("media_format")
+                        if isinstance(asset.source_metadata, dict)
+                        else None,
+                    }
+                )
+            snapshot["media_provenance"] = media
+        return snapshot
 
     @staticmethod
     def _quality_artifact(variant: ContentVariant) -> dict[str, Any]:

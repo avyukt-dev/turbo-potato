@@ -625,9 +625,13 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         CheckConstraint("artifact_version >= 1", name="ck_audit_artifact_version"),
         CheckConstraint("result IN ('SUCCESS', 'BLOCKED')", name="ck_audit_result"),
+        CheckConstraint(
+            "actor_id IS NOT NULL OR action IN ('PUBLICATION_SCHEDULED','PUBLICATION_BLOCKED')",
+            name="audit_system_actor",
+        ),
     )
 
-    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    actor_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
     artifact_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)

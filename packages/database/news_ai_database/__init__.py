@@ -31,10 +31,15 @@ from .models import (
     Story,
     StorySource,
 )
+from .publication_models import MediaAsset, Publication, SocialAccount, SocialAccountStatus
 from .registry_models import SourceFeedRegistryEntry, SourceRegistryEntry
 from .session import create_database_engine, create_session_factory
 
 __all__ = [
+    "MediaAsset",
+    "Publication",
+    "SocialAccount",
+    "SocialAccountStatus",
     "AIModel",
     "AIRun",
     "AuditLog",
