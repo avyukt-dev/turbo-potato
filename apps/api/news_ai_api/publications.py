@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from news_ai_publishing import (
     CancelPublicationRequest,
@@ -63,8 +63,16 @@ def create_publication_router(
         publication_id: UUID,
         request: Request,
         actor: Annotated[ReviewerPrincipal, Depends(principal)],
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^\S+$")
+        ],
     ):
         require_capability(actor, ReviewCapability.PUBLISH)
-        return service.publish_now(publication_id, actor, request_id=request.state.request_id)
+        return service.publish_now(
+            publication_id,
+            actor,
+            idempotency_key=idempotency_key,
+            request_id=request.state.request_id,
+        )
 
     return router

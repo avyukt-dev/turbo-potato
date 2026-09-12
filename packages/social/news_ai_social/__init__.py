@@ -25,7 +25,12 @@ from .contracts import (
     SocialPublishStatus,
 )
 from .errors import SocialAdapterError, SocialErrorClass
-from .instagram import InstagramAdapter, MockInstagramAdapter, validate_instagram_request
+from .instagram import (
+    InstagramAdapter,
+    MockInstagramAdapter,
+    canonical_public_media_url,
+    validate_instagram_request,
+)
 from .renderer import InstagramCarouselRenderer
 from .transport import (
     GraphResponse,
@@ -63,6 +68,7 @@ __all__ = [
     "SocialPlatformAdapter",
     "SocialPublishStatus",
     "SocialSettings",
+    "canonical_public_media_url",
     "load_instagram_config",
     "validate_instagram_request",
 ]

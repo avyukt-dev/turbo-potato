@@ -7,6 +7,7 @@ from .contracts import (
     SchedulerConfig,
 )
 from .errors import PublicationError
+from .instagram_request import build_instagram_publication_request
 from .scheduler import PublicationScheduler
 from .service import PublicationService
 
@@ -18,4 +19,5 @@ __all__ = [
     "PublicationError",
     "PublicationScheduler",
     "PublicationService",
+    "build_instagram_publication_request",
 ]

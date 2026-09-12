@@ -1,17 +1,14 @@
 """Transactional scheduling-only operations, exact approval and prerequisite checks."""
 
 import hashlib
-import ipaddress
 import json
 from collections.abc import Callable
 from datetime import datetime
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from news_ai_database import (
     AuditLog,
     ContentVariant,
-    MediaAsset,
     Publication,
     SocialAccount,
     SocialAccountStatus,
@@ -25,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from .contracts import CreatePublicationRequest, PublicationView, system_clock, utc
 from .errors import PublicationError
+from .instagram_request import build_instagram_publication_request
 
 PRE_EXECUTION = {PublicationStatus.DRAFT, PublicationStatus.APPROVED, PublicationStatus.SCHEDULED}
 
@@ -182,11 +180,41 @@ class PublicationService:
             return PublicationView.model_validate(row)
 
     def publish_now(
-        self, publication_id: UUID, actor: ReviewerPrincipal, *, request_id: UUID | None = None
+        self,
+        publication_id: UUID,
+        actor: ReviewerPrincipal,
+        *,
+        idempotency_key: str,
+        request_id: UUID | None = None,
     ) -> PublicationView:
         self.authorize(actor)
+        if (
+            not idempotency_key
+            or len(idempotency_key) > 128
+            or any(character.isspace() for character in idempotency_key)
+        ):
+            raise PublicationError("INVALID_IDEMPOTENCY_KEY")
+        request_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "operation": "PUBLISH_NOW",
+                    "publication_id": str(publication_id),
+                    "actor_id": str(actor.reviewer_id),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
         with self.session_factory() as session, session.begin():
             row = self.load(session, publication_id, lock=True)
+            if row.publish_now_idempotency_key is not None:
+                if (
+                    row.publish_now_idempotency_key == idempotency_key
+                    and row.publish_now_actor_id == actor.reviewer_id
+                    and row.publish_now_request_hash == request_hash
+                ):
+                    return PublicationView.model_validate(row)
+                raise PublicationError("IDEMPOTENCY_CONFLICT")
             if row.status not in PRE_EXECUTION or row.scheduled_event_id is not None:
                 raise PublicationError("INVALID_STATE")
             self.revalidate(session, row)
@@ -194,6 +222,9 @@ class PublicationService:
             old = row.status
             row.scheduled_at = now
             row.status = PublicationStatus.SCHEDULED
+            row.publish_now_idempotency_key = idempotency_key
+            row.publish_now_request_hash = request_hash
+            row.publish_now_actor_id = actor.reviewer_id
             row.updated_at = now
             self.audit(
                 session,
@@ -268,59 +299,10 @@ class PublicationService:
         return account
 
     def media_reason(self, session, variant):
-        ids = variant.media_asset_ids
-        if not isinstance(variant.structured_payload, dict) or not isinstance(ids, list):
-            return "MEDIA_UNAVAILABLE"
-        slides = variant.structured_payload.get("slides", [])
-        if not isinstance(slides, list):
-            return "MEDIA_UNAVAILABLE"
-        constraints = self.platform_config.constraints
-        if not constraints.min_carousel_items <= len(slides) <= constraints.max_carousel_items:
-            return "MEDIA_UNAVAILABLE"
-        if len(variant.caption or "") > constraints.caption_max_characters:
-            return "PLATFORM_CONSTRAINT"
-        if not ids or len(ids) != len(slides) or len(set(ids)) != len(ids):
-            return "MEDIA_UNAVAILABLE"
-        for identifier in ids:
-            try:
-                asset = session.get(MediaAsset, UUID(str(identifier)))
-            except (ValueError, TypeError):
-                return "MEDIA_UNAVAILABLE"
-            if (
-                asset is None
-                or asset.asset_type != "IMAGE"
-                or asset.mime_type != "image/jpeg"
-                or not isinstance(asset.source_metadata, dict)
-                or asset.source_metadata.get("media_format") != "JPEG"
-                or asset.visual_check_status != "VALIDATED"
-                or not asset.public_url
-            ):
-                return "MEDIA_UNAVAILABLE"
-            try:
-                parsed = urlsplit(asset.public_url)
-                _port = parsed.port
-            except ValueError:
-                return "MEDIA_UNAVAILABLE"
-            if (
-                parsed.scheme != "https"
-                or not parsed.hostname
-                or parsed.username
-                or parsed.password
-                or parsed.fragment
-            ):
-                return "MEDIA_UNAVAILABLE"
-            hostname = parsed.hostname.casefold()
-            if (
-                hostname == "localhost"
-                or "." not in hostname
-                or hostname.endswith((".local", ".internal", ".localhost"))
-            ):
-                return "MEDIA_UNAVAILABLE"
-            try:
-                if not ipaddress.ip_address(hostname).is_global:
-                    return "MEDIA_UNAVAILABLE"
-            except ValueError:
-                pass
+        try:
+            build_instagram_publication_request(session, variant, self.platform_config)
+        except PublicationError as exc:
+            return exc.code
         return None
 
     @staticmethod

@@ -40,7 +40,7 @@ class ApprovalEligibilityService:
             graph = service._load_graph(session, content_variant_id, lock=True)
         except ReviewError:
             return None
-        if not service.is_currently_eligible(session, graph.variant):
+        if not service.is_currently_eligible(session, graph.variant, lock=True):
             return None
         return ApprovedPublicationReference(
             graph.variant,

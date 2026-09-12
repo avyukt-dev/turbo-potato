@@ -90,6 +90,17 @@ class Publication(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint(
             "created_by_actor_id", "idempotency_key", name="uq_publications_actor_operation"
         ),
+        CheckConstraint(
+            "(publish_now_idempotency_key IS NULL AND publish_now_request_hash IS NULL "
+            "AND publish_now_actor_id IS NULL) OR "
+            "(publish_now_idempotency_key IS NOT NULL AND publish_now_request_hash IS NOT NULL "
+            "AND publish_now_actor_id IS NOT NULL)",
+            name="publication_publish_now_identity",
+        ),
+        CheckConstraint(
+            "publish_now_request_hash IS NULL OR length(publish_now_request_hash) = 64",
+            name="publication_publish_now_hash",
+        ),
         Index("ix_publications_due", "status", "scheduled_at"),
         Index(
             "uq_publications_active_candidate",
@@ -117,6 +128,9 @@ class Publication(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     created_by_actor_id: Mapped[UUID] = mapped_column(Uuid())
     idempotency_key: Mapped[str] = mapped_column(String(128))
     request_hash: Mapped[str] = mapped_column(String(64))
+    publish_now_idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    publish_now_request_hash: Mapped[str | None] = mapped_column(String(64))
+    publish_now_actor_id: Mapped[UUID | None] = mapped_column(Uuid())
     correlation_id: Mapped[UUID | None] = mapped_column(Uuid())
     scheduled_event_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("event_outbox.event_id"), unique=True

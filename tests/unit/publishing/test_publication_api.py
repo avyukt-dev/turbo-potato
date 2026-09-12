@@ -66,10 +66,28 @@ def test_publication_api_auth_closed_request_safe_state_and_scheduling_only():
         ).status_code
         == 422
     )
+    publish_headers = {**headers, "Idempotency-Key": "publish-now"}
     assert (
         api.post(f"/api/v1/publications/{identifier}/publish-now", headers=headers).status_code
+        == 422
+    )
+    assert (
+        api.post(
+            f"/api/v1/publications/{identifier}/publish-now",
+            headers={**headers, "Idempotency-Key": "x" * 129},
+        ).status_code
+        == 422
+    )
+    assert (
+        api.post(
+            f"/api/v1/publications/{identifier}/publish-now", headers=publish_headers
+        ).status_code
         == 200
     )
+    replay = api.post(f"/api/v1/publications/{identifier}/publish-now", headers=publish_headers)
+    assert replay.status_code == 200
+    assert replay.json()["scheduled_at"] is not None
+    assert "publish_now_idempotency_key" not in replay.json()
     assert scheduler.scan() == 1
     assert (
         api.post(
