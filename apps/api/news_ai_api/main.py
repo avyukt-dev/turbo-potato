@@ -10,10 +10,18 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from news_ai_common.config import AppSettings
-from news_ai_review import ReviewConfigurationError, ReviewError, ReviewService
+from news_ai_publishing import PublicationError, PublicationService
+from news_ai_review import (
+    ApprovalEligibilityService,
+    ReviewConfigurationError,
+    ReviewError,
+    ReviewService,
+)
+from news_ai_social.config import load_instagram_config
 
 from .auth import ReviewerTokenAuthenticator
 from .dependencies import build_production_review_stack
+from .publications import create_publication_router
 from .readiness import ReadinessProbe, run_dependency_checks
 from .review import create_review_router
 
@@ -24,9 +32,26 @@ def create_app(
     readiness_probe: ReadinessProbe = run_dependency_checks,
     review_service: ReviewService | None = None,
     reviewer_authenticator: ReviewerTokenAuthenticator | None = None,
+    publication_service: PublicationService | None = None,
 ) -> FastAPI:
     resolved_settings = settings or AppSettings()
     application = FastAPI(title="News AI Social Media Manager", version="0.1.0")
+
+    @application.exception_handler(PublicationError)
+    async def publication_error(request: Request, exc: PublicationError) -> JSONResponse:
+        status_code = {"PUBLICATION_NOT_FOUND": 404, "FORBIDDEN": 403, "INVALID_SCHEDULE": 422}.get(
+            exc.code, 409
+        )
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "request_id": str(request.state.request_id),
+                }
+            },
+        )
 
     @application.middleware("http")
     async def request_identity(request: Request, call_next):
@@ -122,9 +147,25 @@ def create_app(
         application.state.review_stack = review_stack
         resolved_review_service = review_stack.service
         reviewer_authenticator = review_stack.authenticator
+        if publication_service is None:
+            publication_service = PublicationService(
+                resolved_review_service.session_factory,
+                ApprovalEligibilityService(
+                    resolved_review_service.session_factory,
+                    resolved_review_service.publishing_policy,
+                ),
+                platform_config=load_instagram_config(resolved_settings.config_dir),
+            )
     if resolved_review_service is not None:
         authenticator = reviewer_authenticator or ReviewerTokenAuthenticator(resolved_settings)
         application.include_router(create_review_router(resolved_review_service, authenticator))
+    if publication_service is not None:
+        application.include_router(
+            create_publication_router(
+                publication_service,
+                reviewer_authenticator or ReviewerTokenAuthenticator(resolved_settings),
+            )
+        )
 
     return application
 

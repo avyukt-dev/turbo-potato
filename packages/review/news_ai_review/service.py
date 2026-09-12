@@ -18,6 +18,7 @@ from news_ai_database import (
     ContentQualityCheck,
     ContentVariant,
     FactSheet,
+    MediaAsset,
     ReviewDecisionRecord,
     Story,
 )
@@ -25,10 +26,11 @@ from news_ai_domain import ReviewState, RiskLevel
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_evidence import FactSheetArtifact
 from news_ai_quality import QUALITY_METHODOLOGY_VERSION
+from news_ai_social import SocialAdapterError, canonical_public_media_url
 from pydantic import ValidationError
 from sqlalchemy import String, and_, case, cast, exists, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .contracts import (
     TERMINAL_DECISIONS,
@@ -151,7 +153,7 @@ class ReviewService:
                         "this exact artifact version already has a terminal decision"
                     )
                 self._require_reviewable(graph)
-                snapshot = self._artifact_snapshot(graph)
+                snapshot = self._artifact_snapshot(graph, lock_media=True)
                 artifact_hash = self._artifact_hash(snapshot)
                 record = ReviewDecisionRecord(
                     artifact_type=artifact.value,
@@ -318,11 +320,13 @@ class ReviewService:
             graph = self._load_graph(session, artifact_id)
             return self._detail(graph)
 
-    def is_currently_eligible(self, session: Session, variant: ContentVariant) -> bool:
+    def is_currently_eligible(
+        self, session: Session, variant: ContentVariant, *, lock: bool = False
+    ) -> bool:
         if variant.review_state is not ReviewState.APPROVED:
             return False
         try:
-            graph = self._load_graph(session, variant.id)
+            graph = self._load_graph(session, variant.id, lock=lock)
         except (ReviewNotFoundError, ReviewPreconditionError):
             return False
         decision = graph.existing_decision
@@ -350,8 +354,8 @@ class ReviewService:
         try:
             if self._precondition_error(graph, allow_approved=True) is not None:
                 return False
-            current_hash = self._artifact_hash(self._artifact_snapshot(graph))
-        except (ValidationError, ValueError, TypeError):
+            current_hash = self._artifact_hash(self._artifact_snapshot(graph, lock_media=lock))
+        except (ValidationError, ValueError, TypeError, ReviewPreconditionError):
             return False
         return current_hash == decision.artifact_hash
 
@@ -495,10 +499,12 @@ class ReviewService:
         if error is not None:
             raise ReviewPreconditionError(error)
 
-    def _artifact_snapshot(self, graph: _ReviewGraph) -> dict[str, Any]:
+    def _artifact_snapshot(
+        self, graph: _ReviewGraph, *, lock_media: bool = False
+    ) -> dict[str, Any]:
         variant = graph.variant
         draft = graph.draft
-        return {
+        snapshot = {
             "content_variant_id": str(variant.id),
             "content_draft_id": str(draft.id),
             "version": variant.version,
@@ -519,6 +525,51 @@ class ReviewService:
             "risk_level": graph.fact_sheet.risk_level.value,
             "sensitive_topics": graph.fact_sheet.sensitive_topics,
         }
+        # Empty-media historical approvals retain their original hash. Once
+        # caller-owned media exists, approval binds the reviewed bytes/format,
+        # not merely an ID that could later resolve to different material.
+        if variant.media_asset_ids:
+            session = object_session(variant)
+            if session is None:
+                raise ReviewPreconditionError("reviewed media reference is detached")
+            try:
+                ordered_ids = tuple(UUID(identifier) for identifier in variant.media_asset_ids)
+            except (TypeError, ValueError) as exc:
+                raise ReviewPreconditionError("reviewed media reference is invalid") from exc
+            statement = (
+                select(MediaAsset)
+                .where(MediaAsset.id.in_(ordered_ids))
+                .order_by(MediaAsset.id)
+                .execution_options(populate_existing=True)
+            )
+            if lock_media:
+                statement = statement.with_for_update()
+            by_id = {asset.id: asset for asset in session.scalars(statement)}
+            if len(by_id) != len(ordered_ids):
+                raise ReviewPreconditionError("reviewed media reference is missing")
+            media = []
+            for identifier in ordered_ids:
+                asset = by_id[identifier]
+                try:
+                    public_url = canonical_public_media_url(asset.public_url)
+                except SocialAdapterError as exc:
+                    raise ReviewPreconditionError(
+                        "reviewed media delivery reference is invalid"
+                    ) from exc
+                media.append(
+                    {
+                        "id": str(asset.id),
+                        "file_hash": asset.file_hash,
+                        "asset_type": asset.asset_type,
+                        "mime_type": asset.mime_type,
+                        "media_format": asset.source_metadata.get("media_format")
+                        if isinstance(asset.source_metadata, dict)
+                        else None,
+                        "public_url": public_url,
+                    }
+                )
+            snapshot["media_provenance"] = media
+        return snapshot
 
     @staticmethod
     def _quality_artifact(variant: ContentVariant) -> dict[str, Any]:

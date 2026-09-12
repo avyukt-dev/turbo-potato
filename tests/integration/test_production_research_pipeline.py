@@ -35,6 +35,7 @@ from news_ai_database import (
     FactCheck,
     FactSheet,
     ProcessedEvent,
+    Publication,
     ReviewDecisionRecord,
     Source,
     SourceFeed,
@@ -60,7 +61,7 @@ from news_ai_processor import (
 from news_ai_research_worker import build_production_research_stack
 from news_ai_review import ApprovalEligibilityService
 from redis.asyncio import Redis
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.getenv("NEWS_AI_DATABASE_URL")
@@ -764,12 +765,15 @@ async def _run_pipeline(
                     item.event_type.startswith("publication.")
                     for item in session.scalars(select(EventOutbox))
                 )
-                assert not inspect(engine).has_table("publications")
-            for stream in streams:
-                assert all(
-                    '"event_type":"publication.' not in fields.get("event", "")
-                    for _message_id, fields in await redis.xrange(stream)
-                )
+        # Stage 25 adds scheduling persistence, but human approval still does
+        # not create a publication or invoke an adapter automatically.
+        with factory() as session:
+            assert session.scalar(select(func.count()).select_from(Publication)) == 0
+        for stream in streams:
+            assert all(
+                '"event_type":"publication.' not in fields.get("event", "")
+                for _message_id, fields in await redis.xrange(stream)
+            )
 
         if not expected_pass:
             quality_call_count = len(

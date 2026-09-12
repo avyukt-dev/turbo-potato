@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qsl
 
 from news_ai_content import ContentFormat, ContentPlatform
+from pydantic import AnyHttpUrl, TypeAdapter
 
 from .config import InstagramPlatformConfig
 from .contracts import (
@@ -36,6 +37,20 @@ _SENSITIVE_QUERY_KEYS = {"access_token", "api_key", "apikey", "token", "password
 _READY_CONTAINER_STATES = {"FINISHED", "PUBLISHED"}
 _FAILED_CONTAINER_STATES = {"ERROR", "EXPIRED"}
 _THROTTLE_CODES = {4, 17, 32, 341, 613, *range(80000, 80015)}
+_HTTP_URL = TypeAdapter(AnyHttpUrl)
+
+
+def canonical_public_media_url(value: str | AnyHttpUrl) -> str:
+    """Validate and canonicalize an exact public delivery reference, without I/O."""
+
+    try:
+        url = _HTTP_URL.validate_python(value)
+    except (TypeError, ValueError) as exc:
+        raise SocialAdapterError(
+            "media URL is invalid", classification=SocialErrorClass.MEDIA
+        ) from exc
+    _validate_public_https_url(url)
+    return str(url)
 
 
 def validate_instagram_request(

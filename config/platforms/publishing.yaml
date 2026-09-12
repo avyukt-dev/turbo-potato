@@ -1,0 +1,4 @@
+schema_version: 1
+poll_interval_seconds: 30
+batch_size: 50
+publishing_paused: true
