@@ -55,13 +55,13 @@ def build_production_content_stack(
             response_format=AIResponseFormat.STRUCTURED,
         )
     )
-    editorial = EditorialConfigLoader(loader).load()
-    style = editorial.content_style
+    editorial_loader = EditorialConfigLoader(loader)
+    style = editorial_loader.load_content_style()
     service = ContentGenerationService(
         router,
         ContentGenerationPrompt.load(Path(settings.config_dir) / "prompts" / "content" / "v1.txt"),
         style,
-        editorial.priorities,
+        editorial_loader.load_publishing_policy(),
     )
     consumer = RedisStreamConsumer(
         redis_client,

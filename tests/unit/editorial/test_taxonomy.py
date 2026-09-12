@@ -17,7 +17,10 @@ from news_ai_editorial import (
     EditorialRiskPolicy,
     EditorialTaxonomyEngine,
     EditorialTaxonomyInput,
+    FuturePublishingPolicy,
     MandatoryReviewCategory,
+    MVPPublishingPolicy,
+    PublishingPolicyConfig,
     TaxonomyConfig,
 )
 from pydantic import ValidationError
@@ -62,6 +65,17 @@ def _snapshot() -> EditorialConfigSnapshot:
                 avoid_sensational_overstatement=True,
             ),
         ),
+        publishing_policy=PublishingPolicyConfig(
+            schema_version=1,
+            mvp=MVPPublishingPolicy(
+                external_publication_requires_human_approval=True,
+                low_risk_auto_approval_enabled=False,
+            ),
+            future=FuturePublishingPolicy(
+                low_risk_auto_approval_default_enabled=False,
+                mandatory_review_categories_may_bypass_human_review=False,
+            ),
+        ),
     )
 
 
@@ -103,6 +117,17 @@ defaults:
 """,
         encoding="utf-8",
     )
+    (editorial / "publishing-policy.yaml").write_text(
+        """schema_version: 1
+mvp:
+  external_publication_requires_human_approval: true
+  low_risk_auto_approval_enabled: false
+future:
+  low_risk_auto_approval_default_enabled: false
+  mandatory_review_categories_may_bypass_human_review: false
+""",
+        encoding="utf-8",
+    )
 
     snapshot = EditorialConfigLoader(ConfigLoader(tmp_path)).load()
 
@@ -112,6 +137,7 @@ defaults:
         snapshot.risk_policy.mandatory_review_categories
     )
     assert snapshot.content_style.default_target.platform == "INSTAGRAM"
+    assert snapshot.publishing_policy.mvp.external_publication_requires_human_approval is True
 
 
 def test_risk_policy_rejects_missing_religious_violence() -> None:
@@ -129,9 +155,23 @@ def test_risk_policy_rejects_missing_religious_violence() -> None:
 
 
 def test_mvp_publishing_policy_still_requires_human_approval() -> None:
-    policy = ConfigLoader("config").load_yaml("editorial/publishing-policy.yaml")
-    assert policy["mvp"]["external_publication_requires_human_approval"] is True
-    assert policy["mvp"]["low_risk_auto_approval_enabled"] is False
+    policy = EditorialConfigLoader(ConfigLoader("config")).load().publishing_policy
+    assert policy.mvp.external_publication_requires_human_approval is True
+    assert policy.mvp.low_risk_auto_approval_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("external_publication_requires_human_approval", False),
+        ("low_risk_auto_approval_enabled", True),
+    ],
+)
+def test_publishing_policy_rejects_disabled_mvp_safety_invariants(field: str, value: bool) -> None:
+    canonical = EditorialConfigLoader(ConfigLoader("config")).load().publishing_policy.model_dump()
+    canonical["mvp"][field] = value
+    with pytest.raises(ValidationError):
+        PublishingPolicyConfig.model_validate(canonical)
 
 
 def test_taxonomy_requires_every_canonical_category() -> None:

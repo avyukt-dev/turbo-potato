@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import news_ai_content.generation as generation_module
 import pytest
 from news_ai_ai import (
     AIProviderTimeoutError,
@@ -83,7 +84,7 @@ class ContentAI:
             "fact_sheet_version": brief["fact_sheet_version"],
             "platform": "INSTAGRAM",
             "format": "CAROUSEL",
-            "language": "en",
+            "language": request.input["generation_language"],
             "title": "What the records establish",
             "slides": [
                 {
@@ -118,7 +119,12 @@ def _factory() -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 
 
-def _seed(factory: sessionmaker[Session], *, version: int = 1) -> tuple[EventEnvelope, UUID, UUID]:
+def _seed(
+    factory: sessionmaker[Session],
+    *,
+    version: int = 1,
+    story_language: str | None = "en",
+) -> tuple[EventEnvelope, UUID, UUID]:
     story_id, fact_sheet_id, claim_id, check_id, evidence_id, source_id = (
         uuid4() for _ in range(6)
     )
@@ -129,6 +135,7 @@ def _seed(factory: sessionmaker[Session], *, version: int = 1) -> tuple[EventEnv
                 canonical_headline="Flood records reviewed",
                 summary="The measured level is supported; an estimate remains uncertain.",
                 status="VERIFIED",
+                language=story_language,
                 risk_level=RiskLevel.HIGH,
             )
         )
@@ -239,11 +246,12 @@ def _seed(factory: sessionmaker[Session], *, version: int = 1) -> tuple[EventEnv
 
 def _service(ai: ContentAI) -> ContentGenerationService:
     loader = ConfigLoader("config")
+    editorial = EditorialConfigLoader(loader)
     return ContentGenerationService(
         build_ai_router(loader, providers=(ai,)),
         ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v1.txt"),
         ContentStyleConfigLoader(loader).load(),
-        EditorialConfigLoader(loader).load().priorities,
+        editorial.load_publishing_policy(),
     )
 
 
@@ -275,6 +283,7 @@ def test_exact_fact_sheet_generates_not_ready_draft_variant_and_canonical_event(
     assert variant_artifacts[0].fact_sheet_id == fact_sheet_id
     assert variant_artifacts[0].claim_ids_used
     assert run.prompt_version == "v1" and run.validation_status == "VALIDATED"
+    assert run.input_hash == context.semantic_key
     assert generated.aggregate_id == draft.id
     assert generated.causation_id == event.event_id
     assert generated.correlation_id == event.correlation_id
@@ -336,12 +345,105 @@ def test_semantic_replay_with_new_event_uuid_reuses_durable_result_without_ai() 
     replay = event.model_copy(update={"event_id": uuid4(), "idempotency_key": str(uuid4())})
     with factory() as session:
         replay_context = service.load_context(session, replay)
+        assert replay_context.semantic_key == context.semantic_key
         second = service.existing_result(session, replay_context)
         assert session.scalar(select(func.count()).select_from(ContentDraft)) == 1
         assert session.scalar(select(func.count()).select_from(ContentVariant)) == 1
         assert session.scalar(select(func.count()).select_from(EventOutbox)) == 1
     assert second is not None and second.content_draft_id == first.content_draft_id
     assert ai.calls == 1
+
+
+def test_global_priorities_do_not_become_story_priority_topics() -> None:
+    factory = _factory()
+    event, _, _ = _seed(factory)
+    with factory() as session:
+        context = _service(ContentAI()).load_context(session, event)
+    assert context.brief.priority_topics == ()
+    assert "strongest supported material" in context.brief.editorial_angle
+
+
+def test_material_effective_brief_change_invalidates_semantic_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, ai = _factory(), ContentAI()
+    event, _, _ = _seed(factory)
+    service = _service(ai)
+    with factory() as session:
+        first_context = service.load_context(session, event)
+    first_execution = asyncio.run(service.generate(first_context, event))
+    with factory() as session, session.begin():
+        first = service.persist(
+            session, context=first_context, event=event, execution=first_execution
+        )
+
+    original_builder = generation_module.build_editorial_brief
+
+    def changed_builder(*args, **kwargs):
+        brief = original_builder(*args, **kwargs)
+        return brief.model_copy(update={"editorial_angle": "Lead with the local public impact."})
+
+    monkeypatch.setattr(generation_module, "build_editorial_brief", changed_builder)
+    changed_event = event.model_copy(update={"event_id": uuid4(), "idempotency_key": str(uuid4())})
+    with factory() as session:
+        second_context = service.load_context(session, changed_event)
+    assert second_context.semantic_key != first_context.semantic_key
+    second_execution = asyncio.run(service.generate(second_context, changed_event))
+    with factory() as session, session.begin():
+        second = service.persist(
+            session,
+            context=second_context,
+            event=changed_event,
+            execution=second_execution,
+        )
+    assert second.content_draft_id != first.content_draft_id
+    assert ai.calls == 2
+
+
+def test_story_language_overrides_default_and_is_explicit_model_input() -> None:
+    factory, ai = _factory(), ContentAI()
+    event, _, _ = _seed(factory, story_language="HI_in")
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+    assert context.generation_language == "hi-in"
+    execution = asyncio.run(service.generate(context, event))
+    assert execution.output.language == "hi-in"
+    assert ai.requests[0].language == "hi-in"
+    assert ai.requests[0].input["generation_language"] == "hi-in"
+
+
+def test_missing_or_invalid_story_language_uses_editorial_default() -> None:
+    for story_language in (None, "not a valid language tag"):
+        factory = _factory()
+        event, _, _ = _seed(factory, story_language=story_language)
+        with factory() as session:
+            context = _service(ContentAI()).load_context(session, event)
+        assert context.generation_language == "en"
+
+
+def test_wrong_ai_output_language_is_rejected() -> None:
+    factory, ai = _factory(), ContentAI(mutate={"language": "fr"})
+    event, _, _ = _seed(factory, story_language="en")
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+    with pytest.raises(PermanentEventError):
+        asyncio.run(service.generate(context, event))
+
+
+def test_effective_generation_language_changes_semantic_identity() -> None:
+    factory = _factory()
+    event, story_id, _ = _seed(factory, story_language="en")
+    service = _service(ContentAI())
+    with factory() as session:
+        english = service.load_context(session, event)
+    with factory() as session, session.begin():
+        session.get(Story, story_id).language = "hi"
+    with factory() as session:
+        hindi = service.load_context(session, event)
+    assert english.semantic_key != hindi.semantic_key
+    assert hindi.generation_language == "hi"
 
 
 def test_stale_fact_sheet_request_cannot_generate_or_mutate_v1() -> None:
@@ -518,6 +620,37 @@ def test_sensitive_domain_fixtures_preserve_status_label_risk_and_topics_in_cont
     assert context.brief.risk_level.value == risk
     assert context.brief.sensitive_topics == tuple(topics)
     assert context.brief.human_review_required is True
+
+
+def test_low_supported_content_still_requires_mvp_human_review() -> None:
+    factory, ai = _factory(), ContentAI()
+    event, story_id, _ = _seed(factory)
+    with factory() as session, session.begin():
+        story = session.get(Story, story_id)
+        story.risk_level = RiskLevel.LOW
+        sheet = session.get(FactSheet, event.aggregate_id)
+        claims = [dict(item) for item in sheet.claims_snapshot]
+        claims[0].update(status="SUPPORTED", risk_level="LOW", sensitive_topics=[])
+        checks = [dict(item) for item in sheet.fact_checks_snapshot]
+        checks[0].update(label="TRUE", review_required=False)
+        sheet.claims_snapshot = claims
+        sheet.fact_checks_snapshot = checks
+        sheet.risk_level = RiskLevel.LOW
+        sheet.sensitive_topics = []
+        sheet.unresolved_questions = []
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+    assert context.brief.human_review_required is True
+    execution = asyncio.run(service.generate(context, event))
+    with factory() as session, session.begin():
+        result = service.persist(session, context=context, event=event, execution=execution)
+    with factory() as session:
+        draft = session.get(ContentDraft, result.content_draft_id)
+        variant = session.get(ContentVariant, result.content_variant_ids[0])
+    assert draft.review_required is True
+    assert draft.review_state is ReviewState.NOT_READY
+    assert variant.review_state is ReviewState.NOT_READY
 
 
 def test_database_rejects_noncanonical_review_state() -> None:

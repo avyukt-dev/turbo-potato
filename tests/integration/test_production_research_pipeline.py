@@ -15,6 +15,7 @@ from news_ai_ai import (
     ProviderCapabilities,
     ProviderLocality,
 )
+from news_ai_ai_worker import build_production_content_stack
 from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
 from news_ai_common.config import AppSettings
 from news_ai_database import (
@@ -129,7 +130,7 @@ class DeterministicResearchAI:
                 "fact_sheet_version": brief["fact_sheet_version"],
                 "platform": "INSTAGRAM",
                 "format": "CAROUSEL",
-                "language": "en",
+                "language": request.input["generation_language"],
                 "title": "What the flood records show",
                 "slides": [
                     {
@@ -183,6 +184,13 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         consumer_name="production-e2e",
         ai_providers=(ai,),
     )
+    content_stack = build_production_content_stack(
+        settings,
+        session_factory=factory,
+        redis_client=redis,
+        consumer_name="production-content-e2e",
+        ai_providers=(ai,),
+    )
     normalizer = NormalizerEventWorker(
         RedisStreamConsumer(
             redis,
@@ -213,7 +221,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         stack.fact_check_worker,
         stack.story_verification_worker,
         stack.fact_sheet_worker,
-        stack.content_worker,
+        content_stack.worker,
     )
     try:
         for worker in workers:
@@ -338,7 +346,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         await dispatch_and_run(stack.fact_check_worker)
         await dispatch_and_run(stack.story_verification_worker)
         await dispatch_and_run(stack.fact_sheet_worker)
-        await dispatch_and_run(stack.content_worker)
+        await dispatch_and_run(content_stack.worker)
         await dispatcher.dispatch_once()
 
         with factory() as session:
@@ -517,6 +525,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
             assert content_calls[0].input_artifact_ids == (
                 f"fact_sheet:{sheet.id}:v{sheet.version}",
             )
+            assert content_calls[0].input["generation_language"] == story.language
 
         semantic_replay = envelope_from_outbox(content).model_copy(
             update={"event_id": uuid4(), "idempotency_key": f"replay:{uuid4()}"}
@@ -525,7 +534,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
             stream_for_event(EventType.CONTENT_REQUESTED),
             {"event": semantic_replay.model_dump_json()},
         )
-        duplicate_content = await stack.content_worker.run_once()
+        duplicate_content = await content_stack.worker.run_once()
         assert duplicate_content.duplicates == 1
         with factory() as session:
             assert len(list(session.scalars(select(ContentDraft)))) == 1

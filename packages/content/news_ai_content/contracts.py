@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
+
+
+def normalize_generation_language(value: str) -> str:
+    normalized = value.strip().replace("_", "-").lower()
+    if _LANGUAGE_RE.fullmatch(normalized) is None:
+        raise ValueError("language must be a simple BCP-47 style tag")
+    return normalized
 
 
 class ContentPlatform(StrEnum):
@@ -95,6 +105,11 @@ class ContentGenerationOutput(BaseModel):
     caption: str = Field(min_length=1, max_length=4000)
     hashtags: tuple[str, ...] = Field(default=(), max_length=30)
     claim_ids_used: tuple[UUID, ...] = Field(min_length=1)
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str) -> str:
+        return normalize_generation_language(value)
 
     @field_validator("hashtags")
     @classmethod

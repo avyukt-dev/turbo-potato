@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from news_ai_ai import (
@@ -19,15 +18,9 @@ from news_ai_ai import (
 )
 from news_ai_ai_worker import (
     CLAIM_CONSUMER_GROUP,
-    CONTENT_CONSUMER_GROUP,
     ClaimExtractionWorker,
-    ContentGenerationWorker,
 )
 from news_ai_common.config import AppSettings, ConfigLoader
-from news_ai_content import (
-    ContentGenerationPrompt,
-    ContentGenerationService,
-)
 from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import EventType, RedisStreamConsumer
 from news_ai_events.streams import stream_for_event
@@ -73,7 +66,6 @@ class ProductionResearchStack:
     fact_check_worker: FactCheckWorker
     story_verification_worker: StoryVerificationWorker
     fact_sheet_worker: FactSheetWorker
-    content_worker: ContentGenerationWorker
 
 
 def build_production_research_stack(
@@ -93,7 +85,6 @@ def build_production_research_stack(
     for task_type in (
         AITaskType.CLAIM_EXTRACTION,
         AITaskType.EVIDENCE_ASSESSMENT,
-        AITaskType.CONTENT_GENERATION,
     ):
         router.candidate_provider_ids(
             AIRequest(
@@ -103,7 +94,7 @@ def build_production_research_stack(
                 response_format=AIResponseFormat.STRUCTURED,
             )
         )
-    prompt_root = Path(settings.config_dir) / "prompts"
+    prompt_root = settings.config_dir / "prompts"
     claim_service = ClaimExtractionService(
         router,
         ClaimExtractionPrompt.load(prompt_root / "claim-extraction" / "v1.txt"),
@@ -122,21 +113,15 @@ def build_production_research_stack(
         assessor,
         source_resolver=source_resolver,
     )
+    editorial_loader = EditorialConfigLoader(loader)
     fact_check_engine = FactCheckEngine(
         FactCheckPolicyLoader(loader).load(),
-        EditorialConfigLoader(loader).load().risk_policy,
+        editorial_loader.load_risk_policy(),
         discovery_is_not_sufficient_for_serious_claims=(
             research_policy.source_policy.rules.discovery_is_not_sufficient_for_serious_claims
         ),
     )
-    editorial = EditorialConfigLoader(loader).load()
-    content_style = editorial.content_style
-    content_service = ContentGenerationService(
-        router,
-        ContentGenerationPrompt.load(prompt_root / "content" / "v1.txt"),
-        content_style,
-        editorial.priorities,
-    )
+    content_style = editorial_loader.load_content_style()
 
     def consumer(event_type: EventType, group: str) -> RedisStreamConsumer:
         return RedisStreamConsumer(
@@ -183,11 +168,6 @@ def build_production_research_stack(
                 requested_platforms=(content_style.default_target.platform,),
                 requested_formats=(content_style.default_target.format,),
             ),
-        ),
-        content_worker=ContentGenerationWorker(
-            consumer(EventType.CONTENT_REQUESTED, CONTENT_CONSUMER_GROUP),
-            session_factory,
-            content_service,
         ),
     )
 

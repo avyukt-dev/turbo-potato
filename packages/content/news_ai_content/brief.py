@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from news_ai_domain import ClaimVerificationStatus
-from news_ai_editorial import EditorialPrioritiesConfig
+from news_ai_editorial import PublishingPolicyConfig
 from news_ai_evidence import FactSheetArtifact
 
 from .configuration import ContentStyleConfig
@@ -14,7 +14,7 @@ def build_editorial_brief(
     fact_sheet: FactSheetArtifact,
     *,
     style: ContentStyleConfig,
-    priorities: EditorialPrioritiesConfig,
+    publishing_policy: PublishingPolicyConfig,
 ) -> EditorialBrief:
     if any(claim.status is ClaimVerificationStatus.UNASSESSED for claim in fact_sheet.claims):
         raise ValueError("Content generation cannot use an UNASSESSED Fact Sheet claim")
@@ -66,16 +66,9 @@ def build_editorial_brief(
         risk_level=fact_sheet.risk_level,
         sensitive_topics=fact_sheet.sensitive_topics,
         unresolved_questions=fact_sheet.unresolved_questions,
-        priority_topics=tuple(
-            key
-            for key, _ in sorted(priorities.topics.items(), key=lambda item: (-item[1], item[0]))
-        ),
+        # Global editorial weights guide prioritization; they are not story classifications.
+        priority_topics=(),
         style_rules=style.defaults.model_dump(),
         target=ContentTarget.model_validate(style.default_target.model_dump()),
-        human_review_required=bool(
-            fact_sheet.sensitive_topics
-            or fact_sheet.risk_level.value != "LOW"
-            or fact_sheet.unresolved_questions
-            or any(check.review_required for check in fact_sheet.fact_checks)
-        ),
+        human_review_required=(publishing_policy.mvp.external_publication_requires_human_approval),
     )

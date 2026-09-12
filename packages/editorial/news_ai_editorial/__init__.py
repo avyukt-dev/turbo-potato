@@ -13,7 +13,10 @@ from .taxonomy import (
     EditorialTaxonomyEngine,
     EditorialTaxonomyInput,
     EditorialTaxonomyResult,
+    FuturePublishingPolicy,
     MandatoryReviewCategory,
+    MVPPublishingPolicy,
+    PublishingPolicyConfig,
     TaxonomyConfig,
     TopicPrioritySignal,
 )
@@ -32,6 +35,9 @@ __all__ = [
     "EditorialTaxonomyInput",
     "EditorialTaxonomyResult",
     "MandatoryReviewCategory",
+    "FuturePublishingPolicy",
+    "MVPPublishingPolicy",
+    "PublishingPolicyConfig",
     "TaxonomyConfig",
     "TopicPrioritySignal",
 ]

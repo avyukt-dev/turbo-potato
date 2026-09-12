@@ -32,7 +32,7 @@ from news_ai_database import (
     Story,
 )
 from news_ai_domain import ReviewState
-from news_ai_editorial import EditorialPrioritiesConfig
+from news_ai_editorial import PublishingPolicyConfig
 from news_ai_events import (
     ContentRequestedV1,
     EventEnvelope,
@@ -44,7 +44,7 @@ from news_ai_events import (
 )
 from news_ai_events.outbox import build_outbox_record
 from news_ai_evidence import FactSheetArtifact, FactSheetGenerator
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,7 @@ from .contracts import (
     ContentTarget,
     ContentVariantArtifact,
     EditorialBrief,
+    normalize_generation_language,
 )
 
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
@@ -94,7 +95,13 @@ class ContentGenerationContext(BaseModel):
     fact_sheet: FactSheetArtifact
     brief: EditorialBrief
     target: ContentTarget
+    generation_language: str
     semantic_key: str
+
+    @field_validator("generation_language")
+    @classmethod
+    def normalize_language(cls, value: str) -> str:
+        return normalize_generation_language(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +138,7 @@ class ContentGenerationService:
         router: AIRouter,
         prompt: ContentGenerationPrompt,
         style: ContentStyleConfig,
-        priorities: EditorialPrioritiesConfig,
+        publishing_policy: PublishingPolicyConfig,
         *,
         producer: str = "ai-worker",
         producer_version: str = "0.1.0",
@@ -139,7 +146,7 @@ class ContentGenerationService:
         self.router = router
         self.prompt = prompt
         self.style = style
-        self.priorities = priorities
+        self.publishing_policy = publishing_policy
         self.producer = producer
         self.producer_version = producer_version
 
@@ -156,14 +163,26 @@ class ContentGenerationService:
         )
         if latest_version != row.version:
             raise StaleWorkError("content.requested references a superseded Fact Sheet")
+        story = session.get(Story, row.story_id)
+        if story is None:
+            raise PermanentEventError("content Fact Sheet story no longer exists")
+        generation_language = _effective_generation_language(
+            story.language, self.style.default_generation_language
+        )
         artifact = FactSheetGenerator.artifact_from_row(row)
-        brief = build_editorial_brief(artifact, style=self.style, priorities=self.priorities)
+        brief = build_editorial_brief(
+            artifact,
+            style=self.style,
+            publishing_policy=self.publishing_policy,
+        )
         if brief.target != target:
             raise PermanentEventError("requested target does not match configured Stage-21 target")
         operation_key = _semantic_key(
             {
                 "fact_sheet_id": row.id,
                 "fact_sheet_version": row.version,
+                "editorial_brief": brief.model_dump(mode="json"),
+                "generation_language": generation_language,
                 "target": target.model_dump(mode="json"),
                 "methodology_version": self.style.methodology_version,
                 "style": self.style.model_dump(mode="json"),
@@ -176,6 +195,7 @@ class ContentGenerationService:
             fact_sheet=artifact,
             brief=brief,
             target=target,
+            generation_language=generation_language,
             semantic_key=operation_key,
         )
 
@@ -255,6 +275,7 @@ class ContentGenerationService:
             input={
                 "immutable_fact_sheet": context.fact_sheet.model_dump(mode="json"),
                 "editorial_brief": context.brief.model_dump(mode="json"),
+                "generation_language": context.generation_language,
             },
             prompt=PromptReference(
                 prompt_id=self.prompt.prompt_id,
@@ -263,7 +284,7 @@ class ContentGenerationService:
             ),
             response_format=AIResponseFormat.STRUCTURED,
             correlation_id=event.correlation_id,
-            language=self.style.default_generation_language,
+            language=context.generation_language,
             sensitivity=context.fact_sheet.sensitive_topics,
             input_artifact_ids=(
                 f"fact_sheet:{context.fact_sheet.fact_sheet_id}:v{context.fact_sheet.version}",
@@ -353,7 +374,7 @@ class ContentGenerationService:
             editorial_brief_snapshot=current.brief.model_dump(mode="json"),
             risk_level=current.fact_sheet.risk_level,
             sensitive_topics=list(current.fact_sheet.sensitive_topics),
-            review_required=_review_required(current.fact_sheet),
+            review_required=current.brief.human_review_required,
             review_state=ReviewState.NOT_READY,
             created_by_ai_run_id=ai_run.id,
             semantic_key=current.semantic_key,
@@ -473,6 +494,7 @@ def _validate_output(
         or output.fact_sheet_version != context.fact_sheet.version
         or output.platform != context.target.platform
         or output.format != context.target.format
+        or output.language != context.generation_language
     ):
         raise ValueError("content output references the wrong input artifact or target")
     known_claims = {item.claim_id for item in context.brief.claims}
@@ -502,14 +524,13 @@ def _validate_output(
             raise ValueError("content output contains an unsupported quotation")
 
 
-def _review_required(fact_sheet: FactSheetArtifact) -> bool:
-    return bool(
-        fact_sheet.sensitive_topics
-        or fact_sheet.risk_level.value in {"MEDIUM", "HIGH", "CRITICAL"}
-        or fact_sheet.unresolved_questions
-        or any(check.review_required for check in fact_sheet.fact_checks)
-        or any(claim.status.value != "SUPPORTED" for claim in fact_sheet.claims)
-    )
+def _effective_generation_language(story_language: str | None, default_language: str) -> str:
+    if story_language:
+        try:
+            return normalize_generation_language(story_language)
+        except ValueError:
+            pass
+    return normalize_generation_language(default_language)
 
 
 def _normalize_space(value: str) -> str:
