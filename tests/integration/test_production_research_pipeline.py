@@ -559,7 +559,7 @@ async def _run_pipeline(
             assert quality_check.content_variant_version == variants[0].version
             assert quality_check.fact_sheet_id == sheet.id
             assert quality_check.fact_sheet_version == sheet.version
-            assert quality_check.methodology_version == "quality-gate-methodology-v1"
+            assert quality_check.methodology_version == "quality-gate-methodology-v2"
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"

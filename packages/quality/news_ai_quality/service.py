@@ -52,7 +52,9 @@ from sqlalchemy.orm import Session
 from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
 
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v1"
+# v1 predates exact content-artifact hash provenance. Historical v1 rows remain
+# immutable; all current assessments use hash-aware v2 semantic identity.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v2"
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
@@ -351,7 +353,17 @@ class QualityAssessmentService:
                 EventOutbox.idempotency_key == self._event_idempotency_key(context),
             )
         )
-        if len(checks) != len(keys) or event is None:
+        checks_by_key = {item.semantic_key: item for item in checks}
+        if (
+            len(checks_by_key) != len(keys)
+            or event is None
+            or any(
+                check.methodology_version != QUALITY_METHODOLOGY_VERSION
+                or check.content_artifact_hash != variant.artifact_hash
+                for variant in context.variants
+                if (check := checks_by_key.get(variant.semantic_key)) is not None
+            )
+        ):
             return None
         return QualityResult(
             context.draft_id,
@@ -469,6 +481,10 @@ class QualityAssessmentService:
             raise StaleWorkError("quality execution no longer matches current variants")
         checks: list[ContentQualityCheck] = []
         for execution in executions:
+            if len(execution.variant.artifact_hash) != 64:
+                raise PermanentEventError(
+                    "current quality methodology requires exact content hash provenance"
+                )
             run = self._persist_ai_run(session, execution, current, event)
             decision = execution.decision
             check = ContentQualityCheck(

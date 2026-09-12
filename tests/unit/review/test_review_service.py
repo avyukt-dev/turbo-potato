@@ -21,6 +21,7 @@ from news_ai_database import (
 )
 from news_ai_domain import ReviewState, RiskLevel
 from news_ai_editorial import EditorialConfigLoader
+from news_ai_quality import QUALITY_METHODOLOGY_VERSION
 from news_ai_review import (
     ApprovalEligibilityService,
     ArtifactType,
@@ -171,7 +172,7 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
                 content_draft_id=draft.id,
                 platform="INSTAGRAM",
                 format="CAROUSEL",
-                language="fr" if index else "en",
+                language=("en" if index == 0 else "fr" if index == 1 else f"x-{index}"),
                 title=f"Gauge record {index}",
                 body="Measurement\nThe gauge measured two metres.",
                 caption="Official record: two metres.",
@@ -202,7 +203,7 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
                     content_variant_version=1,
                     fact_sheet_id=sheet_id,
                     fact_sheet_version=1,
-                    methodology_version="quality-gate-methodology-v1",
+                    methodology_version=QUALITY_METHODOLOGY_VERSION,
                     content_artifact_hash=content_artifact_hash(
                         {
                             "content_variant_id": str(variant.id),
@@ -518,6 +519,58 @@ def test_queue_and_detail_are_bounded_side_effect_free_evidence_views() -> None:
         assert session.get(ContentVariant, variant_id).review_state is ReviewState.READY_FOR_REVIEW
         assert session.scalar(select(ReviewDecisionRecord)) is None
         assert session.scalar(select(AuditLog)) is None
+
+
+def test_first_queue_page_hydrates_only_a_bounded_subset(monkeypatch) -> None:
+    factory = _factory()
+    seed_reviewable(factory, variants=205)
+    service = ReviewService(factory, _policy())
+    original = service._load_graph
+    loaded = 0
+
+    def counted(*args, **kwargs):
+        nonlocal loaded
+        loaded += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_load_graph", counted)
+    first = service.queue(limit=10)
+    second = service.queue(limit=10)
+
+    assert first.total == 205
+    assert len(first.items) == 10
+    assert [item.artifact_id for item in first.items] == [item.artifact_id for item in second.items]
+    assert loaded == 20
+
+
+def test_queue_overfetches_in_bounded_batches_to_skip_invalid_candidates(monkeypatch) -> None:
+    factory = _factory()
+    variant_ids = seed_reviewable(factory, variants=70)
+    old = datetime(2020, 1, 1, tzinfo=UTC)
+    new = datetime(2030, 1, 1, tzinfo=UTC)
+    with factory() as session, session.begin():
+        for index, variant_id in enumerate(variant_ids):
+            variant = session.get(ContentVariant, variant_id)
+            if index < 55:
+                variant.caption = "Changed after its exact quality assessment"
+                variant.updated_at = old
+            else:
+                variant.updated_at = new
+    service = ReviewService(factory, _policy())
+    original = service._load_graph
+    loaded = 0
+
+    def counted(*args, **kwargs):
+        nonlocal loaded
+        loaded += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_load_graph", counted)
+    page = service.queue(limit=10)
+
+    assert len(page.items) == 10
+    assert 55 < loaded <= 100
+    assert loaded < len(variant_ids)
 
 
 def test_superseded_item_is_not_queued_but_remains_visible_as_historical_detail() -> None:

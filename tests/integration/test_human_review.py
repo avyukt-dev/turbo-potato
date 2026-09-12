@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 from uuid import uuid4
@@ -10,15 +11,27 @@ from news_ai_database import (
     AuditLog,
     Base,
     ContentDraft,
+    ContentQualityCheck,
     ContentVariant,
+    EventOutbox,
     FactSheet,
     ReviewDecisionRecord,
     Story,
 )
 from news_ai_domain import ReviewState
-from news_ai_review import ReviewConflictError, ReviewPreconditionError, ReviewService
-from sqlalchemy import create_engine, select
+from news_ai_events import EventEnvelope, EventType
+from news_ai_events.outbox import build_outbox_record
+from news_ai_quality import QUALITY_METHODOLOGY_VERSION
+from news_ai_review import (
+    ApprovalEligibilityService,
+    ReviewConflictError,
+    ReviewPreconditionError,
+    ReviewService,
+)
+from sqlalchemy import create_engine, func, select
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import Session, sessionmaker
+from unit.quality import test_quality_gate as quality_fixtures
 from unit.review.test_review_service import _policy, _principal, decide, seed_reviewable
 
 DATABASE_URL = os.getenv("NEWS_AI_DATABASE_URL")
@@ -139,3 +152,167 @@ def test_fact_sheet_correction_serializes_before_delayed_approval(
     with postgres_factory() as session:
         assert session.scalar(select(ReviewDecisionRecord)) is None
         assert session.get(ContentVariant, variant_id).review_state is ReviewState.READY_FOR_REVIEW
+
+
+def test_hashless_v1_quality_is_recovered_by_idempotent_v2_reassessment(
+    postgres_factory: sessionmaker[Session],
+) -> None:
+    event, draft_id, variant_id = quality_fixtures._seed(postgres_factory)
+    with postgres_factory() as session, session.begin():
+        draft = session.get(ContentDraft, draft_id)
+        variant = session.get(ContentVariant, variant_id)
+        draft.review_state = ReviewState.READY_FOR_REVIEW
+        variant.review_state = ReviewState.READY_FOR_REVIEW
+        legacy = ContentQualityCheck(
+            content_draft_id=draft_id,
+            content_variant_id=variant_id,
+            content_variant_version=1,
+            fact_sheet_id=draft.fact_sheet_id,
+            fact_sheet_version=draft.fact_sheet_version,
+            methodology_version="quality-gate-methodology-v1",
+            content_artifact_hash=None,
+            factual_accuracy_passed=True,
+            source_alignment_passed=True,
+            citation_alignment_passed=True,
+            style_passed=True,
+            unsupported_claims=[],
+            fabricated_quotes=[],
+            incorrect_names=[],
+            incorrect_dates=[],
+            incorrect_numbers=[],
+            missing_context=[],
+            defamation_risk=False,
+            sensitive_topic_error=False,
+            passed=True,
+            review_required=True,
+            notes=[],
+            ai_run_id=None,
+            semantic_key=f"legacy-quality-v1:{variant_id}",
+        )
+        session.add(legacy)
+        session.add(
+            build_outbox_record(
+                EventEnvelope(
+                    event_type=EventType.CONTENT_QUALITY_CHECKED,
+                    producer="ai-worker",
+                    producer_version="0.1.0",
+                    aggregate_type="content_draft",
+                    aggregate_id=draft_id,
+                    correlation_id=event.correlation_id,
+                    causation_id=event.event_id,
+                    idempotency_key=(
+                        f"content.quality_checked:{draft_id}:1:quality-gate-methodology-v1:legacy"
+                    ),
+                    payload={
+                        "content_draft_id": str(draft_id),
+                        "passed": True,
+                        "fact_check_passed": True,
+                        "source_check_passed": True,
+                        "style_check_passed": True,
+                        "risk_level": draft.risk_level.value,
+                        "review_required": True,
+                    },
+                )
+            )
+        )
+        session.flush()
+        legacy_id = legacy.id
+
+    review = ReviewService(postgres_factory, _policy())
+    with pytest.raises(ReviewPreconditionError):
+        decide(review, variant_id, _principal(), key="legacy-cannot-approve")
+
+    ai = quality_fixtures.QualityAI()
+    service = quality_fixtures._service(ai)
+    context, first = quality_fixtures._run(postgres_factory, service, event)
+    replay_event = event.model_copy(
+        update={"event_id": uuid4(), "idempotency_key": f"quality-replay:{uuid4()}"}
+    )
+    with postgres_factory() as session:
+        replay_context = service.load_context(session, replay_event)
+        replay = service.existing_result(session, replay_context)
+        checks = tuple(
+            session.scalars(select(ContentQualityCheck).order_by(ContentQualityCheck.created_at))
+        )
+        quality_events = tuple(
+            session.scalars(
+                select(EventOutbox).where(
+                    EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value
+                )
+            )
+        )
+        assert session.get(ContentQualityCheck, legacy_id).content_artifact_hash is None
+        assert [item.methodology_version for item in checks] == [
+            "quality-gate-methodology-v1",
+            QUALITY_METHODOLOGY_VERSION,
+        ]
+        assert checks[1].content_artifact_hash == context.variants[0].artifact_hash
+        assert len(quality_events) == 2
+        v2_events = [
+            item for item in quality_events if QUALITY_METHODOLOGY_VERSION in item.idempotency_key
+        ]
+        assert len(v2_events) == 1
+        assert replay is not None and replay.event_id == first.event_id
+        v2_check_id = checks[1].id
+    assert ai.calls == 1
+
+    decide(review, variant_id, _principal(), key="approve-after-v2")
+    assert ApprovalEligibilityService(postgres_factory, _policy()).is_exact_version_approved(
+        variant_id
+    )
+    with postgres_factory() as session:
+        assert session.scalar(select(ReviewDecisionRecord)).quality_check_id == v2_check_id
+
+
+def test_review_reloads_variant_after_waiting_for_story_lock(
+    postgres_factory: sessionmaker[Session],
+) -> None:
+    variant_id = seed_reviewable(postgres_factory)[0]
+    service = ReviewService(postgres_factory, _policy())
+    engine = postgres_factory.kw["bind"]
+    routing_read = Event()
+    review_thread: dict[str, int] = {}
+
+    blocker = postgres_factory()
+    transaction = blocker.begin()
+    variant = blocker.get(ContentVariant, variant_id)
+    draft = blocker.get(ContentDraft, variant.content_draft_id)
+    blocker.scalar(select(Story).where(Story.id == draft.story_id).with_for_update())
+    variant.version = 2
+    variant.review_state = ReviewState.NOT_READY
+    blocker.flush()
+
+    def observe_routing(_conn, _cursor, statement, _parameters, _context, _many):
+        if (
+            threading.get_ident() == review_thread.get("id")
+            and "content_variants.content_draft_id" in statement
+        ):
+            routing_read.set()
+
+    def approve_old_version():
+        review_thread["id"] = threading.get_ident()
+        try:
+            return decide(service, variant_id, _principal(), key="post-lock-freshness")
+        except ReviewConflictError as exc:
+            return exc
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", observe_routing)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(approve_old_version)
+            assert routing_read.wait(timeout=5)
+            transaction.commit()
+            blocker.close()
+            outcome = future.result(timeout=15)
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", observe_routing)
+        if blocker.is_active:
+            blocker.close()
+
+    assert isinstance(outcome, ReviewConflictError)
+    with postgres_factory() as session:
+        assert session.scalar(select(func.count()).select_from(ReviewDecisionRecord)) == 0
+        assert session.scalar(select(func.count()).select_from(AuditLog)) == 0
+        current = session.get(ContentVariant, variant_id)
+        assert current.version == 2
+        assert current.review_state is ReviewState.NOT_READY

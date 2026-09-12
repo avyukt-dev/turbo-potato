@@ -24,8 +24,9 @@ from news_ai_database import (
 from news_ai_domain import ReviewState, RiskLevel
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_evidence import FactSheetArtifact
+from news_ai_quality import QUALITY_METHODOLOGY_VERSION
 from pydantic import ValidationError
-from sqlalchemy import case, func, select
+from sqlalchemy import String, and_, case, cast, exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -50,6 +51,8 @@ from .errors import (
 
 SessionFactory = Callable[[], Session]
 _REVIEWABLE = frozenset({ReviewState.READY_FOR_REVIEW, ReviewState.IN_REVIEW})
+_QUEUE_BATCH_MIN = 50
+_QUEUE_BATCH_MAX = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,10 +220,43 @@ class ReviewService:
             (ContentDraft.risk_level == RiskLevel.MEDIUM, 2),
             else_=3,
         )
+        latest_fact_sheet_version = (
+            select(func.max(FactSheet.version))
+            .where(FactSheet.story_id == ContentDraft.story_id)
+            .correlate(ContentDraft)
+            .scalar_subquery()
+        )
+        terminal_decision_exists = exists().where(
+            ReviewDecisionRecord.artifact_type == ArtifactType.CONTENT_VARIANT.value,
+            ReviewDecisionRecord.artifact_id == ContentVariant.id,
+            ReviewDecisionRecord.artifact_version == ContentVariant.version,
+        )
+        current_quality_exists = exists().where(
+            ContentQualityCheck.content_draft_id == ContentDraft.id,
+            ContentQualityCheck.content_variant_id == ContentVariant.id,
+            ContentQualityCheck.content_variant_version == ContentVariant.version,
+            ContentQualityCheck.fact_sheet_id == FactSheet.id,
+            ContentQualityCheck.fact_sheet_version == FactSheet.version,
+            ContentQualityCheck.methodology_version == QUALITY_METHODOLOGY_VERSION,
+            ContentQualityCheck.content_artifact_hash.is_not(None),
+            ContentQualityCheck.passed.is_(True),
+            ContentQualityCheck.review_required.is_(True),
+        )
+        durable_filters = [
+            ContentVariant.review_state.in_(tuple(_REVIEWABLE)),
+            ContentDraft.fact_sheet_version == FactSheet.version,
+            FactSheet.version == latest_fact_sheet_version,
+            ContentDraft.risk_level == FactSheet.risk_level,
+            ContentDraft.sensitive_topics == FactSheet.sensitive_topics,
+            ContentDraft.review_required.is_(True),
+            ~terminal_decision_exists,
+            current_quality_exists,
+        ]
         statement = (
             select(ContentVariant.id)
             .join(ContentDraft, ContentDraft.id == ContentVariant.content_draft_id)
-            .where(ContentVariant.review_state.in_(tuple(_REVIEWABLE)))
+            .join(FactSheet, FactSheet.id == ContentDraft.fact_sheet_id)
+            .where(and_(*durable_filters))
             .order_by(risk_rank, ContentVariant.updated_at, ContentVariant.id)
         )
         if risk_level is not None:
@@ -233,26 +269,48 @@ class ReviewService:
             statement = statement.where(ContentVariant.format == format)
         if language is not None:
             statement = statement.where(ContentVariant.language == language)
+        if sensitive_topic is not None:
+            statement = statement.where(
+                cast(FactSheet.sensitive_topics, String).contains(f'"{sensitive_topic}"')
+            )
 
         items: list[ReviewQueueItem] = []
+        eligible_seen = 0
+        sql_offset = 0
+        batch_size = min(_QUEUE_BATCH_MAX, max(_QUEUE_BATCH_MIN, limit * 2))
         with self.session_factory() as session:
-            for variant_id in session.scalars(statement):
-                graph = self._load_graph(session, variant_id)
-                if (
-                    self._precondition_error(graph) is not None
-                    or graph.existing_decision is not None
-                ):
-                    continue
-                if (
-                    sensitive_topic is not None
-                    and sensitive_topic not in graph.fact_sheet.sensitive_topics
-                ):
-                    continue
-                items.append(self._queue_item(graph))
-        total = len(items)
-        return ReviewQueuePage(
-            items=tuple(items[offset : offset + limit]), offset=offset, limit=limit, total=total
-        )
+            total = (
+                session.scalar(
+                    select(func.count()).select_from(statement.order_by(None).subquery())
+                )
+                or 0
+            )
+            while len(items) < limit:
+                variant_ids = tuple(session.scalars(statement.offset(sql_offset).limit(batch_size)))
+                if not variant_ids:
+                    break
+                sql_offset += len(variant_ids)
+                for variant_id in variant_ids:
+                    graph = self._load_graph(session, variant_id)
+                    if (
+                        self._precondition_error(graph) is not None
+                        or graph.existing_decision is not None
+                    ):
+                        continue
+                    if (
+                        sensitive_topic is not None
+                        and sensitive_topic not in graph.fact_sheet.sensitive_topics
+                    ):
+                        continue
+                    if eligible_seen < offset:
+                        eligible_seen += 1
+                        continue
+                    items.append(self._queue_item(graph))
+                    if len(items) == limit:
+                        break
+                if len(variant_ids) < batch_size:
+                    break
+        return ReviewQueuePage(items=tuple(items), offset=offset, limit=limit, total=total)
 
     def detail(self, *, artifact_type: str, artifact_id: UUID) -> ReviewDetail:
         self._artifact_type(artifact_type)
@@ -305,28 +363,41 @@ class ReviewService:
         lock: bool = False,
         expected_version: int | None = None,
     ) -> _ReviewGraph:
-        candidate = session.get(ContentVariant, variant_id)
-        if candidate is None:
+        routing = session.execute(
+            select(ContentVariant.content_draft_id, ContentDraft.story_id)
+            .join(ContentDraft, ContentDraft.id == ContentVariant.content_draft_id)
+            .where(ContentVariant.id == variant_id)
+        ).one_or_none()
+        if routing is None:
             raise ReviewNotFoundError("review artifact was not found")
-        draft_candidate = session.get(ContentDraft, candidate.content_draft_id)
-        if draft_candidate is None:
-            raise ReviewPreconditionError("content draft is missing")
+        draft_id, story_id = routing
         if lock:
             story = session.scalar(
-                select(Story).where(Story.id == draft_candidate.story_id).with_for_update()
+                select(Story)
+                .where(Story.id == story_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
             draft = session.scalar(
-                select(ContentDraft).where(ContentDraft.id == draft_candidate.id).with_for_update()
+                select(ContentDraft)
+                .where(ContentDraft.id == draft_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
             variant = session.scalar(
-                select(ContentVariant).where(ContentVariant.id == variant_id).with_for_update()
+                select(ContentVariant)
+                .where(ContentVariant.id == variant_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         else:
-            story = session.get(Story, draft_candidate.story_id)
-            draft = draft_candidate
-            variant = candidate
+            story = session.get(Story, story_id)
+            draft = session.get(ContentDraft, draft_id)
+            variant = session.get(ContentVariant, variant_id)
         if story is None or draft is None or variant is None:
             raise ReviewPreconditionError("review artifact graph is incomplete")
+        if draft.story_id != story.id or variant.content_draft_id != draft.id:
+            raise ReviewPreconditionError("review artifact routing changed during locking")
         if expected_version is not None and variant.version != expected_version:
             raise ReviewConflictError("requested artifact version is stale")
         fact_sheet = session.get(FactSheet, draft.fact_sheet_id)
@@ -343,6 +414,8 @@ class ReviewService:
                 ContentQualityCheck.content_draft_id == draft.id,
                 ContentQualityCheck.content_variant_id == variant.id,
                 ContentQualityCheck.content_variant_version == variant.version,
+                ContentQualityCheck.methodology_version == QUALITY_METHODOLOGY_VERSION,
+                ContentQualityCheck.content_artifact_hash.is_not(None),
             )
             .order_by(ContentQualityCheck.created_at.desc(), ContentQualityCheck.id.desc())
             .limit(1)
@@ -404,6 +477,7 @@ class ReviewService:
             or quality.content_variant_version != graph.variant.version
             or quality.fact_sheet_id != graph.fact_sheet.id
             or quality.fact_sheet_version != graph.fact_sheet.version
+            or quality.methodology_version != QUALITY_METHODOLOGY_VERSION
             or not quality.passed
             or not quality.review_required
         ):
@@ -561,6 +635,7 @@ class ReviewService:
             "fact_sheet_id": str(check.fact_sheet_id),
             "fact_sheet_version": check.fact_sheet_version,
             "methodology_version": check.methodology_version,
+            "content_artifact_hash": check.content_artifact_hash,
             "passed": check.passed,
             "review_required": check.review_required,
             "factual_accuracy_passed": check.factual_accuracy_passed,
