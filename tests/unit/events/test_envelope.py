@@ -147,6 +147,67 @@ def test_unsupported_event_schema_version_is_rejected() -> None:
         _event(schema_version=2)
 
 
+def test_canonical_content_requested_and_generated_payloads_are_accepted() -> None:
+    story_id, sheet_id, draft_id, variant_id, run_id = (uuid4() for _ in range(5))
+    requested = EventEnvelope(
+        event_type=EventType.CONTENT_REQUESTED,
+        producer="research-worker",
+        producer_version="0.1.0",
+        aggregate_type="fact_sheet",
+        aggregate_id=sheet_id,
+        idempotency_key=f"content.requested:{sheet_id}:1",
+        payload={
+            "story_id": str(story_id),
+            "fact_sheet_id": str(sheet_id),
+            "requested_platforms": ["INSTAGRAM"],
+            "requested_formats": ["CAROUSEL"],
+        },
+    )
+    generated = EventEnvelope(
+        event_type=EventType.CONTENT_GENERATED,
+        producer="ai-worker",
+        producer_version="0.1.0",
+        aggregate_type="content_draft",
+        aggregate_id=draft_id,
+        causation_id=requested.event_id,
+        correlation_id=requested.correlation_id,
+        idempotency_key=f"content.generated:{draft_id}:1",
+        payload={
+            "story_id": str(story_id),
+            "content_draft_id": str(draft_id),
+            "content_variant_ids": [str(variant_id)],
+            "ai_run_id": str(run_id),
+        },
+    )
+    assert requested.payload["requested_platforms"] == ["INSTAGRAM"]
+    assert generated.payload["content_variant_ids"] == [str(variant_id)]
+
+
+def test_content_generated_rejects_missing_extra_and_duplicate_variant_ids() -> None:
+    story_id, draft_id, variant_id, run_id = (uuid4() for _ in range(4))
+    base = {
+        "story_id": str(story_id),
+        "content_draft_id": str(draft_id),
+        "content_variant_ids": [str(variant_id)],
+        "ai_run_id": str(run_id),
+    }
+    for payload in (
+        {key: value for key, value in base.items() if key != "ai_run_id"},
+        {**base, "review_state": "APPROVED"},
+        {**base, "content_variant_ids": [str(variant_id), str(variant_id)]},
+    ):
+        with pytest.raises(ValidationError):
+            EventEnvelope(
+                event_type=EventType.CONTENT_GENERATED,
+                producer="ai-worker",
+                producer_version="0.1.0",
+                aggregate_type="content_draft",
+                aggregate_id=draft_id,
+                idempotency_key="invalid-content-generated",
+                payload=payload,
+            )
+
+
 def test_payload_datetime_must_be_timezone_aware() -> None:
     publication_id = uuid4()
     with pytest.raises(ValidationError, match="scheduled_at must be timezone-aware"):

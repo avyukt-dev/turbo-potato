@@ -6,6 +6,7 @@ from .envelope import EventEnvelope
 from .idempotency import mark_processed, was_processed
 from .payloads import (
     ClaimsExtractedV1,
+    ContentGeneratedV1,
     ContentRequestedV1,
     EvidenceCollectedV1,
     EvidenceRequestedV1,
@@ -34,6 +35,7 @@ __all__ = [
     "EventType",
     "ClaimsExtractedV1",
     "ContentRequestedV1",
+    "ContentGeneratedV1",
     "EvidenceCollectedV1",
     "EvidenceRequestedV1",
     "FactCheckCompletedV1",

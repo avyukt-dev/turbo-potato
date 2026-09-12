@@ -7,6 +7,9 @@ from news_ai_common.config import ConfigLoader
 from news_ai_domain import RiskLevel
 from news_ai_editorial import (
     CategoryAssignment,
+    ContentStyleConfig,
+    ContentStyleDefaults,
+    ContentStyleTarget,
     EditorialCategory,
     EditorialConfigLoader,
     EditorialConfigSnapshot,
@@ -14,7 +17,10 @@ from news_ai_editorial import (
     EditorialRiskPolicy,
     EditorialTaxonomyEngine,
     EditorialTaxonomyInput,
+    FuturePublishingPolicy,
     MandatoryReviewCategory,
+    MVPPublishingPolicy,
+    PublishingPolicyConfig,
     TaxonomyConfig,
 )
 from pydantic import ValidationError
@@ -46,6 +52,30 @@ def _snapshot() -> EditorialConfigSnapshot:
             },
         ),
         risk_policy=_risk_policy(),
+        content_style=ContentStyleConfig(
+            schema_version=1,
+            methodology_version="content-generation-methodology-v1",
+            default_target=ContentStyleTarget(platform="INSTAGRAM", format="CAROUSEL"),
+            default_tone="clear and measured",
+            default_generation_language="en",
+            defaults=ContentStyleDefaults(
+                source_aware=True,
+                explicit_about_uncertainty=True,
+                avoid_unsupported_motive_attribution=True,
+                avoid_sensational_overstatement=True,
+            ),
+        ),
+        publishing_policy=PublishingPolicyConfig(
+            schema_version=1,
+            mvp=MVPPublishingPolicy(
+                external_publication_requires_human_approval=True,
+                low_risk_auto_approval_enabled=False,
+            ),
+            future=FuturePublishingPolicy(
+                low_risk_auto_approval_default_enabled=False,
+                mandatory_review_categories_may_bypass_human_review=False,
+            ),
+        ),
     )
 
 
@@ -73,6 +103,31 @@ topics:
         + "".join(f"  - {category.value}\n" for category in CANONICAL_REVIEW_CATEGORIES),
         encoding="utf-8",
     )
+    (editorial / "content-style.yaml").write_text(
+        """schema_version: 1
+methodology_version: content-generation-methodology-v1
+default_target: {platform: INSTAGRAM, format: CAROUSEL}
+default_tone: clear and measured
+default_generation_language: en
+defaults:
+  source_aware: true
+  explicit_about_uncertainty: true
+  avoid_unsupported_motive_attribution: true
+  avoid_sensational_overstatement: true
+""",
+        encoding="utf-8",
+    )
+    (editorial / "publishing-policy.yaml").write_text(
+        """schema_version: 1
+mvp:
+  external_publication_requires_human_approval: true
+  low_risk_auto_approval_enabled: false
+future:
+  low_risk_auto_approval_default_enabled: false
+  mandatory_review_categories_may_bypass_human_review: false
+""",
+        encoding="utf-8",
+    )
 
     snapshot = EditorialConfigLoader(ConfigLoader(tmp_path)).load()
 
@@ -81,6 +136,8 @@ topics:
     assert MandatoryReviewCategory.RELIGIOUS_VIOLENCE in (
         snapshot.risk_policy.mandatory_review_categories
     )
+    assert snapshot.content_style.default_target.platform == "INSTAGRAM"
+    assert snapshot.publishing_policy.mvp.external_publication_requires_human_approval is True
 
 
 def test_risk_policy_rejects_missing_religious_violence() -> None:
@@ -95,6 +152,26 @@ def test_risk_policy_rejects_missing_religious_violence() -> None:
             risk_levels=tuple(RiskLevel),
             mandatory_review_categories=categories,
         )
+
+
+def test_mvp_publishing_policy_still_requires_human_approval() -> None:
+    policy = EditorialConfigLoader(ConfigLoader("config")).load().publishing_policy
+    assert policy.mvp.external_publication_requires_human_approval is True
+    assert policy.mvp.low_risk_auto_approval_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("external_publication_requires_human_approval", False),
+        ("low_risk_auto_approval_enabled", True),
+    ],
+)
+def test_publishing_policy_rejects_disabled_mvp_safety_invariants(field: str, value: bool) -> None:
+    canonical = EditorialConfigLoader(ConfigLoader("config")).load().publishing_policy.model_dump()
+    canonical["mvp"][field] = value
+    with pytest.raises(ValidationError):
+        PublishingPolicyConfig.model_validate(canonical)
 
 
 def test_taxonomy_requires_every_canonical_category() -> None:

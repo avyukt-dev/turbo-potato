@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from news_ai_common.config import ConfigDomain, ConfigLoader
 from news_ai_domain import RiskLevel
@@ -132,11 +132,80 @@ class EditorialPrioritiesConfig(BaseModel):
         return value
 
 
+class ContentStyleTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    platform: Literal["INSTAGRAM"]
+    format: Literal["CAROUSEL"]
+
+
+class ContentStyleDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_aware: bool
+    explicit_about_uncertainty: bool
+    avoid_unsupported_motive_attribution: bool
+    avoid_sensational_overstatement: bool
+
+    @model_validator(mode="after")
+    def require_safety_defaults(self) -> ContentStyleDefaults:
+        if not all(self.model_dump().values()):
+            raise ValueError("canonical content safety defaults cannot be disabled")
+        return self
+
+
+class ContentStyleConfig(BaseModel):
+    """Editorial-owned presentation policy; factual methodology does not belong here."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(ge=1, le=1)
+    methodology_version: str = Field(min_length=1, max_length=64)
+    default_target: ContentStyleTarget
+    default_tone: str = Field(min_length=1, max_length=128)
+    default_generation_language: str = Field(min_length=2, max_length=32)
+    defaults: ContentStyleDefaults
+
+    @field_validator("default_generation_language")
+    @classmethod
+    def normalize_generation_language(cls, value: str) -> str:
+        normalized = value.strip().replace("_", "-").lower()
+        if re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})*", normalized) is None:
+            raise ValueError("default generation language must be a simple BCP-47 style tag")
+        return normalized
+
+
+class MVPPublishingPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    external_publication_requires_human_approval: Literal[True]
+    low_risk_auto_approval_enabled: Literal[False]
+
+
+class FuturePublishingPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    low_risk_auto_approval_default_enabled: Literal[False]
+    mandatory_review_categories_may_bypass_human_review: Literal[False]
+
+
+class PublishingPolicyConfig(BaseModel):
+    """Editorial-owned publication eligibility policy; Stage 21 only reads its MVP gate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1]
+    mvp: MVPPublishingPolicy
+    future: FuturePublishingPolicy
+
+
 @dataclass(frozen=True, slots=True)
 class EditorialConfigSnapshot:
     taxonomy: TaxonomyConfig
     priorities: EditorialPrioritiesConfig
     risk_policy: EditorialRiskPolicy
+    content_style: ContentStyleConfig
+    publishing_policy: PublishingPolicyConfig
 
 
 class EditorialConfigLoader:
@@ -144,6 +213,27 @@ class EditorialConfigLoader:
 
     def __init__(self, loader: ConfigLoader) -> None:
         self.loader = loader
+
+    def load_risk_policy(self) -> EditorialRiskPolicy:
+        return self.loader.load_domain_file(
+            ConfigDomain.EDITORIAL,
+            "risk-policy.yaml",
+            EditorialRiskPolicy,
+        )
+
+    def load_content_style(self) -> ContentStyleConfig:
+        return self.loader.load_domain_file(
+            ConfigDomain.EDITORIAL,
+            "content-style.yaml",
+            ContentStyleConfig,
+        )
+
+    def load_publishing_policy(self) -> PublishingPolicyConfig:
+        return self.loader.load_domain_file(
+            ConfigDomain.EDITORIAL,
+            "publishing-policy.yaml",
+            PublishingPolicyConfig,
+        )
 
     def load(self) -> EditorialConfigSnapshot:
         return EditorialConfigSnapshot(
@@ -157,11 +247,9 @@ class EditorialConfigLoader:
                 "priorities.yaml",
                 EditorialPrioritiesConfig,
             ),
-            risk_policy=self.loader.load_domain_file(
-                ConfigDomain.EDITORIAL,
-                "risk-policy.yaml",
-                EditorialRiskPolicy,
-            ),
+            risk_policy=self.load_risk_policy(),
+            content_style=self.load_content_style(),
+            publishing_policy=self.load_publishing_policy(),
         )
 
 

@@ -4,7 +4,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from news_ai_ai import (
@@ -15,12 +15,16 @@ from news_ai_ai import (
     ProviderCapabilities,
     ProviderLocality,
 )
+from news_ai_ai_worker import build_production_content_stack
 from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
 from news_ai_common.config import AppSettings
 from news_ai_database import (
+    AIRun,
     Article,
     ArticleVersion,
     Claim,
+    ContentDraft,
+    ContentVariant,
     EventOutbox,
     EvidenceItem,
     FactCheck,
@@ -69,7 +73,13 @@ class DeterministicResearchAI:
         return ProviderCapabilities(
             provider_id=self.provider_id,
             locality=ProviderLocality.LOCAL,
-            task_types=frozenset({AITaskType.CLAIM_EXTRACTION, AITaskType.EVIDENCE_ASSESSMENT}),
+            task_types=frozenset(
+                {
+                    AITaskType.CLAIM_EXTRACTION,
+                    AITaskType.EVIDENCE_ASSESSMENT,
+                    AITaskType.CONTENT_GENERATION,
+                }
+            ),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
             models=frozenset({"deterministic-research-model"}),
         )
@@ -111,6 +121,35 @@ class DeterministicResearchAI:
                 "relevant_excerpt": None if unverified else snippet[:1000],
                 "notes": "Context only." if unverified else "The reviewed text states the reading.",
             }
+        elif request.task_type is AITaskType.CONTENT_GENERATION:
+            brief = request.input["editorial_brief"]
+            claim = brief["claims"][0]
+            structured = {
+                "story_id": brief["story_id"],
+                "fact_sheet_id": brief["fact_sheet_id"],
+                "fact_sheet_version": brief["fact_sheet_version"],
+                "platform": "INSTAGRAM",
+                "format": "CAROUSEL",
+                "language": request.input["generation_language"],
+                "title": "What the flood records show",
+                "slides": [
+                    {
+                        "position": 1,
+                        "heading": "The measured claim",
+                        "body": claim["text"],
+                        "claim_ids": [claim["claim_id"]],
+                    },
+                    {
+                        "position": 2,
+                        "heading": "Evidence and limits",
+                        "body": "The evidence supports this claim with stated limitations.",
+                        "claim_ids": [claim["claim_id"]],
+                    },
+                ],
+                "caption": "The verification stage is complete; uncertainty remains explicit.",
+                "hashtags": ["#EvidenceFirst"],
+                "claim_ids_used": [claim["claim_id"]],
+            }
         else:  # pragma: no cover - capability contract prevents this branch
             raise AssertionError(f"unexpected AI task {request.task_type}")
         return AIResponse(
@@ -145,6 +184,13 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         consumer_name="production-e2e",
         ai_providers=(ai,),
     )
+    content_stack = build_production_content_stack(
+        settings,
+        session_factory=factory,
+        redis_client=redis,
+        consumer_name="production-content-e2e",
+        ai_providers=(ai,),
+    )
     normalizer = NormalizerEventWorker(
         RedisStreamConsumer(
             redis,
@@ -175,6 +221,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         stack.fact_check_worker,
         stack.story_verification_worker,
         stack.fact_sheet_worker,
+        content_stack.worker,
     )
     try:
         for worker in workers:
@@ -299,6 +346,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         await dispatch_and_run(stack.fact_check_worker)
         await dispatch_and_run(stack.story_verification_worker)
         await dispatch_and_run(stack.fact_sheet_worker)
+        await dispatch_and_run(content_stack.worker)
         await dispatcher.dispatch_once()
 
         with factory() as session:
@@ -358,12 +406,26 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 for item in by_type[EventType.CONTENT_REQUESTED.value]
                 if item.causation_id == verified.event_id
             )
+            generated = next(
+                item
+                for item in by_type[EventType.CONTENT_GENERATED.value]
+                if item.causation_id == content.event_id
+            )
             story = session.get(Story, story_created.aggregate_id)
             claims = list(session.scalars(select(Claim).where(Claim.story_id == story.id)))
             check_ids = tuple(UUID(item) for item in verified.payload["fact_check_ids"])
             checks = list(session.scalars(select(FactCheck).where(FactCheck.id.in_(check_ids))))
             sheet = session.get(FactSheet, UUID(content.payload["fact_sheet_id"]))
             assert sheet is not None
+            draft = session.get(ContentDraft, UUID(generated.payload["content_draft_id"]))
+            assert draft is not None
+            variants = list(
+                session.scalars(
+                    select(ContentVariant).where(ContentVariant.content_draft_id == draft.id)
+                )
+            )
+            content_run = session.get(AIRun, draft.created_by_ai_run_id)
+            assert content_run is not None
             evidence_ids = tuple(UUID(item["evidence_id"]) for item in sheet.evidence_snapshot)
             evidence = list(
                 session.scalars(select(EvidenceItem).where(EvidenceItem.id.in_(evidence_ids)))
@@ -382,6 +444,32 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
             assert content.payload["fact_sheet_id"] == str(sheet.id)
             assert content.aggregate_id == sheet.id
             assert content.idempotency_key == f"content.requested:{sheet.id}:{sheet.version}"
+            assert draft.fact_sheet_id == sheet.id
+            assert draft.fact_sheet_version == sheet.version
+            assert draft.review_state == "NOT_READY"
+            assert draft.review_required is True
+            assert draft.risk_level == sheet.risk_level
+            assert draft.sensitive_topics == sheet.sensitive_topics
+            assert len(variants) == 1
+            assert variants[0].platform == "INSTAGRAM"
+            assert variants[0].format == "CAROUSEL"
+            assert variants[0].review_state == "NOT_READY"
+            assert variants[0].media_asset_ids == []
+            assert generated.payload["content_variant_ids"] == [str(variants[0].id)]
+            assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
+            assert content_run.task_type == AITaskType.CONTENT_GENERATION.value
+            assert content_run.prompt_id == "content-generation"
+            assert content_run.prompt_version == "v1"
+            assert content_run.prompt_checksum
+            fact_sheet_claim_ids = {item["claim_id"] for item in sheet.claims_snapshot}
+            assert set(variants[0].claim_ids_used) <= fact_sheet_claim_ids
+            selected_claim_ids = set(variants[0].claim_ids_used)
+            expected_source_ids = {
+                item["source_id"]
+                for item in sheet.evidence_snapshot
+                if item["claim_id"] in selected_claim_ids and item["source_id"] is not None
+            }
+            assert set(variants[0].source_ids_used) == expected_source_ids
             claims_by_id = {claim.id: claim for claim in claims}
             assert all(
                 check.research_generation == claims_by_id[check.claim_id].research_generation
@@ -428,6 +516,41 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 if request.task_type is AITaskType.EVIDENCE_ASSESSMENT
             ]
             assert len(evidence) == len(assessment_calls)
+            content_calls = [
+                request
+                for request in ai.requests
+                if request.task_type is AITaskType.CONTENT_GENERATION
+            ]
+            assert len(content_calls) == 1
+            assert content_calls[0].input_artifact_ids == (
+                f"fact_sheet:{sheet.id}:v{sheet.version}",
+            )
+            assert content_calls[0].input["generation_language"] == story.language
+
+        semantic_replay = envelope_from_outbox(content).model_copy(
+            update={"event_id": uuid4(), "idempotency_key": f"replay:{uuid4()}"}
+        )
+        await redis.xadd(
+            stream_for_event(EventType.CONTENT_REQUESTED),
+            {"event": semantic_replay.model_dump_json()},
+        )
+        duplicate_content = await content_stack.worker.run_once()
+        assert duplicate_content.duplicates == 1
+        with factory() as session:
+            assert len(list(session.scalars(select(ContentDraft)))) == 1
+            assert len(list(session.scalars(select(ContentVariant)))) == 1
+            assert (
+                len(
+                    list(
+                        session.scalars(
+                            select(EventOutbox).where(
+                                EventOutbox.event_type == EventType.CONTENT_GENERATED.value
+                            )
+                        )
+                    )
+                )
+                == 1
+            )
 
         for worker in workers:
             pending = await redis.xpending(worker.consumer.stream, worker.consumer.group)

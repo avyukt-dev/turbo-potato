@@ -12,6 +12,7 @@ from news_ai_ai import (
     ProviderCapabilities,
     ProviderLocality,
 )
+from news_ai_ai_worker import build_production_content_stack
 from news_ai_common.config import AppSettings
 from news_ai_database import Base
 from news_ai_evidence import PostgresArticleSearchProvider
@@ -50,7 +51,12 @@ def _factory() -> sessionmaker[Session]:
 
 def test_production_research_stack_uses_production_boundaries() -> None:
     provider = ConfiguredAIProvider(
-        frozenset({AITaskType.CLAIM_EXTRACTION, AITaskType.EVIDENCE_ASSESSMENT})
+        frozenset(
+            {
+                AITaskType.CLAIM_EXTRACTION,
+                AITaskType.EVIDENCE_ASSESSMENT,
+            }
+        )
     )
 
     stack = build_production_research_stack(
@@ -65,6 +71,9 @@ def test_production_research_stack_uses_production_boundaries() -> None:
     assert isinstance(search, PostgresArticleSearchProvider)
     assert stack.evidence_engine.source_resolver is stack.source_resolver
     assert stack.claim_worker.service.router is stack.ai_router
+    assert not hasattr(stack, "content_worker")
+    assert stack.fact_sheet_worker.generator.requested_platforms == ("INSTAGRAM",)
+    assert stack.fact_sheet_worker.generator.requested_formats == ("CAROUSEL",)
 
 
 def test_composition_fails_when_required_evidence_ai_route_is_unavailable() -> None:
@@ -76,5 +85,31 @@ def test_composition_fails_when_required_evidence_ai_route_is_unavailable() -> N
             session_factory=_factory(),
             redis_client=RedisBoundary(),
             consumer_name="composition-test",
+            ai_providers=(provider,),
+        )
+
+
+def test_production_content_stack_uses_official_router_and_worker_boundaries() -> None:
+    provider = ConfiguredAIProvider(frozenset({AITaskType.CONTENT_GENERATION}))
+    stack = build_production_content_stack(
+        AppSettings(config_dir="config"),
+        session_factory=_factory(),
+        redis_client=RedisBoundary(),
+        consumer_name="content-composition-test",
+        ai_providers=(provider,),
+    )
+    assert stack.service.router is stack.ai_router
+    assert stack.worker.service is stack.service
+    assert stack.worker.consumer.group == "content-worker"
+
+
+def test_production_content_stack_owns_content_generation_route_requirement() -> None:
+    provider = ConfiguredAIProvider(frozenset({AITaskType.CLAIM_EXTRACTION}))
+    with pytest.raises(AIRoutingPolicyError, match="no configured AI provider"):
+        build_production_content_stack(
+            AppSettings(config_dir="config"),
+            session_factory=_factory(),
+            redis_client=RedisBoundary(),
+            consumer_name="content-composition-test",
             ai_providers=(provider,),
         )

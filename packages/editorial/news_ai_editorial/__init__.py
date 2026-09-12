@@ -2,6 +2,9 @@
 
 from .taxonomy import (
     CategoryAssignment,
+    ContentStyleConfig,
+    ContentStyleDefaults,
+    ContentStyleTarget,
     EditorialCategory,
     EditorialConfigLoader,
     EditorialConfigSnapshot,
@@ -10,13 +13,19 @@ from .taxonomy import (
     EditorialTaxonomyEngine,
     EditorialTaxonomyInput,
     EditorialTaxonomyResult,
+    FuturePublishingPolicy,
     MandatoryReviewCategory,
+    MVPPublishingPolicy,
+    PublishingPolicyConfig,
     TaxonomyConfig,
     TopicPrioritySignal,
 )
 
 __all__ = [
     "CategoryAssignment",
+    "ContentStyleConfig",
+    "ContentStyleDefaults",
+    "ContentStyleTarget",
     "EditorialCategory",
     "EditorialConfigLoader",
     "EditorialConfigSnapshot",
@@ -26,6 +35,9 @@ __all__ = [
     "EditorialTaxonomyInput",
     "EditorialTaxonomyResult",
     "MandatoryReviewCategory",
+    "FuturePublishingPolicy",
+    "MVPPublishingPolicy",
+    "PublishingPolicyConfig",
     "TaxonomyConfig",
     "TopicPrioritySignal",
 ]

@@ -9,7 +9,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from news_ai_database import (
+    AIModel,
+    AIRun,
     Claim,
+    ContentDraft,
+    ContentVariant,
     EventOutbox,
     FactCheck,
     FactSheet,
@@ -27,7 +31,7 @@ from news_ai_evidence import (
     SearchProviderRegistry,
     SearchRules,
 )
-from sqlalchemy import create_engine, delete, inspect, select, text
+from sqlalchemy import create_engine, delete, func, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -277,6 +281,192 @@ def test_concurrent_research_planning_persists_one_semantic_operation() -> None:
         _delete_rows(factory, story_id=story_id)
 
 
+def test_postgresql_enforces_stage21_content_integrity() -> None:
+    factory = _factory()
+    with factory() as session, session.begin():
+        story = Story(
+            canonical_headline="Content constraint story",
+            status="VERIFIED",
+            risk_level=RiskLevel.LOW,
+            story_metadata={},
+        )
+        model = AIModel(
+            provider=f"constraint-{uuid4().hex}",
+            model_name="content-model",
+            locality="LOCAL",
+            capabilities={},
+        )
+        session.add_all([story, model])
+        session.flush()
+        sheet = FactSheet(
+            story_id=story.id,
+            version=1,
+            headline="Content constraint story",
+            summary="Constraint test",
+            risk_level=RiskLevel.LOW,
+            semantic_key=f"sheet:{uuid4()}",
+        )
+        run = AIRun(
+            ai_model_id=model.id,
+            task_type="CONTENT_GENERATION",
+            status="SUCCEEDED",
+            validation_status="VALIDATED",
+        )
+        session.add_all([sheet, run])
+        session.flush()
+        draft = ContentDraft(
+            story_id=story.id,
+            fact_sheet_id=sheet.id,
+            fact_sheet_version=1,
+            version=1,
+            methodology_version="content-generation-methodology-v1",
+            editorial_brief_snapshot={},
+            risk_level=RiskLevel.LOW,
+            sensitive_topics=[],
+            review_required=True,
+            review_state=ReviewState.NOT_READY,
+            created_by_ai_run_id=run.id,
+            semantic_key=f"content:{uuid4()}",
+        )
+        session.add(draft)
+        session.flush()
+        variant = ContentVariant(
+            content_draft_id=draft.id,
+            platform="INSTAGRAM",
+            format="CAROUSEL",
+            language="en",
+            title="Title",
+            body="Body",
+            caption="Caption",
+            structured_payload={},
+            claim_ids_used=[],
+            source_ids_used=[],
+            media_asset_ids=[],
+            review_state=ReviewState.NOT_READY,
+            version=1,
+        )
+        session.add(variant)
+        session.flush()
+        story_id, draft_id, variant_id, model_id = story.id, draft.id, variant.id, model.id
+
+    with factory() as session, session.begin():
+        for value in ReviewState:
+            session.execute(
+                text("UPDATE content_drafts SET review_state=:value WHERE id=:id"),
+                {"value": value.value, "id": draft_id},
+            )
+            session.execute(
+                text("UPDATE content_variants SET review_state=:value WHERE id=:id"),
+                {"value": value.value, "id": variant_id},
+            )
+
+    statements = (
+        ("UPDATE content_drafts SET risk_level='INVALID' WHERE id=:id", draft_id),
+        ("UPDATE content_drafts SET review_state='INVALID' WHERE id=:id", draft_id),
+        ("UPDATE content_drafts SET fact_sheet_version=0 WHERE id=:id", draft_id),
+        ("UPDATE content_drafts SET version=0 WHERE id=:id", draft_id),
+        ("UPDATE content_variants SET review_state='INVALID' WHERE id=:id", variant_id),
+        ("UPDATE content_variants SET version=0 WHERE id=:id", variant_id),
+    )
+    try:
+        for statement, row_id in statements:
+            with factory() as session, pytest.raises(IntegrityError), session.begin():
+                session.execute(text(statement), {"id": row_id})
+    finally:
+        with factory() as session, session.begin():
+            session.execute(delete(ContentVariant).where(ContentVariant.id == variant_id))
+            session.execute(delete(ContentDraft).where(ContentDraft.id == draft_id))
+            session.execute(delete(FactSheet).where(FactSheet.story_id == story_id))
+            session.execute(delete(AIRun).where(AIRun.ai_model_id == model_id))
+            session.execute(delete(AIModel).where(AIModel.id == model_id))
+            session.execute(delete(Story).where(Story.id == story_id))
+
+
+def test_concurrent_content_semantic_identity_persists_once() -> None:
+    factory = _factory()
+    marker = uuid4().hex
+    with factory() as session, session.begin():
+        story = Story(
+            canonical_headline="Concurrent content",
+            status="VERIFIED",
+            risk_level=RiskLevel.LOW,
+            story_metadata={},
+        )
+        model = AIModel(
+            provider=f"concurrent-{marker}",
+            model_name="content-model",
+            locality="LOCAL",
+            capabilities={},
+        )
+        session.add_all([story, model])
+        session.flush()
+        sheet = FactSheet(
+            story_id=story.id,
+            version=1,
+            headline="Concurrent content",
+            summary="Concurrent content",
+            risk_level=RiskLevel.LOW,
+            semantic_key=f"sheet:{marker}",
+        )
+        session.add(sheet)
+        session.flush()
+        story_id, sheet_id, model_id = story.id, sheet.id, model.id
+
+    semantic = f"content-generation:{marker}"
+
+    def persist(_index: int) -> bool:
+        try:
+            with factory() as session, session.begin():
+                run = AIRun(
+                    ai_model_id=model_id,
+                    task_type="CONTENT_GENERATION",
+                    status="SUCCEEDED",
+                    validation_status="VALIDATED",
+                )
+                session.add(run)
+                session.flush()
+                session.add(
+                    ContentDraft(
+                        story_id=story_id,
+                        fact_sheet_id=sheet_id,
+                        fact_sheet_version=1,
+                        version=1,
+                        methodology_version="content-generation-methodology-v1",
+                        editorial_brief_snapshot={},
+                        risk_level=RiskLevel.LOW,
+                        sensitive_topics=[],
+                        review_required=True,
+                        review_state=ReviewState.NOT_READY,
+                        created_by_ai_run_id=run.id,
+                        semantic_key=semantic,
+                    )
+                )
+            return True
+        except IntegrityError:
+            return False
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = tuple(executor.map(persist, range(2)))
+        assert sorted(outcomes) == [False, True]
+        with factory() as session:
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ContentDraft)
+                    .where(ContentDraft.semantic_key == semantic)
+                )
+                == 1
+            )
+    finally:
+        with factory() as session, session.begin():
+            session.execute(delete(ContentDraft).where(ContentDraft.story_id == story_id))
+            session.execute(delete(FactSheet).where(FactSheet.story_id == story_id))
+            session.execute(delete(AIRun).where(AIRun.ai_model_id == model_id))
+            session.execute(delete(AIModel).where(AIModel.id == model_id))
+            session.execute(delete(Story).where(Story.id == story_id))
+
+
 def test_concurrent_distinct_research_operations_assign_monotonic_generations() -> None:
     factory = _factory()
     engine = _engine()
@@ -355,6 +545,8 @@ def test_migration_upgrade_downgrade_reupgrade_round_trip() -> None:
             } <= {column["name"] for column in inspect(migrated_engine).get_columns("fact_checks")}
             assert {
                 "article_discoveries",
+                "content_drafts",
+                "content_variants",
                 "research_run_claims",
                 "event_processing_attempts",
                 "event_dead_letters",
