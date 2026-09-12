@@ -19,7 +19,13 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .contracts import SocialCapabilities, SocialMediaType, SocialMode
+from .contracts import (
+    SocialCapabilities,
+    SocialMediaFormat,
+    SocialMediaMimeType,
+    SocialMediaType,
+    SocialMode,
+)
 
 
 class InstagramPollingConfig(BaseModel):
@@ -36,6 +42,8 @@ class InstagramConstraints(BaseModel):
     max_carousel_items: int = Field(ge=2, le=20)
     caption_max_characters: int = Field(ge=1, le=10000)
     allowed_media_types: frozenset[SocialMediaType]
+    allowed_image_formats: frozenset[SocialMediaFormat]
+    allowed_image_mime_types: frozenset[SocialMediaMimeType]
 
     @model_validator(mode="after")
     def valid_range(self) -> InstagramConstraints:
@@ -43,6 +51,10 @@ class InstagramConstraints(BaseModel):
             raise ValueError("minimum carousel items exceeds maximum")
         if not self.allowed_media_types:
             raise ValueError("at least one media type must be allowed")
+        if self.allowed_image_formats != frozenset({SocialMediaFormat.JPEG}):
+            raise ValueError("Stage 24 supports only ordinary JPEG image format")
+        if self.allowed_image_mime_types != frozenset({SocialMediaMimeType.JPEG}):
+            raise ValueError("Stage 24 supports only image/jpeg MIME type")
         return self
 
 

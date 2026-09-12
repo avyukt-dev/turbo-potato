@@ -30,6 +30,14 @@ def _write_config(tmp_path: Path, *, enabled: bool = True) -> Path:
     return tmp_path
 
 
+def test_production_config_uses_meta_safe_polling_and_jpeg_constraints() -> None:
+    config = load_instagram_config("config")
+    assert config.polling.interval_seconds == 60
+    assert config.polling.max_attempts == 5
+    assert {item.value for item in config.constraints.allowed_image_formats} == {"JPEG"}
+    assert {item.value for item in config.constraints.allowed_image_mime_types} == {"image/jpeg"}
+
+
 def test_typed_platform_config_rejects_unknown_and_unimplemented_capability(tmp_path: Path) -> None:
     root = _write_config(tmp_path)
     path = root / "platforms" / "instagram.yaml"

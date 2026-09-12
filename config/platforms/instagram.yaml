@@ -18,11 +18,15 @@ request_timeout_seconds: 30
 live_environments:
   - production
 polling:
-  interval_seconds: 2
-  max_attempts: 30
+  interval_seconds: 60
+  max_attempts: 5
 constraints:
   min_carousel_items: 2
   max_carousel_items: 10
   caption_max_characters: 2200
   allowed_media_types:
     - IMAGE
+  allowed_image_formats:
+    - JPEG
+  allowed_image_mime_types:
+    - image/jpeg

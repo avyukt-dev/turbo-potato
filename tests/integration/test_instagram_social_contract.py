@@ -13,6 +13,8 @@ from news_ai_social import (
     InstagramCarouselArtifact,
     InstagramCarouselRenderer,
     InstagramMediaItem,
+    SocialMediaFormat,
+    SocialMediaMimeType,
     SocialMediaType,
     load_instagram_config,
 )
@@ -64,11 +66,15 @@ def test_approved_shaped_artifact_renders_and_publishes_through_graph_contract()
                 position=1,
                 public_url="https://media.example.com/slide-1.jpg",
                 media_type=SocialMediaType.IMAGE,
+                media_format=SocialMediaFormat.JPEG,
+                mime_type=SocialMediaMimeType.JPEG,
             ),
             InstagramMediaItem(
                 position=2,
                 public_url="https://media.example.com/slide-2.jpg",
                 media_type=SocialMediaType.IMAGE,
+                media_format=SocialMediaFormat.JPEG,
+                mime_type=SocialMediaMimeType.JPEG,
             ),
         ),
     )

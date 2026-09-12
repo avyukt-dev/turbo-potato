@@ -8,6 +8,7 @@ import ipaddress
 import json
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -16,10 +17,14 @@ from news_ai_content import ContentFormat, ContentPlatform
 from .config import InstagramPlatformConfig
 from .contracts import (
     InstagramCarouselRequest,
+    InstagramContainerStatus,
+    InstagramContainerStatusResult,
     InstagramPublishResult,
     PublicationVerificationResult,
     PublicationVerificationStatus,
     SocialCapabilities,
+    SocialMediaFormat,
+    SocialMediaMimeType,
     SocialMediaType,
     SocialPublishStatus,
 )
@@ -30,6 +35,7 @@ _GRAPH_ID_RE = re.compile(r"^[0-9]{1,255}$")
 _SENSITIVE_QUERY_KEYS = {"access_token", "api_key", "apikey", "token", "password", "secret"}
 _READY_CONTAINER_STATES = {"FINISHED", "PUBLISHED"}
 _FAILED_CONTAINER_STATES = {"ERROR", "EXPIRED"}
+_THROTTLE_CODES = {4, 17, 32, 341, 613, *range(80000, 80015)}
 
 
 def validate_instagram_request(
@@ -56,6 +62,16 @@ def validate_instagram_request(
         if item.media_type is SocialMediaType.IMAGE and not config.capabilities.image:
             raise SocialAdapterError(
                 "Instagram image capability is disabled",
+                classification=SocialErrorClass.MEDIA,
+            )
+        if item.media_type is SocialMediaType.IMAGE and (
+            item.media_format not in constraints.allowed_image_formats
+            or item.mime_type not in constraints.allowed_image_mime_types
+            or item.media_format is not SocialMediaFormat.JPEG
+            or item.mime_type is not SocialMediaMimeType.JPEG
+        ):
+            raise SocialAdapterError(
+                "Instagram image media must be ordinary JPEG with image/jpeg MIME type",
                 classification=SocialErrorClass.MEDIA,
             )
         _validate_public_https_url(item.public_url)
@@ -148,19 +164,19 @@ class InstagramAdapter:
         published = await self._post(f"{self.account_id}/media_publish", {"creation_id": parent_id})
         external_id = self._required_id(published, operation="carousel publication")
 
-        external_url = None
-        verification_status = PublicationVerificationStatus.UNKNOWN
-        try:
+        verification: PublicationVerificationResult | None = None
+        with suppress(SocialAdapterError):
             verification = await self.verify_publication(external_id)
-        except SocialAdapterError:
-            pass
-        else:
-            verification_status = verification.status
-            external_url = verification.external_url
+        verification_status = (
+            verification.status
+            if verification is not None
+            else PublicationVerificationStatus.UNKNOWN
+        )
+        confirmed = verification_status is PublicationVerificationStatus.PUBLISHED
         return InstagramPublishResult(
-            status=SocialPublishStatus.PUBLISHED,
+            status=(SocialPublishStatus.PUBLISHED if confirmed else SocialPublishStatus.CREATED),
             external_post_id=external_id,
-            external_url=external_url,
+            external_url=verification.external_url if confirmed and verification else None,
             provider_metadata={
                 "container_id": parent_id,
                 "verification_status": verification_status.value,
@@ -172,7 +188,7 @@ class InstagramAdapter:
             raise _validation_error("external Instagram identifier is invalid")
         response = await self._get(
             external_post_id,
-            {"fields": "id,permalink,media_type,timestamp,status_code,status"},
+            {"fields": "id,permalink,media_type,timestamp"},
             allow_not_found=True,
         )
         if response.status_code == 404:
@@ -181,22 +197,16 @@ class InstagramAdapter:
                 status=PublicationVerificationStatus.NOT_FOUND,
             )
         payload = response.payload
-        status_code = str(payload.get("status_code", "")).upper()
-        if status_code in _FAILED_CONTAINER_STATES:
-            status = PublicationVerificationStatus.FAILED
-        elif status_code and status_code not in _READY_CONTAINER_STATES:
-            status = PublicationVerificationStatus.PROCESSING
-        elif payload.get("id") == external_post_id:
-            status = PublicationVerificationStatus.PUBLISHED
-        else:
-            status = PublicationVerificationStatus.UNKNOWN
+        status = (
+            PublicationVerificationStatus.PUBLISHED
+            if payload.get("id") == external_post_id
+            else PublicationVerificationStatus.UNKNOWN
+        )
         permalink = _safe_instagram_permalink(payload.get("permalink"))
         metadata: dict[str, str | int | bool] = {}
         media_type = payload.get("media_type")
         if media_type in {"IMAGE", "VIDEO", "CAROUSEL_ALBUM"}:
             metadata["media_type"] = media_type
-        if status_code in _READY_CONTAINER_STATES | _FAILED_CONTAINER_STATES | {"IN_PROGRESS"}:
-            metadata["status_code"] = status_code
         timestamp = payload.get("timestamp")
         if isinstance(timestamp, str) and re.fullmatch(r"[0-9T:+.Z-]{10,40}", timestamp):
             metadata["timestamp"] = timestamp
@@ -207,15 +217,29 @@ class InstagramAdapter:
             provider_metadata=metadata,
         )
 
+    async def get_container_status(self, container_id: str) -> InstagramContainerStatusResult:
+        """Read IG Container fields; published IG Media uses a separate read contract."""
+
+        if not _GRAPH_ID_RE.fullmatch(container_id):
+            raise _validation_error("Instagram container identifier is invalid")
+        response = await self._get(
+            container_id,
+            {"fields": "status_code,status"},
+            allow_not_found=False,
+        )
+        raw_status = str(response.payload.get("status_code", "")).upper()
+        try:
+            status = InstagramContainerStatus(raw_status)
+        except ValueError:
+            status = InstagramContainerStatus.UNKNOWN
+        return InstagramContainerStatusResult(container_id=container_id, status=status)
+
     async def _wait_until_ready(self, container_id: str) -> None:
         for attempt in range(self.config.polling.max_attempts):
-            response = await self._get(
-                container_id, {"fields": "status_code,status"}, allow_not_found=False
-            )
-            status = str(response.payload.get("status_code", "")).upper()
-            if status in _READY_CONTAINER_STATES:
+            result = await self.get_container_status(container_id)
+            if result.status.value in _READY_CONTAINER_STATES:
                 return
-            if status in _FAILED_CONTAINER_STATES:
+            if result.status.value in _FAILED_CONTAINER_STATES:
                 raise SocialAdapterError(
                     "Instagram media container processing failed",
                     classification=SocialErrorClass.MEDIA,
@@ -341,7 +365,7 @@ class MockInstagramAdapter:
 def _classify_graph_error(
     status: int, provider_code: str | int | None, error_type: str
 ) -> SocialErrorClass:
-    if status == 429:
+    if status == 429 or provider_code in _THROTTLE_CODES:
         return SocialErrorClass.RATE_LIMIT
     if status == 401 or provider_code == 190 or "oauth" in error_type.lower():
         return SocialErrorClass.AUTHENTICATION

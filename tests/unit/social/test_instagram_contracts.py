@@ -13,6 +13,8 @@ from news_ai_social import (
     MockInstagramAdapter,
     SocialAdapterError,
     SocialErrorClass,
+    SocialMediaFormat,
+    SocialMediaMimeType,
     SocialMediaType,
     SocialPlatformAdapter,
     load_instagram_config,
@@ -37,6 +39,8 @@ def _request(
                 position=position,
                 public_url=url,
                 media_type=SocialMediaType.IMAGE,
+                media_format=SocialMediaFormat.JPEG,
+                mime_type=SocialMediaMimeType.JPEG,
             )
             for position, url in enumerate(urls, start=1)
         ),
@@ -126,6 +130,28 @@ def test_invalid_media_count_and_unsupported_media_type_are_rejected() -> None:
     video_data["media_items"][0]["media_type"] = "VIDEO"
     with pytest.raises(SocialAdapterError) as caught:
         adapter.validate_content(InstagramCarouselRequest.model_validate(video_data))
+    assert caught.value.classification is SocialErrorClass.MEDIA
+
+
+@pytest.mark.parametrize(
+    ("media_format", "mime_type"),
+    [
+        ("PNG", "image/png"),
+        ("WEBP", "image/webp"),
+        ("MPO", "image/mpo"),
+        ("JPS", "image/jps"),
+        ("JPEG", "image/png"),
+    ],
+)
+def test_only_declared_ordinary_jpeg_image_provenance_is_accepted(
+    media_format: str, mime_type: str
+) -> None:
+    adapter = MockInstagramAdapter(load_instagram_config("config"))
+    data = _request().model_dump()
+    data["media_items"][0]["media_format"] = media_format
+    data["media_items"][0]["mime_type"] = mime_type
+    with pytest.raises(SocialAdapterError, match="ordinary JPEG") as caught:
+        adapter.validate_content(InstagramCarouselRequest.model_validate(data))
     assert caught.value.classification is SocialErrorClass.MEDIA
 
 

@@ -11,11 +11,15 @@ from news_ai_social import (
     GraphTransportError,
     InstagramAdapter,
     InstagramCarouselRequest,
+    InstagramContainerStatus,
     InstagramMediaItem,
     InstagramPollingConfig,
+    PublicationVerificationResult,
     PublicationVerificationStatus,
     SocialAdapterError,
     SocialErrorClass,
+    SocialMediaFormat,
+    SocialMediaMimeType,
     SocialMediaType,
     load_instagram_config,
 )
@@ -58,11 +62,15 @@ def _request() -> InstagramCarouselRequest:
                 position=1,
                 public_url="https://media.example.com/one.jpg",
                 media_type=SocialMediaType.IMAGE,
+                media_format=SocialMediaFormat.JPEG,
+                mime_type=SocialMediaMimeType.JPEG,
             ),
             InstagramMediaItem(
                 position=2,
                 public_url="https://media.example.com/two.jpg",
                 media_type=SocialMediaType.IMAGE,
+                media_format=SocialMediaFormat.JPEG,
+                mime_type=SocialMediaMimeType.JPEG,
             ),
         ),
     )
@@ -124,6 +132,8 @@ def test_official_carousel_sequence_order_caption_and_verification() -> None:
         "caption": "Approved caption\n\n#One #Two",
     }
     assert transport.calls[7][2] == {"creation_id": "201"}
+    assert transport.calls[1][2] == {"fields": "status_code,status"}
+    assert transport.calls[8][2] == {"fields": "id,permalink,media_type,timestamp"}
 
 
 def test_processing_failure_and_timeout_are_typed() -> None:
@@ -159,6 +169,12 @@ def test_processing_failure_and_timeout_are_typed() -> None:
         (403, {"error": {"code": 10}}, SocialErrorClass.PERMISSION),
         (404, {"error": {"code": 803}}, SocialErrorClass.NOT_FOUND),
         (429, {"error": {"code": 4}}, SocialErrorClass.RATE_LIMIT),
+        (400, {"error": {"type": "OAuthException", "code": 4}}, SocialErrorClass.RATE_LIMIT),
+        (400, {"error": {"code": 17}}, SocialErrorClass.RATE_LIMIT),
+        (400, {"error": {"code": 32}}, SocialErrorClass.RATE_LIMIT),
+        (400, {"error": {"code": 341}}, SocialErrorClass.RATE_LIMIT),
+        (400, {"error": {"code": 613}}, SocialErrorClass.RATE_LIMIT),
+        (403, {"error": {"code": 80002}}, SocialErrorClass.RATE_LIMIT),
         (503, {"error": {"code": 2}}, SocialErrorClass.TRANSIENT),
     ],
 )
@@ -244,12 +260,12 @@ def test_untrusted_provider_identifier_and_code_cannot_leak_as_result_or_error()
     assert sentinel not in str(caught.value.safe_metadata)
 
 
-def test_verification_distinguishes_not_found_processing_failed_and_unknown() -> None:
+def test_published_media_verification_distinguishes_found_not_found_and_unknown() -> None:
     transport = FakeTransport(
         [
             _ok({"error": {"code": 803}}, 404),
-            _ok({"id": "401", "status_code": "IN_PROGRESS"}),
-            _ok({"id": "401", "status_code": "ERROR"}),
+            _ok({"id": "401", "media_type": "CAROUSEL_ALBUM"}),
+            _ok({"id": "402", "media_type": "CAROUSEL_ALBUM"}),
             _ok({"unexpected": True}),
         ]
     )
@@ -264,7 +280,144 @@ def test_verification_distinguishes_not_found_processing_failed_and_unknown() ->
     ]
     assert [result.status for result in results] == [
         PublicationVerificationStatus.NOT_FOUND,
-        PublicationVerificationStatus.PROCESSING,
-        PublicationVerificationStatus.FAILED,
+        PublicationVerificationStatus.PUBLISHED,
+        PublicationVerificationStatus.UNKNOWN,
         PublicationVerificationStatus.UNKNOWN,
     ]
+    assert all(
+        call[2] == {"fields": "id,permalink,media_type,timestamp"} for call in transport.calls
+    )
+
+
+def test_container_status_uses_only_container_fields_and_preserves_states() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"status_code": value})
+            for value in (
+                "FINISHED",
+                "IN_PROGRESS",
+                "ERROR",
+                "EXPIRED",
+                "PUBLISHED",
+                "OTHER",
+            )
+        ]
+    )
+    adapter = InstagramAdapter(
+        load_instagram_config("config"), account_id="123", transport=transport
+    )
+    statuses = [asyncio.run(adapter.get_container_status("401")) for _ in range(6)]
+    assert [result.status for result in statuses] == [
+        InstagramContainerStatus.FINISHED,
+        InstagramContainerStatus.IN_PROGRESS,
+        InstagramContainerStatus.ERROR,
+        InstagramContainerStatus.EXPIRED,
+        InstagramContainerStatus.PUBLISHED,
+        InstagramContainerStatus.UNKNOWN,
+    ]
+    assert all(call[2] == {"fields": "status_code,status"} for call in transport.calls)
+
+
+def test_successful_publish_with_unknown_readback_returns_created_not_published() -> None:
+    transport = FakeTransport(
+        [
+            _ok({"id": "101"}),
+            _ok({"status_code": "FINISHED"}),
+            _ok({"id": "102"}),
+            _ok({"status_code": "FINISHED"}),
+            _ok({"id": "201"}),
+            _ok({"status_code": "FINISHED"}),
+            _ok({"id": "301"}),
+            GraphTransportError("read failed", outcome_may_be_ambiguous=False),
+        ]
+    )
+    adapter = InstagramAdapter(
+        load_instagram_config("config"),
+        account_id="123",
+        transport=transport,
+        sleeper=_no_sleep,
+    )
+    result = asyncio.run(adapter.publish(_request()))
+    assert result.status.value == "CREATED"
+    assert result.external_post_id == "301"
+    assert result.external_url is None
+    assert result.provider_metadata["verification_status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize(
+    "verification_status",
+    [
+        PublicationVerificationStatus.UNKNOWN,
+        PublicationVerificationStatus.PROCESSING,
+        PublicationVerificationStatus.NOT_FOUND,
+        PublicationVerificationStatus.FAILED,
+    ],
+)
+def test_known_media_id_is_nonfinal_for_every_unconfirmed_verification_status(
+    verification_status: PublicationVerificationStatus,
+) -> None:
+    class VerificationStubAdapter(InstagramAdapter):
+        async def verify_publication(self, external_post_id: str) -> PublicationVerificationResult:
+            return PublicationVerificationResult(
+                external_post_id=external_post_id,
+                status=verification_status,
+            )
+
+    transport = FakeTransport(
+        [
+            _ok({"id": "101"}),
+            _ok({"status_code": "FINISHED"}),
+            _ok({"id": "102"}),
+            _ok({"status_code": "FINISHED"}),
+            _ok({"id": "201"}),
+            _ok({"status_code": "FINISHED"}),
+            _ok({"id": "301"}),
+        ]
+    )
+    adapter = VerificationStubAdapter(
+        load_instagram_config("config"),
+        account_id="123",
+        transport=transport,
+        sleeper=_no_sleep,
+    )
+    result = asyncio.run(adapter.publish(_request()))
+    assert result.status.value == "CREATED"
+    assert result.external_post_id == "301"
+    assert result.provider_metadata["verification_status"] == verification_status.value
+
+
+@pytest.mark.parametrize(
+    ("media_format", "mime_type"),
+    [
+        ("PNG", "image/png"),
+        ("WEBP", "image/webp"),
+        ("MPO", "image/mpo"),
+        ("JPS", "image/jps"),
+    ],
+)
+def test_unsupported_image_format_is_rejected_before_graph_transport(
+    media_format: str, mime_type: str
+) -> None:
+    request_data = _request().model_dump()
+    request_data["media_items"][0]["media_format"] = media_format
+    request_data["media_items"][0]["mime_type"] = mime_type
+    transport = FakeTransport([])
+    adapter = InstagramAdapter(
+        load_instagram_config("config"), account_id="123", transport=transport
+    )
+    with pytest.raises(SocialAdapterError) as caught:
+        asyncio.run(adapter.publish(InstagramCarouselRequest.model_validate(request_data)))
+    assert caught.value.classification is SocialErrorClass.MEDIA
+    assert transport.calls == []
+
+
+def test_image_format_is_not_inferred_from_url_extension() -> None:
+    request_data = _request().model_dump()
+    request_data["media_items"][0]["public_url"] = "https://media.example.com/delivery.png"
+    transport = FakeTransport([_ok({"error": {"code": 100}}, 400)])
+    adapter = InstagramAdapter(
+        load_instagram_config("config"), account_id="123", transport=transport
+    )
+    with pytest.raises(SocialAdapterError):
+        asyncio.run(adapter.publish(InstagramCarouselRequest.model_validate(request_data)))
+    assert len(transport.calls) == 1

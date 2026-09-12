@@ -20,6 +20,22 @@ class SocialMediaType(StrEnum):
     VIDEO = "VIDEO"
 
 
+class SocialMediaFormat(StrEnum):
+    JPEG = "JPEG"
+    PNG = "PNG"
+    WEBP = "WEBP"
+    MPO = "MPO"
+    JPS = "JPS"
+
+
+class SocialMediaMimeType(StrEnum):
+    JPEG = "image/jpeg"
+    PNG = "image/png"
+    WEBP = "image/webp"
+    MPO = "image/mpo"
+    JPS = "image/jps"
+
+
 class SocialPublishStatus(StrEnum):
     CREATED = "CREATED"
     PUBLISHED = "PUBLISHED"
@@ -30,6 +46,15 @@ class PublicationVerificationStatus(StrEnum):
     PROCESSING = "PROCESSING"
     FAILED = "FAILED"
     NOT_FOUND = "NOT_FOUND"
+    UNKNOWN = "UNKNOWN"
+
+
+class InstagramContainerStatus(StrEnum):
+    FINISHED = "FINISHED"
+    IN_PROGRESS = "IN_PROGRESS"
+    ERROR = "ERROR"
+    EXPIRED = "EXPIRED"
+    PUBLISHED = "PUBLISHED"
     UNKNOWN = "UNKNOWN"
 
 
@@ -52,6 +77,8 @@ class InstagramMediaItem(BaseModel):
     position: int = Field(ge=1)
     public_url: AnyHttpUrl
     media_type: SocialMediaType
+    media_format: SocialMediaFormat
+    mime_type: SocialMediaMimeType
 
 
 class InstagramCarouselArtifact(BaseModel):
@@ -116,6 +143,13 @@ class PublicationVerificationResult(BaseModel):
     external_url: AnyHttpUrl | None = None
     mock: bool = False
     provider_metadata: dict[str, str | int | bool] = Field(default_factory=dict)
+
+
+class InstagramContainerStatusResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    container_id: str = Field(min_length=1)
+    status: InstagramContainerStatus
 
 
 @runtime_checkable
