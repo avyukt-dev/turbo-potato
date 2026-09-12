@@ -165,6 +165,17 @@ class PublicationFailedV1(EventPayload):
     retryable: bool
 
 
+class PublicationExecutedV2(EventPayload):
+    """Verified provider identity; permalink availability is independent."""
+
+    publication_id: UUID
+    attempt_id: UUID
+    platform: str = Field(min_length=1, max_length=64)
+    external_post_id: str = Field(min_length=1, max_length=1024)
+    external_url: str | None = Field(min_length=1, max_length=4096)
+    published_at: datetime
+
+
 class AnalyticsRequestedV1(EventPayload):
     publication_id: UUID
     platform: str = Field(min_length=1, max_length=64)
@@ -194,6 +205,7 @@ _PAYLOAD_MODELS: dict[tuple[EventType, int], PayloadModel] = {
     (EventType.CONTENT_QUALITY_CHECKED, 1): ContentQualityCheckedV1,
     (EventType.PUBLICATION_SCHEDULED, 1): PublicationScheduledV1,
     (EventType.PUBLICATION_EXECUTED, 1): PublicationExecutedV1,
+    (EventType.PUBLICATION_EXECUTED, 2): PublicationExecutedV2,
     (EventType.PUBLICATION_FAILED, 1): PublicationFailedV1,
     (EventType.ANALYTICS_REQUESTED, 1): AnalyticsRequestedV1,
     (EventType.ANALYTICS_COLLECTED, 1): AnalyticsCollectedV1,

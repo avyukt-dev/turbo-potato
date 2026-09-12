@@ -134,6 +134,17 @@ class InstagramPublishResult(BaseModel):
     provider_metadata: dict[str, str | int | bool] = Field(default_factory=dict)
 
 
+class InstagramPreparedPublication(BaseModel):
+    """Resumable container checkpoint, never proof of external publication."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    container_id: str = Field(min_length=1, max_length=255)
+    child_container_ids: tuple[str, ...] = Field(min_length=1)
+    request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mock: bool = False
+
+
 class PublicationVerificationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -162,3 +173,17 @@ class SocialPlatformAdapter(Protocol):
     async def publish(self, request: InstagramCarouselRequest) -> InstagramPublishResult: ...
 
     async def verify_publication(self, external_post_id: str) -> PublicationVerificationResult: ...
+
+
+class InstagramExecutionAdapter(SocialPlatformAdapter, Protocol):
+    """Focused resumable interface; generic adapter redesign is intentionally deferred."""
+
+    async def prepare_publication(
+        self, request: InstagramCarouselRequest
+    ) -> InstagramPreparedPublication: ...
+
+    async def publish_prepared(
+        self, prepared: InstagramPreparedPublication, *, verify: bool = True
+    ) -> InstagramPublishResult: ...
+
+    async def get_container_status(self, container_id: str) -> InstagramContainerStatusResult: ...

@@ -2,3 +2,20 @@ schema_version: 1
 poll_interval_seconds: 30
 batch_size: 50
 publishing_paused: true
+publisher:
+  schema_version: 1
+  consumer_group: publisher
+  consumer_name_prefix: publisher
+  batch_size: 10
+  block_ms: 5000
+  loop_interval_seconds: 5
+  # Covers sequential child/parent container polling plus bounded verification.
+  pending_reclaim_idle_ms: 7200000
+  lease_seconds: 7200
+  max_attempts: 6
+  retry_delays_seconds: [30, 120, 600, 1800, 7200]
+  jitter_ratio: 0.2
+  retry_batch_size: 50
+  verification_poll_interval_seconds: 60
+  verification_max_attempts: 5
+  verification_timeout_seconds: 300

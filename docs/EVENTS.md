@@ -584,6 +584,12 @@ Publisher must reload PostgreSQL and re-check approval/current state before exte
 }
 ```
 
+Version 1 remains unchanged and requires a non-empty `external_url`.
+Version 2 has the same fields, but `external_url` may be `null`: a provider can
+confirm the exact published media ID without returning a permalink. Publishers
+emit version 2 rather than fabricate a URL. Both versions require confirmed
+publication; a container ID or an unverified publish response is insufficient.
+
 ---
 
 # 25. Publication Failed

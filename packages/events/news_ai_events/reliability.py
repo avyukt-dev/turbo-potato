@@ -70,6 +70,10 @@ class TransientEventError(RuntimeError):
     """Retryable infrastructure/provider failure independent of provider packages."""
 
 
+class DeferredWorkError(TransientEventError):
+    """Temporary operational deferral, not a failed attempt or exhausted retry."""
+
+
 class StaleWorkError(RuntimeError):
     """Valid but superseded work that is durably classified and acknowledged."""
 
@@ -211,6 +215,11 @@ class ReliableMessageProcessor:
                 outcome = handler(message.event)
                 if inspect.isawaitable(outcome):
                     outcome = await outcome
+            except DeferredWorkError:
+                # Operational deferrals leave work pending without consuming the
+                # failure budget or marking domain work permanently completed.
+                retrying += 1
+                continue
             except Exception as exc:
                 decision = self._record_failure(message, exc, now=self.clock())
                 if decision.disposition is FailureDisposition.STALE:
