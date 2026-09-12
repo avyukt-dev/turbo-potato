@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from news_ai_ai import (
     AIRequest,
     AIResponse,
@@ -16,12 +17,14 @@ from news_ai_ai import (
     ProviderLocality,
 )
 from news_ai_ai_worker import build_production_content_stack, build_production_quality_stack
+from news_ai_api.main import create_app
 from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
-from news_ai_common.config import AppSettings
+from news_ai_common.config import AppSettings, ConfigLoader
 from news_ai_database import (
     AIRun,
     Article,
     ArticleVersion,
+    AuditLog,
     Base,
     Claim,
     ContentDraft,
@@ -32,11 +35,13 @@ from news_ai_database import (
     FactCheck,
     FactSheet,
     ProcessedEvent,
+    ReviewDecisionRecord,
     Source,
     SourceFeed,
     Story,
 )
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState
+from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import (
     EventType,
     OutboxDispatcher,
@@ -53,8 +58,9 @@ from news_ai_processor import (
     StoryClusteringService,
 )
 from news_ai_research_worker import build_production_research_stack
+from news_ai_review import ApprovalEligibilityService
 from redis.asyncio import Redis
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.getenv("NEWS_AI_DATABASE_URL")
@@ -191,18 +197,33 @@ class DeterministicResearchAI:
         )
 
 
-@pytest.mark.parametrize(("quality_defect", "expected_pass"), [(False, True), (True, False)])
+@pytest.mark.parametrize(
+    ("quality_defect", "expected_pass", "review_decision"),
+    [
+        (False, True, ReviewState.APPROVED),
+        (False, True, ReviewState.CHANGES_REQUESTED),
+        (True, False, None),
+    ],
+)
 def test_real_postgres_redis_pipeline_reaches_quality_boundary(
-    quality_defect: bool, expected_pass: bool
+    quality_defect: bool,
+    expected_pass: bool,
+    review_decision: ReviewState | None,
 ) -> None:
     assert DATABASE_URL is not None and REDIS_URL is not None
     if os.getenv("NEWS_AI_ENVIRONMENT") != "test":
         pytest.skip("destructive pipeline isolation is restricted to the test environment")
-    asyncio.run(_run_pipeline(DATABASE_URL, REDIS_URL, quality_defect, expected_pass))
+    asyncio.run(
+        _run_pipeline(DATABASE_URL, REDIS_URL, quality_defect, expected_pass, review_decision)
+    )
 
 
 async def _run_pipeline(
-    database_url: str, redis_url: str, quality_defect: bool, expected_pass: bool
+    database_url: str,
+    redis_url: str,
+    quality_defect: bool,
+    expected_pass: bool,
+    review_decision: ReviewState | None,
 ) -> None:
     engine = create_engine(database_url, pool_pre_ping=True)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -217,6 +238,9 @@ async def _run_pipeline(
         config_dir="config",
         database_url=database_url,
         redis_url=redis_url,
+        review_api_token="integration-review-token",
+        reviewer_id=UUID("22222222-2222-2222-2222-222222222222"),
+        review_capabilities="view,review,approve",
     )
     stack = build_production_research_stack(
         settings,
@@ -535,7 +559,7 @@ async def _run_pipeline(
             assert quality_check.content_variant_version == variants[0].version
             assert quality_check.fact_sheet_id == sheet.id
             assert quality_check.fact_sheet_version == sheet.version
-            assert quality_check.methodology_version == "quality-gate-methodology-v1"
+            assert quality_check.methodology_version == "quality-gate-methodology-v2"
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"
@@ -632,6 +656,13 @@ async def _run_pipeline(
             )
             assert not any(item.event_type.startswith("publication.") for item in events)
 
+            variant_id = variants[0].id
+            draft_id = draft.id
+            sheet_id = sheet.id
+            sheet_version = sheet.version
+            quality_check_id = quality_check.id
+            ai_run_count_before_review = session.scalar(select(func.count()).select_from(AIRun))
+
         semantic_quality_replay = envelope_from_outbox(generated).model_copy(
             update={"event_id": uuid4(), "idempotency_key": f"replay:{uuid4()}"}
         )
@@ -680,6 +711,65 @@ async def _run_pipeline(
                 )
                 == 1
             )
+
+        if review_decision is not None:
+            client = TestClient(create_app(settings))
+            action = "approve" if review_decision is ReviewState.APPROVED else "request-changes"
+            body = {"artifact_version": 1}
+            if review_decision is ReviewState.CHANGES_REQUESTED:
+                body["reason"] = "Clarify the provisional estimate before publication."
+            response = client.post(
+                f"/api/v1/review/content_variant/{variant_id}/{action}",
+                headers={
+                    "Authorization": "Bearer integration-review-token",
+                    "Idempotency-Key": f"e2e-review-{review_decision.value.casefold()}",
+                },
+                json=body,
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["decision"] == review_decision.value
+            with factory() as session:
+                decision = session.scalar(
+                    select(ReviewDecisionRecord).where(
+                        ReviewDecisionRecord.artifact_id == variant_id
+                    )
+                )
+                audit = session.scalar(
+                    select(AuditLog).where(AuditLog.review_decision_id == decision.id)
+                )
+                reviewed_variant = session.get(ContentVariant, variant_id)
+                reviewed_draft = session.get(ContentDraft, draft_id)
+                assert decision.artifact_version == reviewed_variant.version == 1
+                assert decision.content_draft_id == draft_id
+                assert decision.fact_sheet_id == sheet_id
+                assert decision.fact_sheet_version == sheet_version
+                assert decision.quality_check_id == quality_check_id
+                assert decision.reviewer_id == UUID("22222222-2222-2222-2222-222222222222")
+                assert decision.artifact_snapshot
+                assert len(decision.artifact_hash) == 64
+                assert audit.action == review_decision.value
+                assert reviewed_variant.review_state is review_decision
+                assert reviewed_draft.review_state is review_decision
+                eligibility = ApprovalEligibilityService(
+                    factory,
+                    EditorialConfigLoader(ConfigLoader("config")).load_publishing_policy(),
+                )
+                assert eligibility.is_exact_version_approved(variant_id) is (
+                    review_decision is ReviewState.APPROVED
+                )
+                assert session.scalar(select(func.count()).select_from(AIRun)) == (
+                    ai_run_count_before_review
+                )
+                assert not any(
+                    item.event_type.startswith("publication.")
+                    for item in session.scalars(select(EventOutbox))
+                )
+                assert not inspect(engine).has_table("publications")
+            for stream in streams:
+                assert all(
+                    '"event_type":"publication.' not in fields.get("event", "")
+                    for _message_id, fields in await redis.xrange(stream)
+                )
 
         if not expected_pass:
             quality_call_count = len(

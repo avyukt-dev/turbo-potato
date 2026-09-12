@@ -531,6 +531,10 @@ class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("content_variant_version >= 1", name="ck_quality_variant_version"),
         CheckConstraint("fact_sheet_version >= 1", name="ck_quality_fact_sheet_version"),
         CheckConstraint("review_required", name="ck_quality_review_required"),
+        CheckConstraint(
+            "content_artifact_hash IS NULL OR length(content_artifact_hash) = 64",
+            name="ck_quality_content_artifact_hash",
+        ),
     )
 
     content_draft_id: Mapped[UUID] = mapped_column(ForeignKey("content_drafts.id"), index=True)
@@ -539,6 +543,7 @@ class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     fact_sheet_id: Mapped[UUID] = mapped_column(ForeignKey("fact_sheets.id"), index=True)
     fact_sheet_version: Mapped[int] = mapped_column(Integer, nullable=False)
     methodology_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_artifact_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     factual_accuracy_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     source_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     citation_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -556,6 +561,88 @@ class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     notes: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
     ai_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ai_runs.id"), index=True)
     semantic_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+
+class ReviewDecisionRecord(UUIDPrimaryKeyMixin, Base):
+    """Immutable terminal human decision for one exact ContentVariant version."""
+
+    __tablename__ = "review_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "artifact_type",
+            "artifact_id",
+            "artifact_version",
+            name="uq_review_decisions_artifact_version",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_review_decisions_idempotency_key"),
+        CheckConstraint("artifact_type = 'content_variant'", name="ck_review_artifact_type"),
+        CheckConstraint("artifact_version >= 1", name="ck_review_artifact_version"),
+        CheckConstraint("fact_sheet_version >= 1", name="ck_review_fact_sheet_version"),
+        CheckConstraint(
+            "decision IN ('APPROVED', 'REJECTED', 'CHANGES_REQUESTED')",
+            name="ck_review_terminal_decision",
+        ),
+        CheckConstraint("length(artifact_hash) = 64", name="ck_review_artifact_hash"),
+        CheckConstraint(
+            "decision = 'APPROVED' OR length(trim(reason)) > 0",
+            name="ck_review_reason_required",
+        ),
+    )
+
+    artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_variants.id"), nullable=False, index=True
+    )
+    artifact_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[ReviewState] = mapped_column(
+        SAEnum(ReviewState, native_enum=False, length=32, validate_strings=True), nullable=False
+    )
+    reviewer_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(String(2000))
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    content_draft_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_drafts.id"), nullable=False, index=True
+    )
+    fact_sheet_id: Mapped[UUID] = mapped_column(
+        ForeignKey("fact_sheets.id"), nullable=False, index=True
+    )
+    fact_sheet_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality_check_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_quality_checks.id"), nullable=False, index=True
+    )
+    artifact_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditLog(UUIDPrimaryKeyMixin, Base):
+    """Append-only audit history; not a competing source of review state."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        CheckConstraint("artifact_version >= 1", name="ck_audit_artifact_version"),
+        CheckConstraint("result IN ('SUCCESS', 'BLOCKED')", name="ck_audit_result"),
+    )
+
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
+    artifact_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    review_decision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("review_decisions.id"), nullable=True, index=True
+    )
+    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(2000))
+    request_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    correlation_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    audit_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON_TYPE, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
 
 
 class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):

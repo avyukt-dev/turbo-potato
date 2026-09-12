@@ -21,7 +21,7 @@ from news_ai_ai import (
     AITaskType,
     PromptReference,
 )
-from news_ai_content import ContentGenerationOutput, EditorialBrief
+from news_ai_content import ContentGenerationOutput, EditorialBrief, content_artifact_hash
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -52,7 +52,9 @@ from sqlalchemy.orm import Session
 from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
 
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v1"
+# v1 predates exact content-artifact hash provenance. Historical v1 rows remain
+# immutable; all current assessments use hash-aware v2 semantic identity.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v2"
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
@@ -69,6 +71,7 @@ class QualityVariantContext:
     variant_version: int
     semantic_key: str
     artifact: dict[str, Any]
+    artifact_hash: str
     deterministic_fabricated_quotes: tuple[str, ...]
 
 
@@ -329,7 +332,12 @@ class QualityAssessmentService:
             }
         )
         return QualityVariantContext(
-            variant.id, variant.version, semantic_key, artifact, fabricated_quotes
+            variant.id,
+            variant.version,
+            semantic_key,
+            artifact,
+            content_artifact_hash(artifact),
+            fabricated_quotes,
         )
 
     def existing_result(self, session: Session, context: QualityContext) -> QualityResult | None:
@@ -345,7 +353,17 @@ class QualityAssessmentService:
                 EventOutbox.idempotency_key == self._event_idempotency_key(context),
             )
         )
-        if len(checks) != len(keys) or event is None:
+        checks_by_key = {item.semantic_key: item for item in checks}
+        if (
+            len(checks_by_key) != len(keys)
+            or event is None
+            or any(
+                check.methodology_version != QUALITY_METHODOLOGY_VERSION
+                or check.content_artifact_hash != variant.artifact_hash
+                for variant in context.variants
+                if (check := checks_by_key.get(variant.semantic_key)) is not None
+            )
+        ):
             return None
         return QualityResult(
             context.draft_id,
@@ -463,6 +481,10 @@ class QualityAssessmentService:
             raise StaleWorkError("quality execution no longer matches current variants")
         checks: list[ContentQualityCheck] = []
         for execution in executions:
+            if len(execution.variant.artifact_hash) != 64:
+                raise PermanentEventError(
+                    "current quality methodology requires exact content hash provenance"
+                )
             run = self._persist_ai_run(session, execution, current, event)
             decision = execution.decision
             check = ContentQualityCheck(
@@ -472,6 +494,7 @@ class QualityAssessmentService:
                 fact_sheet_id=current.fact_sheet_id,
                 fact_sheet_version=current.fact_sheet_version,
                 methodology_version=QUALITY_METHODOLOGY_VERSION,
+                content_artifact_hash=execution.variant.artifact_hash,
                 ai_run_id=run.id,
                 semantic_key=execution.variant.semantic_key,
                 **decision.model_dump(exclude={"content_variant_id"}),

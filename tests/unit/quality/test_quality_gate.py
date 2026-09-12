@@ -38,7 +38,12 @@ from news_ai_events import (
     TransientEventError,
 )
 from news_ai_events.outbox import envelope_from_outbox
-from news_ai_quality import QualityAssessmentOutput, QualityAssessmentService, QualityPrompt
+from news_ai_quality import (
+    QUALITY_METHODOLOGY_VERSION,
+    QualityAssessmentOutput,
+    QualityAssessmentService,
+    QualityPrompt,
+)
 from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -125,6 +130,7 @@ def _seed(factory: sessionmaker[Session]):
                 risk_level=RiskLevel.LOW,
             )
         )
+        session.flush()
         session.add(
             FactSheet(
                 id=sheet_id,
@@ -416,11 +422,14 @@ def test_faithful_content_persists_quality_and_becomes_ready_for_review() -> Non
             )
         )
     assert result.passed and check.passed and check.review_required
+    assert check.methodology_version == QUALITY_METHODOLOGY_VERSION
+    assert check.content_artifact_hash == context.variants[0].artifact_hash
     assert draft.review_state is ReviewState.READY_FOR_REVIEW
     assert variant.review_state is ReviewState.READY_FOR_REVIEW
     assert run.task_type == AITaskType.QUALITY_CHECKING.value
     assert run.input_hash == context.variants[0].semantic_key
     assert emitted.causation_id == event.event_id
+    assert QUALITY_METHODOLOGY_VERSION in emitted.idempotency_key
     assert emitted.payload["review_required"] is True
     assert ai.requests[0].input["immutable_fact_sheet"]["fact_sheet_id"] == str(
         context.fact_sheet_id

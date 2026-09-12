@@ -7,6 +7,7 @@ from .models import (
     Article,
     ArticleDiscovery,
     ArticleVersion,
+    AuditLog,
     Claim,
     ClaimEvidence,
     ContentDraft,
@@ -24,16 +25,19 @@ from .models import (
     JobAttempt,
     ProcessedEvent,
     ResearchRunClaim,
+    ReviewDecisionRecord,
     Source,
     SourceFeed,
     Story,
     StorySource,
 )
 from .registry_models import SourceFeedRegistryEntry, SourceRegistryEntry
+from .session import create_database_engine, create_session_factory
 
 __all__ = [
     "AIModel",
     "AIRun",
+    "AuditLog",
     "Article",
     "ArticleDiscovery",
     "ArticleVersion",
@@ -43,6 +47,8 @@ __all__ = [
     "ContentDraft",
     "ContentQualityCheck",
     "ContentVariant",
+    "create_database_engine",
+    "create_session_factory",
     "EventOutbox",
     "EventAttemptStatus",
     "EventDeadLetter",
@@ -55,6 +61,7 @@ __all__ = [
     "JobAttempt",
     "ProcessedEvent",
     "ResearchRunClaim",
+    "ReviewDecisionRecord",
     "Source",
     "SourceFeed",
     "SourceFeedRegistryEntry",
