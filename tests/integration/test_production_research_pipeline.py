@@ -54,7 +54,7 @@ from news_ai_processor import (
 )
 from news_ai_research_worker import build_production_research_stack
 from redis.asyncio import Redis
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.getenv("NEWS_AI_DATABASE_URL")
@@ -679,6 +679,61 @@ async def _run_pipeline(
                     )
                 )
                 == 1
+            )
+
+        if not expected_pass:
+            quality_call_count = len(
+                [
+                    request
+                    for request in ai.requests
+                    if request.task_type is AITaskType.QUALITY_CHECKING
+                ]
+            )
+            with factory() as session, session.begin():
+                session.add(
+                    FactSheet(
+                        story_id=sheet.story_id,
+                        version=sheet.version + 1,
+                        headline=sheet.headline,
+                        summary=sheet.summary,
+                        risk_level=sheet.risk_level,
+                        sensitive_topics=sheet.sensitive_topics,
+                        semantic_key=f"superseding-sheet:{uuid4()}",
+                    )
+                )
+            stale_replay = envelope_from_outbox(generated).model_copy(
+                update={"event_id": uuid4(), "idempotency_key": f"stale:{uuid4()}"}
+            )
+            await redis.xadd(
+                stream_for_event(EventType.CONTENT_GENERATED),
+                {"event": stale_replay.model_dump_json()},
+            )
+            stale_quality = await quality_stack.worker.run_once()
+            assert stale_quality.stale == 1
+            with factory() as session:
+                assert session.get(ContentDraft, draft.id).review_state is ReviewState.NOT_READY
+                assert (
+                    session.get(ContentVariant, variants[0].id).review_state
+                    is ReviewState.NOT_READY
+                )
+                assert len(list(session.scalars(select(ContentQualityCheck)))) == 1
+                assert (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(EventOutbox)
+                        .where(EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value)
+                    )
+                    == 1
+                )
+            assert (
+                len(
+                    [
+                        request
+                        for request in ai.requests
+                        if request.task_type is AITaskType.QUALITY_CHECKING
+                    ]
+                )
+                == quality_call_count
             )
 
         for worker in workers:

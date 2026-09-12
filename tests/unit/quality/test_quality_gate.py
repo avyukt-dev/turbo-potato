@@ -221,6 +221,33 @@ def _seed(factory: sessionmaker[Session]):
             version=1,
             methodology_version="content-generation-methodology-v1",
             editorial_brief_snapshot={
+                "story_id": str(story_id),
+                "fact_sheet_id": str(sheet_id),
+                "fact_sheet_version": 1,
+                "headline": "Gauge record",
+                "summary": "The gauge measured two metres; the estimate remains preliminary.",
+                "editorial_angle": "Lead with the supported measurement and preserve limits.",
+                "key_points": ["The gauge measured two metres."],
+                "exclusions": [],
+                "tone": "measured",
+                "audience_relevance": None,
+                "claims": [
+                    {
+                        "claim_id": str(claim_id),
+                        "text": "The gauge measured two metres.",
+                        "status": "PARTIALLY_SUPPORTED",
+                        "fact_check_id": str(check_id),
+                        "label": "PARTIALLY_TRUE",
+                        "confidence_score": 0.7,
+                        "evidence_ids": [str(evidence_id)],
+                        "evidence_excerpts": ["The gauge measured two metres."],
+                    }
+                ],
+                "risk_level": "LOW",
+                "sensitive_topics": [],
+                "unresolved_questions": ["The estimate remains preliminary."],
+                "priority_topics": [],
+                "style_rules": {},
                 "target": {"platform": "INSTAGRAM", "format": "CAROUSEL"},
                 "human_review_required": True,
             },
@@ -239,9 +266,29 @@ def _seed(factory: sessionmaker[Session]):
             format="CAROUSEL",
             language="en",
             title="What the record shows",
-            body="The gauge measured two metres, with a preliminary estimate.",
+            body=(
+                "Measured record\nThe gauge measured two metres.\n\n"
+                "Qualification\nThe estimate remains preliminary."
+            ),
             caption="The estimate remains preliminary.",
-            structured_payload={"slides": []},
+            structured_payload={
+                "slides": [
+                    {
+                        "position": 1,
+                        "heading": "Measured record",
+                        "body": "The gauge measured two metres.",
+                        "claim_ids": [str(claim_id)],
+                    },
+                    {
+                        "position": 2,
+                        "heading": "Qualification",
+                        "body": "The estimate remains preliminary.",
+                        "claim_ids": [str(claim_id)],
+                    },
+                ],
+                "hashtags": [],
+                "claim_ids_used": [str(claim_id)],
+            },
             claim_ids_used=[str(claim_id)],
             source_ids_used=[str(source_id)],
             media_asset_ids=[],
@@ -321,6 +368,35 @@ def _add_second_variant(factory, event: EventEnvelope) -> tuple[EventEnvelope, o
         ),
         second_id,
     )
+
+
+def _add_newer_fact_sheet(factory, draft_id) -> object:
+    with factory() as session, session.begin():
+        draft = session.get(ContentDraft, draft_id)
+        sheet = session.get(FactSheet, draft.fact_sheet_id)
+        newer = FactSheet(
+            story_id=sheet.story_id,
+            version=sheet.version + 1,
+            headline=sheet.headline,
+            summary=sheet.summary,
+            claims_snapshot=sheet.claims_snapshot,
+            fact_checks_snapshot=sheet.fact_checks_snapshot,
+            evidence_snapshot=sheet.evidence_snapshot,
+            sources_snapshot=sheet.sources_snapshot,
+            timeline=sheet.timeline,
+            entities=sheet.entities,
+            locations=sheet.locations,
+            context=sheet.context,
+            counterclaims=sheet.counterclaims,
+            unresolved_questions=sheet.unresolved_questions,
+            confidence_score=sheet.confidence_score,
+            risk_level=sheet.risk_level,
+            sensitive_topics=sheet.sensitive_topics,
+            semantic_key=f"newer-{uuid4()}",
+        )
+        session.add(newer)
+        session.flush()
+        return newer.id
 
 
 def test_faithful_content_persists_quality_and_becomes_ready_for_review() -> None:
@@ -500,11 +576,17 @@ def test_prompt_injection_is_bounded_untrusted_input_only() -> None:
     )
     with factory() as session, session.begin():
         variant = session.get(ContentVariant, variant_id)
-        variant.body = hostile
+        variant.body = f"Measured record\n{hostile}\n\nQualification\n{hostile}"
         variant.caption = hostile
+        variant.structured_payload = {
+            **variant.structured_payload,
+            "slides": [
+                {**slide, "body": hostile} for slide in variant.structured_payload["slides"]
+            ],
+        }
     _, result = _run(factory, _service(ai), event)
     request = ai.requests[0]
-    assert request.input["content_artifact"]["body"] == hostile
+    assert hostile in request.input["content_artifact"]["body"]
     assert "untrusted data" in request.system_prompt
     assert result.passed
     assert set(request.input) == {
@@ -532,6 +614,200 @@ def test_variant_change_during_ai_is_stale() -> None:
     with factory() as session:
         assert session.get(ContentDraft, draft_id).review_state is ReviewState.NOT_READY
         assert session.scalar(select(func.count()).select_from(ContentQualityCheck)) == 0
+
+
+def test_human_review_state_changed_during_ai_is_never_overwritten() -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, variant_id = _seed(factory)
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+    executions = asyncio.run(service.assess(context, event))
+    with factory() as session, session.begin():
+        session.get(ContentVariant, variant_id).review_state = ReviewState.IN_REVIEW
+    with factory() as session, session.begin(), pytest.raises(PermanentEventError):
+        service.persist(session, context=context, event=event, executions=executions)
+    with factory() as session:
+        assert session.get(ContentDraft, draft_id).review_state is ReviewState.NOT_READY
+        assert session.get(ContentVariant, variant_id).review_state is ReviewState.IN_REVIEW
+        assert session.scalar(select(func.count()).select_from(ContentQualityCheck)) == 0
+
+
+def test_superseded_fact_sheet_is_stale_before_ai() -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, variant_id = _seed(factory)
+    _add_newer_fact_sheet(factory, draft_id)
+    with factory() as session, pytest.raises(StaleWorkError):
+        _service(ai).load_context(session, event)
+    with factory() as session:
+        assert ai.calls == 0
+        assert session.scalar(select(func.count()).select_from(ContentQualityCheck)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value)
+            )
+            == 0
+        )
+        assert session.get(ContentDraft, draft_id).review_state is ReviewState.NOT_READY
+        assert session.get(ContentVariant, variant_id).review_state is ReviewState.NOT_READY
+
+
+def test_fact_sheet_superseded_during_ai_is_stale_at_persistence() -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, variant_id = _seed(factory)
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+    executions = asyncio.run(service.assess(context, event))
+    _add_newer_fact_sheet(factory, draft_id)
+    with factory() as session, session.begin(), pytest.raises(StaleWorkError):
+        service.persist(session, context=context, event=event, executions=executions)
+    with factory() as session:
+        assert ai.calls == 1
+        assert session.scalar(select(func.count()).select_from(ContentQualityCheck)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value)
+            )
+            == 0
+        )
+        assert session.get(ContentDraft, draft_id).review_state is ReviewState.NOT_READY
+        assert session.get(ContentVariant, variant_id).review_state is ReviewState.NOT_READY
+
+
+@pytest.mark.parametrize("field", ["risk_level", "sensitive_topics"])
+def test_draft_risk_or_sensitivity_mismatch_is_permanent_before_ai(field: str) -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, _ = _seed(factory)
+    with factory() as session, session.begin():
+        draft = session.get(ContentDraft, draft_id)
+        setattr(
+            draft,
+            field,
+            RiskLevel.HIGH if field == "risk_level" else ["RELIGIOUS_VIOLENCE"],
+        )
+    with factory() as session, pytest.raises(PermanentEventError):
+        _service(ai).load_context(session, event)
+    assert ai.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fact_sheet_id", lambda: str(uuid4())),
+        ("fact_sheet_version", lambda: 2),
+        ("risk_level", lambda: "HIGH"),
+        ("sensitive_topics", lambda: ["RELIGIOUS_VIOLENCE"]),
+        ("human_review_required", lambda: False),
+    ],
+)
+def test_editorial_brief_boundary_mismatch_is_permanent_before_ai(field: str, value) -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, _ = _seed(factory)
+    with factory() as session, session.begin():
+        draft = session.get(ContentDraft, draft_id)
+        draft.editorial_brief_snapshot = {
+            **draft.editorial_brief_snapshot,
+            field: value(),
+        }
+    with factory() as session, pytest.raises(PermanentEventError):
+        _service(ai).load_context(session, event)
+    assert ai.calls == 0
+
+
+def test_high_sensitive_fact_sheet_cannot_be_downgraded_by_draft_and_brief() -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, _ = _seed(factory)
+    with factory() as session, session.begin():
+        draft = session.get(ContentDraft, draft_id)
+        sheet = session.get(FactSheet, draft.fact_sheet_id)
+        sheet.risk_level = RiskLevel.HIGH
+        sheet.sensitive_topics = ["RELIGIOUS_VIOLENCE"]
+    with factory() as session, pytest.raises(PermanentEventError):
+        _service(ai).load_context(session, event)
+    with factory() as session:
+        assert ai.calls == 0
+        assert session.scalar(select(func.count()).select_from(ContentQualityCheck)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value)
+            )
+            == 0
+        )
+
+
+def test_fact_sheet_risk_and_sensitivity_drive_quality_request_and_event() -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, _ = _seed(factory)
+    with factory() as session, session.begin():
+        draft = session.get(ContentDraft, draft_id)
+        sheet = session.get(FactSheet, draft.fact_sheet_id)
+        sheet.risk_level = RiskLevel.HIGH
+        sheet.sensitive_topics = ["RELIGIOUS_VIOLENCE"]
+        draft.risk_level = RiskLevel.HIGH
+        draft.sensitive_topics = ["RELIGIOUS_VIOLENCE"]
+        draft.editorial_brief_snapshot = {
+            **draft.editorial_brief_snapshot,
+            "risk_level": "HIGH",
+            "sensitive_topics": ["RELIGIOUS_VIOLENCE"],
+        }
+    context, _ = _run(factory, _service(ai), event)
+    with factory() as session:
+        emitted = envelope_from_outbox(
+            session.scalar(
+                select(EventOutbox).where(
+                    EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value
+                )
+            )
+        )
+    assert context.risk_level == "HIGH"
+    assert context.sensitive_topics == ("RELIGIOUS_VIOLENCE",)
+    assert ai.requests[0].sensitivity == ("RELIGIOUS_VIOLENCE",)
+    assert emitted.payload["risk_level"] == "HIGH"
+
+
+def test_draft_human_review_policy_mismatch_is_permanent_before_ai() -> None:
+    factory, ai = _factory(), QualityAI()
+    event, draft_id, _ = _seed(factory)
+    with factory() as session, session.begin():
+        session.get(ContentDraft, draft_id).review_required = False
+    with factory() as session, pytest.raises(PermanentEventError):
+        _service(ai).load_context(session, event)
+    assert ai.calls == 0
+
+
+@pytest.mark.parametrize("field", ["claim_ids_used", "source_ids_used"])
+def test_missing_factual_provenance_is_permanent_before_ai(field: str) -> None:
+    factory, ai = _factory(), QualityAI()
+    event, _, variant_id = _seed(factory)
+    with factory() as session, session.begin():
+        setattr(session.get(ContentVariant, variant_id), field, [])
+    with factory() as session, pytest.raises(PermanentEventError):
+        _service(ai).load_context(session, event)
+    assert ai.calls == 0
+
+
+@pytest.mark.parametrize("quote", ["invented quote", "paraphrased source text"])
+def test_fabricated_quote_in_structured_carousel_forces_failure(quote: str) -> None:
+    factory = _factory()
+    event, _, variant_id = _seed(factory)
+    with factory() as session, session.begin():
+        variant = session.get(ContentVariant, variant_id)
+        slides = [dict(item) for item in variant.structured_payload["slides"]]
+        slides[1]["body"] = f"An official said “{quote}”."
+        variant.structured_payload = {**variant.structured_payload, "slides": slides}
+        variant.body = "\n\n".join(f"{slide['heading']}\n{slide['body']}" for slide in slides)
+    _, result = _run(factory, _service(QualityAI()), event)
+    with factory() as session:
+        check = session.scalar(select(ContentQualityCheck))
+    assert not result.passed
+    assert quote in check.fabricated_quotes
 
 
 def test_invalid_durable_graph_is_rejected_before_ai() -> None:

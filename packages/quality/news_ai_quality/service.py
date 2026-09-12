@@ -21,6 +21,7 @@ from news_ai_ai import (
     AITaskType,
     PromptReference,
 )
+from news_ai_content import ContentGenerationOutput, EditorialBrief
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -29,6 +30,7 @@ from news_ai_database import (
     ContentVariant,
     EventOutbox,
     FactSheet,
+    Story,
 )
 from news_ai_domain import ReviewState
 from news_ai_editorial import ContentStyleConfig, PublishingPolicyConfig
@@ -44,7 +46,7 @@ from news_ai_events import (
 from news_ai_events.outbox import build_outbox_record
 from news_ai_evidence import FactSheetGenerator
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
@@ -155,8 +157,38 @@ class QualityAssessmentService:
             or sheet.version != draft.fact_sheet_version
         ):
             raise PermanentEventError("draft does not reference its exact durable Fact Sheet")
-        fact_sheet = FactSheetGenerator.artifact_from_row(sheet).model_dump(mode="json")
-        brief = dict(draft.editorial_brief_snapshot)
+        latest_version = session.scalar(
+            select(func.max(FactSheet.version)).where(FactSheet.story_id == sheet.story_id)
+        )
+        if latest_version != sheet.version:
+            raise StaleWorkError("content quality references a superseded Fact Sheet")
+        if session.get(Story, sheet.story_id) is None:
+            raise PermanentEventError("content Fact Sheet story no longer exists")
+        artifact = FactSheetGenerator.artifact_from_row(sheet)
+        fact_sheet_topics = _sensitive_topics(artifact.sensitive_topics, owner="Fact Sheet")
+        draft_topics = _sensitive_topics(draft.sensitive_topics, owner="ContentDraft")
+        if draft.risk_level != artifact.risk_level or draft_topics != fact_sheet_topics:
+            raise PermanentEventError("draft risk/sensitivity conflicts with its Fact Sheet")
+        if not draft.review_required:
+            raise PermanentEventError("content draft violates MVP human-review policy")
+        try:
+            brief_model = EditorialBrief.model_validate(draft.editorial_brief_snapshot)
+        except ValidationError as exc:
+            raise PermanentEventError("content draft has an invalid Editorial Brief") from exc
+        brief_topics = _sensitive_topics(brief_model.sensitive_topics, owner="EditorialBrief")
+        if (
+            brief_model.story_id != draft.story_id
+            or brief_model.story_id != artifact.story_id
+            or brief_model.fact_sheet_id != artifact.fact_sheet_id
+            or brief_model.fact_sheet_version != artifact.version
+        ):
+            raise PermanentEventError("Editorial Brief factual identity is inconsistent")
+        if brief_model.risk_level != artifact.risk_level or brief_topics != fact_sheet_topics:
+            raise PermanentEventError("Editorial Brief risk/sensitivity conflicts with Fact Sheet")
+        if not brief_model.human_review_required or not self.review_required:
+            raise PermanentEventError("Editorial Brief violates MVP human-review policy")
+        fact_sheet = artifact.model_dump(mode="json")
+        brief = brief_model.model_dump(mode="json")
         context_variants = tuple(
             self._variant_context(draft, item, fact_sheet, brief) for item in variants
         )
@@ -166,8 +198,8 @@ class QualityAssessmentService:
             story_id=draft.story_id,
             fact_sheet_id=sheet.id,
             fact_sheet_version=sheet.version,
-            risk_level=draft.risk_level.value,
-            sensitive_topics=tuple(draft.sensitive_topics),
+            risk_level=artifact.risk_level.value,
+            sensitive_topics=fact_sheet_topics,
             fact_sheet=fact_sheet,
             editorial_brief=brief,
             style=self.style.model_dump(mode="json"),
@@ -200,6 +232,8 @@ class QualityAssessmentService:
             ) from exc
         if len(claims) != len(set(claims)) or len(sources) != len(set(sources)):
             raise PermanentEventError("variant contains duplicate claim/source identifiers")
+        if not claims:
+            raise PermanentEventError("content variant must reference at least one claim")
         known_claims = {item["claim_id"] for item in fact_sheet["claims"]}
         known_sources = {
             item["source_id"] for item in fact_sheet["sources"] if item.get("source_id")
@@ -211,13 +245,40 @@ class QualityAssessmentService:
         }
         if not set(claims) <= known_claims or not set(sources) <= known_sources:
             raise PermanentEventError("variant references unknown Fact Sheet claims or sources")
-        if any(
-            not any((claim_id, source_id) in evidence_pairs for claim_id in claims)
-            for source_id in sources
-        ):
+        expected_sources = {
+            source_id for claim_id, source_id in evidence_pairs if claim_id in set(claims)
+        }
+        if set(sources) != expected_sources:
             raise PermanentEventError(
-                "variant source is not justified by evidence for a used claim"
+                "variant source provenance does not exactly match selected-claim evidence"
             )
+        try:
+            structured = dict(variant.structured_payload)
+            if set(structured) != {"slides", "hashtags", "claim_ids_used"}:
+                raise ValueError("carousel structured payload has unexpected fields")
+            carousel = ContentGenerationOutput.model_validate(
+                {
+                    "story_id": draft.story_id,
+                    "fact_sheet_id": draft.fact_sheet_id,
+                    "fact_sheet_version": draft.fact_sheet_version,
+                    "platform": variant.platform,
+                    "format": variant.format,
+                    "language": language,
+                    "title": variant.title,
+                    "slides": structured["slides"],
+                    "caption": variant.caption,
+                    "hashtags": structured["hashtags"],
+                    "claim_ids_used": structured["claim_ids_used"],
+                }
+            )
+        except (KeyError, TypeError, ValidationError, ValueError) as exc:
+            raise PermanentEventError("content variant carousel payload is invalid") from exc
+        carousel_claims = tuple(str(item) for item in carousel.claim_ids_used)
+        if set(carousel_claims) != set(claims):
+            raise PermanentEventError("carousel claim provenance conflicts with durable variant")
+        expected_body = "\n\n".join(f"{slide.heading}\n{slide.body}" for slide in carousel.slides)
+        if variant.body != expected_body:
+            raise PermanentEventError("variant body conflicts with its carousel slides")
         artifact = {
             "content_variant_id": str(variant.id),
             "content_variant_version": variant.version,
@@ -227,7 +288,7 @@ class QualityAssessmentService:
             "title": variant.title,
             "body": variant.body,
             "caption": variant.caption,
-            "structured_payload": variant.structured_payload,
+            "structured_payload": carousel.structured_payload(),
             "claim_ids_used": list(claims),
             "source_ids_used": list(sources),
             "media_asset_ids": variant.media_asset_ids,
@@ -240,7 +301,13 @@ class QualityAssessmentService:
                 *(item["excerpt"] for item in fact_sheet["evidence"] if item.get("excerpt")),
             ]
         )
-        generated_text = "\n".join((variant.title, variant.body, variant.caption))
+        generated_text = "\n".join(
+            (
+                variant.title,
+                *(item for slide in carousel.slides for item in (slide.heading, slide.body)),
+                variant.caption,
+            )
+        )
         fabricated_quotes = tuple(
             quote
             for quote in _QUOTED_SPAN.findall(generated_text)
@@ -368,8 +435,21 @@ class QualityAssessmentService:
         event: EventEnvelope,
         executions: tuple[QualityExecution, ...],
     ) -> QualityResult:
-        session.scalar(
+        story = session.scalar(select(Story).where(Story.id == context.story_id).with_for_update())
+        if story is None:
+            raise PermanentEventError("content Fact Sheet story no longer exists")
+        draft = session.scalar(
             select(ContentDraft).where(ContentDraft.id == context.draft_id).with_for_update()
+        )
+        if draft is None:
+            raise PermanentEventError("content draft no longer exists")
+        tuple(
+            session.scalars(
+                select(ContentVariant)
+                .where(ContentVariant.content_draft_id == context.draft_id)
+                .order_by(ContentVariant.id)
+                .with_for_update()
+            )
         )
         current = self.load_context(session, event)
         if current.event_semantic_key != context.event_semantic_key:
@@ -519,6 +599,17 @@ def _quality_request(event: EventEnvelope) -> ContentGeneratedV1:
 
 def _normalize(value: str) -> str:
     return " ".join(value.split()).casefold()
+
+
+def _sensitive_topics(value: Any, *, owner: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise PermanentEventError(f"{owner} sensitive topics are invalid")
+    normalized = tuple(item.strip() for item in value)
+    if len(normalized) != len(set(normalized)):
+        raise PermanentEventError(f"{owner} sensitive topics contain duplicates")
+    return tuple(sorted(normalized))
 
 
 def _hash(value: Any) -> str:
