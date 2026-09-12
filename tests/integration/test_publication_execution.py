@@ -146,7 +146,19 @@ def test_real_postgres_redis_execution_composition_and_ack(factory, monkeypatch,
             await stack.worker.ensure_ready()
             dispatcher = OutboxDispatcher(factory, RedisStreamPublisher(client))
             assert (await dispatcher.dispatch_once()).published == 1
-            first = await stack.worker.run_once()
+            monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "true")
+            deferred = await stack.worker.run_once()
+            assert deferred.retrying == 1 and deferred.dead_lettered == 0
+            assert service.get(row.id).status == PublicationStatus.SCHEDULED
+            assert service.attempts(row.id) == ()
+            assert (await client.xpending("news:publishing", "publisher"))["pending"] == 1
+            assert transport.calls == []
+            monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "false")
+            pending = await client.xpending_range("news:publishing", "publisher", "-", "+", 1)
+            await client.xclaim(
+                "news:publishing", "publisher", "test", 0, [pending[0]["message_id"]], idle=10000
+            )
+            _, first = await stack.worker.recover_once(min_idle_ms=1)
             assert first.processed == 1
             assert service.get(row.id).status == PublicationStatus.PUBLISHED
             assert (await client.xpending("news:publishing", "publisher"))["pending"] == 0
@@ -224,3 +236,47 @@ def test_real_redis_reclaims_crashed_publisher_before_preparation(factory, monke
             await client.aclose()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("status", ["FINISHED", "EXPIRED", "PUBLISHED"])
+def test_postgres_recovered_parent_status_before_intent(factory, status):
+    from news_ai_social import InstagramContainerStatus, InstagramContainerStatusResult
+    from unit.publishing.test_review_corrections import recovered_prepared
+
+    _, _, _, _, actor, row, event, service, adapter, execution = recovered_prepared(factory)
+
+    async def check(identifier):
+        return InstagramContainerStatusResult(
+            container_id=identifier, status=InstagramContainerStatus(status)
+        )
+
+    adapter.get_container_status = check
+    asyncio.run(execution.execute(event))
+    assert adapter.publishes == (1 if status == "FINISHED" else 0)
+    if status == "PUBLISHED":
+        from news_ai_publishing import PublicationError
+
+        assert service.attempts(row.id)[0].ambiguous
+        with pytest.raises(PublicationError):
+            service.retry(row.id, actor, idempotency_key="must-not-replay")
+
+
+@pytest.mark.parametrize("kind", ["AUTHENTICATION", "PERMISSION"])
+def test_postgres_manual_retry_api_repairs_blocked_pre_intent(factory, kind):
+    from news_ai_social import SocialAdapterError, SocialErrorClass
+    from unit.publishing.test_publication_api import client
+
+    _, _, _, _, actor, row, event, service, adapter, execution = setup_execution(factory)
+    adapter.failure = SocialAdapterError("safe", classification=SocialErrorClass(kind))
+    asyncio.run(execution.execute(event))
+    assert service.get(row.id).status == PublicationStatus.BLOCKED
+    adapter.failure = None
+    api = client(service, actor)
+    headers = {"Authorization": "Bearer synthetic-review-token", "Idempotency-Key": "repaired"}
+    path = f"/api/v1/publications/{row.id}/retry"
+    assert api.post(path).status_code == 401
+    assert api.post(path, headers=headers).status_code == 200
+    assert api.post(path, headers=headers).status_code == 200
+    asyncio.run(execution.retry_due())
+    assert service.get(row.id).status == PublicationStatus.PUBLISHED
+    assert len(service.attempts(row.id)) == 2 and adapter.publishes == 1

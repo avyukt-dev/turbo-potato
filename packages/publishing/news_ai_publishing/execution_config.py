@@ -13,6 +13,7 @@ class PublisherConfig(BaseModel):
     consumer_name_prefix: str = Field(default="publisher", min_length=1, max_length=64)
     batch_size: int = Field(default=10, ge=1, le=1000)
     block_ms: int = Field(default=5000, ge=0, le=60000)
+    loop_interval_seconds: float = Field(default=5, gt=0, le=3600)
     pending_reclaim_idle_ms: int = Field(default=7200000, ge=1)
     lease_seconds: int = Field(default=7200, ge=1, le=86400)
     max_attempts: int = Field(default=6, ge=1, le=100)

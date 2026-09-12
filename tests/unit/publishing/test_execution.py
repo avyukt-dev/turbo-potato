@@ -132,12 +132,20 @@ def test_execution_revalidates_before_provider(mutation):
     assert service.attempts(row.id) == ()
 
 
-def test_global_pause_blocks_before_adapter():
+def test_global_pause_defers_and_unpause_executes_same_work():
+    from news_ai_events.reliability import DeferredWorkError
+
     *_, row, event, service, adapter, execution = setup_execution()
     execution.paused = lambda: True
-    asyncio.run(execution.execute(event))
-    assert service.get(row.id).status == PublicationStatus.BLOCKED
+    with pytest.raises(DeferredWorkError):
+        asyncio.run(execution.execute(event))
+    assert service.get(row.id).status == PublicationStatus.SCHEDULED
+    assert service.attempts(row.id) == ()
     assert adapter.preparations == 0
+    execution.paused = lambda: False
+    asyncio.run(execution.execute(event))
+    assert service.get(row.id).status == PublicationStatus.PUBLISHED
+    assert adapter.publishes == 1
 
 
 @pytest.mark.parametrize("kind", [SocialErrorClass.TRANSIENT, SocialErrorClass.RATE_LIMIT])

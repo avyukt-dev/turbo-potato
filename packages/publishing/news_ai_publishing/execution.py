@@ -31,7 +31,7 @@ from news_ai_domain import PublicationStatus as Status
 from news_ai_events import EventEnvelope, EventType, ProcessingOutcome
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.outbox import build_outbox_record, envelope_from_outbox
-from news_ai_events.reliability import PermanentEventError, TransientEventError
+from news_ai_events.reliability import DeferredWorkError, PermanentEventError, TransientEventError
 from news_ai_social import (
     InstagramCarouselRequest,
     InstagramContainerStatus,
@@ -110,7 +110,7 @@ class PublicationExecutionService:
 
     def _request(self, session, row):
         if self.paused():
-            raise PublicationError("PUBLISHING_PAUSED")
+            raise DeferredWorkError("publishing is temporarily paused")
         self.service.revalidate(session, row)
         account = session.get(SocialAccount, row.social_account_id)
         if self.live_account_id is not None and account.account_identifier != self.live_account_id:
@@ -354,6 +354,10 @@ class PublicationExecutionService:
             return ProcessingOutcome.PROCESSED
         if external_id is None:
             try:
+                if self.paused():
+                    raise DeferredWorkError("publishing is temporarily paused")
+                if claim.phase == Phase.PREPARED:
+                    await self._recovered_container_ready(prepared)
                 if prepared is None:
                     prepared = await self.adapter.prepare_publication(claim.request)
                     with self.factory() as session, session.begin():
@@ -382,6 +386,11 @@ class PublicationExecutionService:
                     row.external_post_id = external_id
                     attempt.external_post_id = external_id
                     attempt.phase = Phase.VERIFYING
+            except DeferredWorkError:
+                with self.factory() as session, session.begin():
+                    _, attempt = self._locked(session, claim)
+                    attempt.lease_expires_at = self._now()
+                raise
             except (SocialAdapterError, PublicationError) as exc:
                 with self.factory() as session, session.begin():
                     row, attempt = self._locked(session, claim)
@@ -389,6 +398,10 @@ class PublicationExecutionService:
                         exc.code if isinstance(exc, PublicationError) else exc.classification.value
                     )
                     after_intent = attempt.phase not in PRE_INTENT
+                    ambiguous = after_intent or (
+                        isinstance(exc, SocialAdapterError)
+                        and exc.classification == SocialErrorClass.AMBIGUOUS
+                    )
                     transient = isinstance(exc, SocialAdapterError) and exc.classification in {
                         SocialErrorClass.TRANSIENT,
                         SocialErrorClass.RATE_LIMIT,
@@ -400,7 +413,7 @@ class PublicationExecutionService:
                         event,
                         code,
                         transient=transient and not after_intent,
-                        ambiguous=after_intent,
+                        ambiguous=ambiguous,
                     )
                     if (
                         attempt.retryable
@@ -413,6 +426,31 @@ class PublicationExecutionService:
                 return ProcessingOutcome.PROCESSED
         await self._verify(claim, event, external_id)
         return ProcessingOutcome.PROCESSED
+
+    async def _recovered_container_ready(self, prepared):
+        """Read provider currency outside locks before committing a recovered intent."""
+        for index in range(self.config.verification_max_attempts):
+            if self.paused():
+                raise DeferredWorkError("publishing is temporarily paused")
+            result = await self.adapter.get_container_status(prepared.container_id)
+            if result.status == InstagramContainerStatus.FINISHED:
+                return
+            if result.status in {InstagramContainerStatus.ERROR, InstagramContainerStatus.EXPIRED}:
+                raise SocialAdapterError(
+                    "prepared container requires safe re-preparation",
+                    classification=SocialErrorClass.TRANSIENT,
+                )
+            if result.status == InstagramContainerStatus.PUBLISHED:
+                raise SocialAdapterError(
+                    "prepared container was unexpectedly published",
+                    classification=SocialErrorClass.AMBIGUOUS,
+                    outcome_may_be_ambiguous=True,
+                )
+            if result.status != InstagramContainerStatus.IN_PROGRESS:
+                raise DeferredWorkError("prepared container readiness is unknown")
+            if index + 1 < self.config.verification_max_attempts:
+                await self.sleep(self.config.verification_poll_interval_seconds)
+        raise DeferredWorkError("prepared container is still processing")
 
     async def _verify(self, claim, event, external_id):
         result = None

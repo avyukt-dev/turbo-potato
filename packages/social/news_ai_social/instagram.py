@@ -422,7 +422,12 @@ class MockInstagramAdapter:
 
     async def get_container_status(self, container_id: str) -> InstagramContainerStatusResult:
         return InstagramContainerStatusResult(
-            container_id=container_id, status=InstagramContainerStatus.UNKNOWN
+            container_id=container_id,
+            status=(
+                InstagramContainerStatus.FINISHED
+                if re.fullmatch(r"mock_container_[0-9a-f]{24}", container_id)
+                else InstagramContainerStatus.UNKNOWN
+            ),
         )
 
 

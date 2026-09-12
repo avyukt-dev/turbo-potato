@@ -210,6 +210,35 @@ class PublicationService:
                 .limit(1)
                 .with_for_update()
             )
+            remediated_before_attempt = (
+                attempt is None
+                and row.attempt_count == 0
+                and row.status == PublicationStatus.BLOCKED
+                and row.blocking_reason in {"ACCOUNT_INACTIVE", "ACCOUNT_DESTINATION_MISMATCH"}
+            )
+            safe_attempt = (
+                attempt is not None
+                and not attempt.ambiguous
+                and attempt.external_post_id is None
+                and attempt.phase
+                in {PublicationAttemptPhase.PREPARING, PublicationAttemptPhase.PREPARED}
+                and attempt.status
+                in {
+                    PublicationAttemptStatus.RETRYABLE_FAILED,
+                    PublicationAttemptStatus.TERMINAL_FAILED,
+                    PublicationAttemptStatus.BLOCKED,
+                }
+                and attempt.error_code
+                in {
+                    "TRANSIENT",
+                    "RATE_LIMIT",
+                    "AUTHENTICATION",
+                    "PERMISSION",
+                    "ACCOUNT_INACTIVE",
+                    "ACCOUNT_DESTINATION_MISMATCH",
+                    "PREREQUISITES_CHANGED",
+                }
+            )
             if (
                 row.status
                 not in {
@@ -219,17 +248,7 @@ class PublicationService:
                 }
                 or row.external_post_id is not None
                 or row.scheduled_event_id is None
-                or attempt is None
-                or attempt.ambiguous
-                or attempt.external_post_id is not None
-                or attempt.phase
-                not in {PublicationAttemptPhase.PREPARING, PublicationAttemptPhase.PREPARED}
-                or attempt.status
-                not in {
-                    PublicationAttemptStatus.RETRYABLE_FAILED,
-                    PublicationAttemptStatus.TERMINAL_FAILED,
-                }
-                or attempt.error_code not in {"TRANSIENT", "RATE_LIMIT"}
+                or not (safe_attempt or remediated_before_attempt)
             ):
                 raise PublicationError("UNSAFE_RETRY")
             self.revalidate(session, row)
