@@ -208,6 +208,44 @@ def test_content_generated_rejects_missing_extra_and_duplicate_variant_ids() -> 
             )
 
 
+def test_canonical_content_quality_checked_payload_is_closed_and_validated() -> None:
+    draft_id = uuid4()
+    valid = {
+        "content_draft_id": str(draft_id),
+        "passed": False,
+        "fact_check_passed": False,
+        "source_check_passed": True,
+        "style_check_passed": True,
+        "risk_level": "HIGH",
+        "review_required": True,
+    }
+    event = EventEnvelope(
+        event_type=EventType.CONTENT_QUALITY_CHECKED,
+        producer="ai-worker",
+        producer_version="0.1.0",
+        aggregate_type="content_draft",
+        aggregate_id=draft_id,
+        idempotency_key=f"content.quality_checked:{draft_id}",
+        payload=valid,
+    )
+    assert event.payload == valid
+    for payload in (
+        {key: value for key, value in valid.items() if key != "passed"},
+        {**valid, "approval_state": "APPROVED"},
+        {**valid, "risk_level": "SEVERE"},
+    ):
+        with pytest.raises(ValidationError):
+            EventEnvelope(
+                event_type=EventType.CONTENT_QUALITY_CHECKED,
+                producer="ai-worker",
+                producer_version="0.1.0",
+                aggregate_type="content_draft",
+                aggregate_id=draft_id,
+                idempotency_key="invalid-quality-event",
+                payload=payload,
+            )
+
+
 def test_payload_datetime_must_be_timezone_aware() -> None:
     publication_id = uuid4()
     with pytest.raises(ValidationError, match="scheduled_at must be timezone-aware"):

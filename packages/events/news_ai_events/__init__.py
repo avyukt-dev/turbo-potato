@@ -7,6 +7,7 @@ from .idempotency import mark_processed, was_processed
 from .payloads import (
     ClaimsExtractedV1,
     ContentGeneratedV1,
+    ContentQualityCheckedV1,
     ContentRequestedV1,
     EvidenceCollectedV1,
     EvidenceRequestedV1,
@@ -36,6 +37,7 @@ __all__ = [
     "ClaimsExtractedV1",
     "ContentRequestedV1",
     "ContentGeneratedV1",
+    "ContentQualityCheckedV1",
     "EvidenceCollectedV1",
     "EvidenceRequestedV1",
     "FactCheckCompletedV1",

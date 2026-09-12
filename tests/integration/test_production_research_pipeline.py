@@ -15,15 +15,17 @@ from news_ai_ai import (
     ProviderCapabilities,
     ProviderLocality,
 )
-from news_ai_ai_worker import build_production_content_stack
+from news_ai_ai_worker import build_production_content_stack, build_production_quality_stack
 from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
 from news_ai_common.config import AppSettings
 from news_ai_database import (
     AIRun,
     Article,
     ArticleVersion,
+    Base,
     Claim,
     ContentDraft,
+    ContentQualityCheck,
     ContentVariant,
     EventOutbox,
     EvidenceItem,
@@ -34,7 +36,7 @@ from news_ai_database import (
     SourceFeed,
     Story,
 )
-from news_ai_domain import ClaimVerificationStatus, FactCheckLabel
+from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState
 from news_ai_events import (
     EventType,
     OutboxDispatcher,
@@ -52,7 +54,7 @@ from news_ai_processor import (
 )
 from news_ai_research_worker import build_production_research_stack
 from redis.asyncio import Redis
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.getenv("NEWS_AI_DATABASE_URL")
@@ -65,6 +67,7 @@ pytestmark = pytest.mark.skipif(
 
 @dataclass
 class DeterministicResearchAI:
+    quality_defect: bool = False
     provider_id: str = "local-llama"
     requests: list[AIRequest] = field(default_factory=list)
 
@@ -78,6 +81,7 @@ class DeterministicResearchAI:
                     AITaskType.CLAIM_EXTRACTION,
                     AITaskType.EVIDENCE_ASSESSMENT,
                     AITaskType.CONTENT_GENERATION,
+                    AITaskType.QUALITY_CHECKING,
                 }
             ),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
@@ -146,9 +150,36 @@ class DeterministicResearchAI:
                         "claim_ids": [claim["claim_id"]],
                     },
                 ],
-                "caption": "The verification stage is complete; uncertainty remains explicit.",
+                "caption": (
+                    "The uncorroborated evacuation estimate is final and confirmed."
+                    if self.quality_defect
+                    else "The verification stage is complete; uncertainty remains explicit."
+                ),
                 "hashtags": ["#EvidenceFirst"],
                 "claim_ids_used": [claim["claim_id"]],
+            }
+        elif request.task_type is AITaskType.QUALITY_CHECKING:
+            variant = request.input["content_artifact"]
+            defect = "final and confirmed" in variant["caption"]
+            structured = {
+                "content_variant_id": variant["content_variant_id"],
+                "factual_accuracy_passed": not defect,
+                "source_alignment_passed": True,
+                "citation_alignment_passed": True,
+                "style_passed": True,
+                "unsupported_claims": (
+                    ["The final, confirmed evacuation estimate is unsupported."] if defect else []
+                ),
+                "fabricated_quotes": [],
+                "incorrect_names": [],
+                "incorrect_dates": [],
+                "incorrect_numbers": [],
+                "missing_context": (
+                    ["The estimate is uncorroborated and provisional."] if defect else []
+                ),
+                "defamation_risk": False,
+                "sensitive_topic_error": False,
+                "notes": ["Assessment remained bounded to the immutable Fact Sheet."],
             }
         else:  # pragma: no cover - capability contract prevents this branch
             raise AssertionError(f"unexpected AI task {request.task_type}")
@@ -160,18 +191,28 @@ class DeterministicResearchAI:
         )
 
 
-def test_real_postgres_redis_pipeline_reaches_immutable_fact_sheet() -> None:
+@pytest.mark.parametrize(("quality_defect", "expected_pass"), [(False, True), (True, False)])
+def test_real_postgres_redis_pipeline_reaches_quality_boundary(
+    quality_defect: bool, expected_pass: bool
+) -> None:
     assert DATABASE_URL is not None and REDIS_URL is not None
-    asyncio.run(_run_pipeline(DATABASE_URL, REDIS_URL))
+    if os.getenv("NEWS_AI_ENVIRONMENT") != "test":
+        pytest.skip("destructive pipeline isolation is restricted to the test environment")
+    asyncio.run(_run_pipeline(DATABASE_URL, REDIS_URL, quality_defect, expected_pass))
 
 
-async def _run_pipeline(database_url: str, redis_url: str) -> None:
+async def _run_pipeline(
+    database_url: str, redis_url: str, quality_defect: bool, expected_pass: bool
+) -> None:
     engine = create_engine(database_url, pool_pre_ping=True)
     factory = sessionmaker(engine, expire_on_commit=False)
     redis = Redis.from_url(redis_url, decode_responses=True)
     streams = tuple(sorted(set(STREAM_BY_EVENT.values())))
     await redis.delete(*streams)
-    ai = DeterministicResearchAI()
+    with engine.begin() as connection:
+        tables = ", ".join(f'"{table.name}"' for table in reversed(Base.metadata.sorted_tables))
+        connection.exec_driver_sql(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE")
+    ai = DeterministicResearchAI(quality_defect=quality_defect)
     settings = AppSettings(
         config_dir="config",
         database_url=database_url,
@@ -189,6 +230,13 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         session_factory=factory,
         redis_client=redis,
         consumer_name="production-content-e2e",
+        ai_providers=(ai,),
+    )
+    quality_stack = build_production_quality_stack(
+        settings,
+        session_factory=factory,
+        redis_client=redis,
+        consumer_name="production-quality-e2e",
         ai_providers=(ai,),
     )
     normalizer = NormalizerEventWorker(
@@ -222,6 +270,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         stack.story_verification_worker,
         stack.fact_sheet_worker,
         content_stack.worker,
+        quality_stack.worker,
     )
     try:
         for worker in workers:
@@ -347,6 +396,7 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
         await dispatch_and_run(stack.story_verification_worker)
         await dispatch_and_run(stack.fact_sheet_worker)
         await dispatch_and_run(content_stack.worker)
+        await dispatch_and_run(quality_stack.worker)
         await dispatcher.dispatch_once()
 
         with factory() as session:
@@ -411,6 +461,11 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 for item in by_type[EventType.CONTENT_GENERATED.value]
                 if item.causation_id == content.event_id
             )
+            quality_event = next(
+                item
+                for item in by_type[EventType.CONTENT_QUALITY_CHECKED.value]
+                if item.causation_id == generated.event_id
+            )
             story = session.get(Story, story_created.aggregate_id)
             claims = list(session.scalars(select(Claim).where(Claim.story_id == story.id)))
             check_ids = tuple(UUID(item) for item in verified.payload["fact_check_ids"])
@@ -425,6 +480,13 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 )
             )
             content_run = session.get(AIRun, draft.created_by_ai_run_id)
+            quality_checks = list(
+                session.scalars(
+                    select(ContentQualityCheck).where(
+                        ContentQualityCheck.content_draft_id == draft.id
+                    )
+                )
+            )
             assert content_run is not None
             evidence_ids = tuple(UUID(item["evidence_id"]) for item in sheet.evidence_snapshot)
             evidence = list(
@@ -446,14 +508,18 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
             assert content.idempotency_key == f"content.requested:{sheet.id}:{sheet.version}"
             assert draft.fact_sheet_id == sheet.id
             assert draft.fact_sheet_version == sheet.version
-            assert draft.review_state == "NOT_READY"
+            assert draft.review_state is (
+                ReviewState.READY_FOR_REVIEW if expected_pass else ReviewState.NOT_READY
+            )
             assert draft.review_required is True
             assert draft.risk_level == sheet.risk_level
             assert draft.sensitive_topics == sheet.sensitive_topics
             assert len(variants) == 1
             assert variants[0].platform == "INSTAGRAM"
             assert variants[0].format == "CAROUSEL"
-            assert variants[0].review_state == "NOT_READY"
+            assert variants[0].review_state is (
+                ReviewState.READY_FOR_REVIEW if expected_pass else ReviewState.NOT_READY
+            )
             assert variants[0].media_asset_ids == []
             assert generated.payload["content_variant_ids"] == [str(variants[0].id)]
             assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
@@ -461,6 +527,34 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
             assert content_run.prompt_id == "content-generation"
             assert content_run.prompt_version == "v1"
             assert content_run.prompt_checksum
+            assert len(quality_checks) == 1
+            quality_check = quality_checks[0]
+            assert quality_check.passed is expected_pass
+            assert quality_check.review_required is True
+            assert quality_check.content_variant_id == variants[0].id
+            assert quality_check.content_variant_version == variants[0].version
+            assert quality_check.fact_sheet_id == sheet.id
+            assert quality_check.fact_sheet_version == sheet.version
+            assert quality_check.methodology_version == "quality-gate-methodology-v1"
+            quality_run = session.get(AIRun, quality_check.ai_run_id)
+            assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
+            assert quality_run.prompt_id == "content-quality"
+            assert quality_run.prompt_version == "v1"
+            assert quality_run.prompt_checksum
+            assert quality_event.aggregate_type == "content_draft"
+            assert quality_event.aggregate_id == draft.id
+            assert quality_event.correlation_id == generated.correlation_id
+            assert quality_event.payload["passed"] is expected_pass
+            assert quality_event.payload["review_required"] is True
+            assert quality_event.payload["fact_check_passed"] is expected_pass
+            assert quality_event.payload["source_check_passed"] is True
+            assert quality_event.payload["style_check_passed"] is True
+            assert session.scalar(
+                select(ProcessedEvent).where(
+                    ProcessedEvent.event_id == generated.event_id,
+                    ProcessedEvent.consumer_group == "quality-worker",
+                )
+            )
             fact_sheet_claim_ids = {item["claim_id"] for item in sheet.claims_snapshot}
             assert set(variants[0].claim_ids_used) <= fact_sheet_claim_ids
             selected_claim_ids = set(variants[0].claim_ids_used)
@@ -526,6 +620,41 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                 f"fact_sheet:{sheet.id}:v{sheet.version}",
             )
             assert content_calls[0].input["generation_language"] == story.language
+            quality_calls = [
+                request
+                for request in ai.requests
+                if request.task_type is AITaskType.QUALITY_CHECKING
+            ]
+            assert len(quality_calls) == 1
+            assert quality_calls[0].input_artifact_ids == (
+                f"fact_sheet:{sheet.id}:v{sheet.version}",
+                f"content_variant:{variants[0].id}:v{variants[0].version}",
+            )
+            assert not any(item.event_type.startswith("publication.") for item in events)
+
+        semantic_quality_replay = envelope_from_outbox(generated).model_copy(
+            update={"event_id": uuid4(), "idempotency_key": f"replay:{uuid4()}"}
+        )
+        await redis.xadd(
+            stream_for_event(EventType.CONTENT_GENERATED),
+            {"event": semantic_quality_replay.model_dump_json()},
+        )
+        duplicate_quality = await quality_stack.worker.run_once()
+        assert duplicate_quality.duplicates == 1
+        with factory() as session:
+            assert len(list(session.scalars(select(ContentQualityCheck)))) == 1
+            assert (
+                len(
+                    list(
+                        session.scalars(
+                            select(EventOutbox).where(
+                                EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value
+                            )
+                        )
+                    )
+                )
+                == 1
+            )
 
         semantic_replay = envelope_from_outbox(content).model_copy(
             update={"event_id": uuid4(), "idempotency_key": f"replay:{uuid4()}"}
@@ -550,6 +679,61 @@ async def _run_pipeline(database_url: str, redis_url: str) -> None:
                     )
                 )
                 == 1
+            )
+
+        if not expected_pass:
+            quality_call_count = len(
+                [
+                    request
+                    for request in ai.requests
+                    if request.task_type is AITaskType.QUALITY_CHECKING
+                ]
+            )
+            with factory() as session, session.begin():
+                session.add(
+                    FactSheet(
+                        story_id=sheet.story_id,
+                        version=sheet.version + 1,
+                        headline=sheet.headline,
+                        summary=sheet.summary,
+                        risk_level=sheet.risk_level,
+                        sensitive_topics=sheet.sensitive_topics,
+                        semantic_key=f"superseding-sheet:{uuid4()}",
+                    )
+                )
+            stale_replay = envelope_from_outbox(generated).model_copy(
+                update={"event_id": uuid4(), "idempotency_key": f"stale:{uuid4()}"}
+            )
+            await redis.xadd(
+                stream_for_event(EventType.CONTENT_GENERATED),
+                {"event": stale_replay.model_dump_json()},
+            )
+            stale_quality = await quality_stack.worker.run_once()
+            assert stale_quality.stale == 1
+            with factory() as session:
+                assert session.get(ContentDraft, draft.id).review_state is ReviewState.NOT_READY
+                assert (
+                    session.get(ContentVariant, variants[0].id).review_state
+                    is ReviewState.NOT_READY
+                )
+                assert len(list(session.scalars(select(ContentQualityCheck)))) == 1
+                assert (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(EventOutbox)
+                        .where(EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value)
+                    )
+                    == 1
+                )
+            assert (
+                len(
+                    [
+                        request
+                        for request in ai.requests
+                        if request.task_type is AITaskType.QUALITY_CHECKING
+                    ]
+                )
+                == quality_call_count
             )
 
         for worker in workers:
