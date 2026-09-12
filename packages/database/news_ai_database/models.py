@@ -436,6 +436,92 @@ class FactSheet(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ContentDraft(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Immutable-input content generation result before quality or human review."""
+
+    __tablename__ = "content_drafts"
+    __table_args__ = (
+        UniqueConstraint("semantic_key", name="uq_content_drafts_semantic_key"),
+        UniqueConstraint("story_id", "version", name="uq_content_drafts_story_version"),
+        CheckConstraint("version >= 1", name="ck_content_drafts_version"),
+        CheckConstraint("fact_sheet_version >= 1", name="ck_content_drafts_fact_sheet_version"),
+        CheckConstraint(
+            "risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')",
+            name="ck_content_drafts_risk_level",
+        ),
+        CheckConstraint(
+            "review_state IN ('NOT_READY', 'READY_FOR_REVIEW', 'IN_REVIEW', "
+            "'APPROVED', 'REJECTED', 'CHANGES_REQUESTED')",
+            name="ck_content_drafts_review_state",
+        ),
+    )
+
+    story_id: Mapped[UUID] = mapped_column(ForeignKey("stories.id"), nullable=False, index=True)
+    fact_sheet_id: Mapped[UUID] = mapped_column(
+        ForeignKey("fact_sheets.id"), nullable=False, index=True
+    )
+    fact_sheet_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    methodology_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    editorial_brief_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False)
+    risk_level: Mapped[RiskLevel] = mapped_column(
+        SAEnum(RiskLevel, native_enum=False, length=16, validate_strings=True), nullable=False
+    )
+    sensitive_topics: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    review_state: Mapped[ReviewState] = mapped_column(
+        SAEnum(ReviewState, native_enum=False, length=32, validate_strings=True),
+        nullable=False,
+        default=ReviewState.NOT_READY,
+    )
+    created_by_ai_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("ai_runs.id"), nullable=False, index=True
+    )
+    semantic_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+
+class ContentVariant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One platform/format rendering belonging to a generated ContentDraft."""
+
+    __tablename__ = "content_variants"
+    __table_args__ = (
+        UniqueConstraint(
+            "content_draft_id",
+            "platform",
+            "format",
+            "language",
+            "version",
+            name="uq_content_variants_draft_target_version",
+        ),
+        CheckConstraint("version >= 1", name="ck_content_variants_version"),
+        CheckConstraint(
+            "review_state IN ('NOT_READY', 'READY_FOR_REVIEW', 'IN_REVIEW', "
+            "'APPROVED', 'REJECTED', 'CHANGES_REQUESTED')",
+            name="ck_content_variants_review_state",
+        ),
+    )
+
+    content_draft_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_drafts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    format: Mapped[str] = mapped_column(String(32), nullable=False)
+    language: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    caption: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_payload: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False)
+    claim_ids_used: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    source_ids_used: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    media_asset_ids: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    review_state: Mapped[ReviewState] = mapped_column(
+        SAEnum(ReviewState, native_enum=False, length=32, validate_strings=True),
+        nullable=False,
+        default=ReviewState.NOT_READY,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
 class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "jobs"
     __table_args__ = (UniqueConstraint("semantic_key", name="uq_jobs_semantic_key"),)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from news_ai_common.config import ConfigDomain, ConfigLoader
 from news_ai_domain import RiskLevel
@@ -132,11 +132,47 @@ class EditorialPrioritiesConfig(BaseModel):
         return value
 
 
+class ContentStyleTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    platform: Literal["INSTAGRAM"]
+    format: Literal["CAROUSEL"]
+
+
+class ContentStyleDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_aware: bool
+    explicit_about_uncertainty: bool
+    avoid_unsupported_motive_attribution: bool
+    avoid_sensational_overstatement: bool
+
+    @model_validator(mode="after")
+    def require_safety_defaults(self) -> ContentStyleDefaults:
+        if not all(self.model_dump().values()):
+            raise ValueError("canonical content safety defaults cannot be disabled")
+        return self
+
+
+class ContentStyleConfig(BaseModel):
+    """Editorial-owned presentation policy; factual methodology does not belong here."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(ge=1, le=1)
+    methodology_version: str = Field(min_length=1, max_length=64)
+    default_target: ContentStyleTarget
+    default_tone: str = Field(min_length=1, max_length=128)
+    default_generation_language: str = Field(min_length=2, max_length=32)
+    defaults: ContentStyleDefaults
+
+
 @dataclass(frozen=True, slots=True)
 class EditorialConfigSnapshot:
     taxonomy: TaxonomyConfig
     priorities: EditorialPrioritiesConfig
     risk_policy: EditorialRiskPolicy
+    content_style: ContentStyleConfig
 
 
 class EditorialConfigLoader:
@@ -161,6 +197,11 @@ class EditorialConfigLoader:
                 ConfigDomain.EDITORIAL,
                 "risk-policy.yaml",
                 EditorialRiskPolicy,
+            ),
+            content_style=self.loader.load_domain_file(
+                ConfigDomain.EDITORIAL,
+                "content-style.yaml",
+                ContentStyleConfig,
             ),
         )
 

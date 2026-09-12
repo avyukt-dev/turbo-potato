@@ -6,6 +6,7 @@ llama_cpp:
     task_types:
       - CLAIM_EXTRACTION
       - EVIDENCE_ASSESSMENT
+      - CONTENT_GENERATION
     request_timeout_seconds: 120
     health_timeout_seconds: 2
     max_context_tokens: 8192

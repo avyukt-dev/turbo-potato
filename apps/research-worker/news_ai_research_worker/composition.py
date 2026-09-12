@@ -17,8 +17,17 @@ from news_ai_ai import (
     ClaimExtractionService,
     build_ai_router,
 )
-from news_ai_ai_worker import CLAIM_CONSUMER_GROUP, ClaimExtractionWorker
+from news_ai_ai_worker import (
+    CLAIM_CONSUMER_GROUP,
+    CONTENT_CONSUMER_GROUP,
+    ClaimExtractionWorker,
+    ContentGenerationWorker,
+)
 from news_ai_common.config import AppSettings, ConfigLoader
+from news_ai_content import (
+    ContentGenerationPrompt,
+    ContentGenerationService,
+)
 from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import EventType, RedisStreamConsumer
 from news_ai_events.streams import stream_for_event
@@ -64,6 +73,7 @@ class ProductionResearchStack:
     fact_check_worker: FactCheckWorker
     story_verification_worker: StoryVerificationWorker
     fact_sheet_worker: FactSheetWorker
+    content_worker: ContentGenerationWorker
 
 
 def build_production_research_stack(
@@ -80,7 +90,11 @@ def build_production_research_stack(
         raise ValueError("research consumer name must not be blank")
     loader = ConfigLoader(settings.config_dir)
     router = build_ai_router(loader, providers=ai_providers)
-    for task_type in (AITaskType.CLAIM_EXTRACTION, AITaskType.EVIDENCE_ASSESSMENT):
+    for task_type in (
+        AITaskType.CLAIM_EXTRACTION,
+        AITaskType.EVIDENCE_ASSESSMENT,
+        AITaskType.CONTENT_GENERATION,
+    ):
         router.candidate_provider_ids(
             AIRequest(
                 task_type=task_type,
@@ -114,6 +128,14 @@ def build_production_research_stack(
         discovery_is_not_sufficient_for_serious_claims=(
             research_policy.source_policy.rules.discovery_is_not_sufficient_for_serious_claims
         ),
+    )
+    editorial = EditorialConfigLoader(loader).load()
+    content_style = editorial.content_style
+    content_service = ContentGenerationService(
+        router,
+        ContentGenerationPrompt.load(prompt_root / "content" / "v1.txt"),
+        content_style,
+        editorial.priorities,
     )
 
     def consumer(event_type: EventType, group: str) -> RedisStreamConsumer:
@@ -157,7 +179,15 @@ def build_production_research_stack(
         fact_sheet_worker=FactSheetWorker(
             consumer(EventType.STORY_VERIFIED, FACT_SHEET_CONSUMER_GROUP),
             session_factory,
-            FactSheetGenerator(),
+            FactSheetGenerator(
+                requested_platforms=(content_style.default_target.platform,),
+                requested_formats=(content_style.default_target.format,),
+            ),
+        ),
+        content_worker=ContentGenerationWorker(
+            consumer(EventType.CONTENT_REQUESTED, CONTENT_CONSUMER_GROUP),
+            session_factory,
+            content_service,
         ),
     )
 

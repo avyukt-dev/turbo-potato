@@ -2,6 +2,9 @@
 
 from .taxonomy import (
     CategoryAssignment,
+    ContentStyleConfig,
+    ContentStyleDefaults,
+    ContentStyleTarget,
     EditorialCategory,
     EditorialConfigLoader,
     EditorialConfigSnapshot,
@@ -17,6 +20,9 @@ from .taxonomy import (
 
 __all__ = [
     "CategoryAssignment",
+    "ContentStyleConfig",
+    "ContentStyleDefaults",
+    "ContentStyleTarget",
     "EditorialCategory",
     "EditorialConfigLoader",
     "EditorialConfigSnapshot",
