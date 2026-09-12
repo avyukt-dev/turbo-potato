@@ -10,6 +10,9 @@ routes:
   CONTENT_GENERATION:
     providers: [local-llama]
     fallback_on: [INVALID_RESPONSE]
+  QUALITY_CHECKING:
+    providers: [local-llama]
+    fallback_on: [INVALID_RESPONSE]
 sensitivity_provider_allowlists:
   COMMUNAL_VIOLENCE: [local-llama]
   RELIGIOUS_ACCUSATION: [local-llama]

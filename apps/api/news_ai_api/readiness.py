@@ -80,6 +80,7 @@ def _check_ai_router(settings: AppSettings) -> bool:
             AITaskType.CLAIM_EXTRACTION,
             AITaskType.EVIDENCE_ASSESSMENT,
             AITaskType.CONTENT_GENERATION,
+            AITaskType.QUALITY_CHECKING,
         ):
             request = AIRequest(
                 task_type=task_type,

@@ -13,6 +13,7 @@ from news_ai_database import (
     AIRun,
     Claim,
     ContentDraft,
+    ContentQualityCheck,
     ContentVariant,
     EventOutbox,
     FactCheck,
@@ -263,7 +264,14 @@ def test_concurrent_research_planning_persists_one_semantic_operation() -> None:
             results = tuple(executor.map(lambda _index: run_once(), range(2)))
 
         with factory() as session:
-            jobs = list(session.scalars(select(Job).where(Job.semantic_key.is_not(None))))
+            jobs = list(
+                session.scalars(
+                    select(Job).where(
+                        Job.semantic_key.is_not(None),
+                        Job.payload["plan"]["story_id"].as_string() == str(story_id),
+                    )
+                )
+            )
             job_ids = tuple(job.id for job in jobs)
             outbox_count = len(
                 list(
@@ -281,7 +289,7 @@ def test_concurrent_research_planning_persists_one_semantic_operation() -> None:
         _delete_rows(factory, story_id=story_id)
 
 
-def test_postgresql_enforces_stage21_content_integrity() -> None:
+def test_postgresql_enforces_content_and_quality_integrity() -> None:
     factory = _factory()
     with factory() as session, session.begin():
         story = Story(
@@ -347,7 +355,48 @@ def test_postgresql_enforces_stage21_content_integrity() -> None:
         )
         session.add(variant)
         session.flush()
-        story_id, draft_id, variant_id, model_id = story.id, draft.id, variant.id, model.id
+        quality_run = AIRun(
+            ai_model_id=model.id,
+            task_type="QUALITY_CHECKING",
+            status="SUCCEEDED",
+            validation_status="VALIDATED",
+        )
+        session.add(quality_run)
+        session.flush()
+        quality = ContentQualityCheck(
+            content_draft_id=draft.id,
+            content_variant_id=variant.id,
+            content_variant_version=1,
+            fact_sheet_id=sheet.id,
+            fact_sheet_version=1,
+            methodology_version="quality-gate-methodology-v1",
+            factual_accuracy_passed=True,
+            source_alignment_passed=True,
+            citation_alignment_passed=True,
+            style_passed=True,
+            unsupported_claims=[],
+            fabricated_quotes=[],
+            incorrect_names=[],
+            incorrect_dates=[],
+            incorrect_numbers=[],
+            missing_context=[],
+            defamation_risk=False,
+            sensitive_topic_error=False,
+            passed=True,
+            review_required=True,
+            notes=[],
+            ai_run_id=quality_run.id,
+            semantic_key=f"quality:{uuid4()}",
+        )
+        session.add(quality)
+        session.flush()
+        story_id, draft_id, variant_id, quality_id, model_id = (
+            story.id,
+            draft.id,
+            variant.id,
+            quality.id,
+            model.id,
+        )
 
     with factory() as session, session.begin():
         for value in ReviewState:
@@ -367,6 +416,9 @@ def test_postgresql_enforces_stage21_content_integrity() -> None:
         ("UPDATE content_drafts SET version=0 WHERE id=:id", draft_id),
         ("UPDATE content_variants SET review_state='INVALID' WHERE id=:id", variant_id),
         ("UPDATE content_variants SET version=0 WHERE id=:id", variant_id),
+        ("UPDATE content_quality_checks SET review_required=false WHERE id=:id", quality_id),
+        ("UPDATE content_quality_checks SET content_variant_version=0 WHERE id=:id", quality_id),
+        ("UPDATE content_quality_checks SET fact_sheet_version=0 WHERE id=:id", quality_id),
     )
     try:
         for statement, row_id in statements:
@@ -374,6 +426,9 @@ def test_postgresql_enforces_stage21_content_integrity() -> None:
                 session.execute(text(statement), {"id": row_id})
     finally:
         with factory() as session, session.begin():
+            session.execute(
+                delete(ContentQualityCheck).where(ContentQualityCheck.content_draft_id == draft_id)
+            )
             session.execute(delete(ContentVariant).where(ContentVariant.id == variant_id))
             session.execute(delete(ContentDraft).where(ContentDraft.id == draft_id))
             session.execute(delete(FactSheet).where(FactSheet.story_id == story_id))
@@ -546,6 +601,7 @@ def test_migration_upgrade_downgrade_reupgrade_round_trip() -> None:
             assert {
                 "article_discoveries",
                 "content_drafts",
+                "content_quality_checks",
                 "content_variants",
                 "research_run_claims",
                 "event_processing_attempts",
@@ -560,6 +616,10 @@ def test_migration_upgrade_downgrade_reupgrade_round_trip() -> None:
         try:
             assert {"primary_evidence_count", "research_generation"} <= {
                 column["name"] for column in inspect(reupgraded_engine).get_columns("fact_checks")
+            }
+            assert {"content_variant_version", "fact_sheet_version", "semantic_key"} <= {
+                column["name"]
+                for column in inspect(reupgraded_engine).get_columns("content_quality_checks")
             }
         finally:
             reupgraded_engine.dispose()

@@ -522,6 +522,42 @@ class ContentVariant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
+class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Exact-version quality assessment; never a factual or approval decision."""
+
+    __tablename__ = "content_quality_checks"
+    __table_args__ = (
+        UniqueConstraint("semantic_key", name="uq_content_quality_checks_semantic_key"),
+        CheckConstraint("content_variant_version >= 1", name="ck_quality_variant_version"),
+        CheckConstraint("fact_sheet_version >= 1", name="ck_quality_fact_sheet_version"),
+        CheckConstraint("review_required", name="ck_quality_review_required"),
+    )
+
+    content_draft_id: Mapped[UUID] = mapped_column(ForeignKey("content_drafts.id"), index=True)
+    content_variant_id: Mapped[UUID] = mapped_column(ForeignKey("content_variants.id"), index=True)
+    content_variant_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    fact_sheet_id: Mapped[UUID] = mapped_column(ForeignKey("fact_sheets.id"), index=True)
+    fact_sheet_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    methodology_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    factual_accuracy_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    source_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    citation_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    style_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    unsupported_claims: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    fabricated_quotes: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    incorrect_names: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    incorrect_dates: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    incorrect_numbers: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    missing_context: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    defamation_risk: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    sensitive_topic_error: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notes: Mapped[list[str]] = mapped_column(JSON_TYPE, default=list)
+    ai_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ai_runs.id"), index=True)
+    semantic_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+
 class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "jobs"
     __table_args__ = (UniqueConstraint("semantic_key", name="uq_jobs_semantic_key"),)

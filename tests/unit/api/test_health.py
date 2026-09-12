@@ -92,7 +92,7 @@ def test_ready_when_all_required_dependencies_are_healthy(tmp_path: Path) -> Non
     }
 
 
-def test_ai_router_readiness_requires_content_generation_route(tmp_path: Path) -> None:
+def test_ai_router_readiness_requires_quality_checking_route(tmp_path: Path) -> None:
     models = tmp_path / "models"
     models.mkdir()
     (models / "providers.yaml").write_text(
@@ -121,5 +121,5 @@ sensitivity_provider_allowlists: {}
     assert _check_ai_router(AppSettings(config_dir=tmp_path)) is False
 
 
-def test_canonical_ai_router_readiness_resolves_all_stage21_tasks() -> None:
+def test_canonical_ai_router_readiness_resolves_all_stage22_tasks() -> None:
     assert _check_ai_router(AppSettings(config_dir=Path("config"))) is True
