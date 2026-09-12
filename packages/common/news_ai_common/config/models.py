@@ -2,8 +2,9 @@
 
 from enum import StrEnum
 from pathlib import Path
+from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,3 +32,6 @@ class AppSettings(BaseSettings):
     database_url: str | None = None
     redis_url: str | None = None
     readiness_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    review_api_token: SecretStr | None = None
+    reviewer_id: UUID | None = None
+    review_capabilities: str = "view,review,approve"

@@ -25,6 +25,7 @@ from .generation import (
     ContentGenerationResult,
     ContentGenerationService,
 )
+from .integrity import content_artifact_hash
 
 __all__ = [
     "BriefClaim",
@@ -46,4 +47,5 @@ __all__ = [
     "EditorialBrief",
     "InstagramCarouselContent",
     "build_editorial_brief",
+    "content_artifact_hash",
 ]

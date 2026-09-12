@@ -21,7 +21,7 @@ from news_ai_ai import (
     AITaskType,
     PromptReference,
 )
-from news_ai_content import ContentGenerationOutput, EditorialBrief
+from news_ai_content import ContentGenerationOutput, EditorialBrief, content_artifact_hash
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -69,6 +69,7 @@ class QualityVariantContext:
     variant_version: int
     semantic_key: str
     artifact: dict[str, Any]
+    artifact_hash: str
     deterministic_fabricated_quotes: tuple[str, ...]
 
 
@@ -329,7 +330,12 @@ class QualityAssessmentService:
             }
         )
         return QualityVariantContext(
-            variant.id, variant.version, semantic_key, artifact, fabricated_quotes
+            variant.id,
+            variant.version,
+            semantic_key,
+            artifact,
+            content_artifact_hash(artifact),
+            fabricated_quotes,
         )
 
     def existing_result(self, session: Session, context: QualityContext) -> QualityResult | None:
@@ -472,6 +478,7 @@ class QualityAssessmentService:
                 fact_sheet_id=current.fact_sheet_id,
                 fact_sheet_version=current.fact_sheet_version,
                 methodology_version=QUALITY_METHODOLOGY_VERSION,
+                content_artifact_hash=execution.variant.artifact_hash,
                 ai_run_id=run.id,
                 semantic_key=execution.variant.semantic_key,
                 **decision.model_dump(exclude={"content_variant_id"}),

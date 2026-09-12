@@ -46,6 +46,7 @@ where = [
   "packages/evidence",
   "packages/content",
   "packages/quality",
+  "packages/review",
 ]
 include = [
   "news_ai_api*",
@@ -62,10 +63,12 @@ include = [
   "news_ai_evidence*",
   "news_ai_content*",
   "news_ai_quality*",
+  "news_ai_review*",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = [
+  "tests",
   "apps/api",
   "apps/collector",
   "apps/processor",
@@ -80,6 +83,7 @@ pythonpath = [
   "packages/evidence",
   "packages/content",
   "packages/quality",
+  "packages/review",
 ]
 testpaths = ["tests"]
 addopts = "-q"
