@@ -8,9 +8,8 @@ from typing import Any
 
 from news_ai_ai import (
     AIProvider,
-    AIRequest,
-    AIResponseFormat,
     AIRouter,
+    AIStageConfigLoader,
     AITaskType,
     ClaimExtractionPrompt,
     ClaimExtractionService,
@@ -89,22 +88,27 @@ def build_production_research_stack(
         AITaskType.CLAIM_EXTRACTION,
         AITaskType.EVIDENCE_ASSESSMENT,
     ):
-        router.candidate_provider_ids(
-            AIRequest(
-                task_type=task_type,
-                system_prompt="composition route validation",
-                input={},
-                response_format=AIResponseFormat.STRUCTURED,
-            )
-        )
-    prompt_root = settings.config_dir / "prompts"
+        router.validate_stage(task_type)
+    stage_loader = AIStageConfigLoader(loader)
+    claim_stage = router.stage_config(AITaskType.CLAIM_EXTRACTION)
+    evidence_stage = router.stage_config(AITaskType.EVIDENCE_ASSESSMENT)
+    claim_prompt = ClaimExtractionPrompt.load(
+        stage_loader.resolve_prompt(claim_stage), version=claim_stage.prompt.version
+    )
+    evidence_prompt = EvidenceAssessmentPrompt.load(
+        stage_loader.resolve_prompt(evidence_stage), version=evidence_stage.prompt.version
+    )
+    if claim_prompt.prompt_id != claim_stage.prompt.prompt_id:
+        raise ValueError("claim-extraction prompt identity does not match stage configuration")
+    if evidence_prompt.prompt_id != evidence_stage.prompt.prompt_id:
+        raise ValueError("evidence-assessment prompt identity does not match stage configuration")
     claim_service = ClaimExtractionService(
         router,
-        ClaimExtractionPrompt.load(prompt_root / "claim-extraction" / "v1.txt"),
+        claim_prompt,
     )
     assessor = AIRouterEvidenceAssessor(
         router,
-        EvidenceAssessmentPrompt.load(prompt_root / "evidence-assessment" / "v1.txt"),
+        evidence_prompt,
     )
     search_registry = SearchProviderRegistry((PostgresArticleSearchProvider(session_factory),))
     research_policy = ResearchPolicyLoader(loader).load()

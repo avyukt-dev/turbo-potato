@@ -233,16 +233,38 @@ Model/provider configuration belongs under:
 ```text
 config/models/
 ├── providers.yaml
-├── routing.yaml
-├── local-models.yaml
-└── budgets.yaml
+├── policy.yaml
+└── stages/
+    ├── claim-extraction.yaml
+    ├── evidence-assessment.yaml
+    ├── content-generation.yaml
+    └── quality-checking.yaml
 ```
+
+`providers.yaml` owns provider infrastructure and adapter construction only. `policy.yaml`
+owns cross-cutting routing authorization such as locality mode and sensitive-topic provider
+allowlists. Each closed production stage file owns its task identity, versioned provider-neutral
+prompt reference, ordered provider/model selections, and explicitly authorized fallback reasons.
+
+The production pipeline constructs one provider registry/router and shares it across stage
+stacks. For each attempt, the router applies the model paired with that stage's selected
+provider. Domain services remain provider-neutral and never branch on adapter type. Future
+providers are added through a closed adapter factory plus provider and stage configuration,
+without moving provider details into stage services.
+
+Production stage configuration is authoritative for model selection. A caller-supplied model
+must agree with the stage's primary selection; fallback attempts still use the model paired with
+each selected provider. Conflicting request-level model input fails closed rather than silently
+changing the route.
 
 Prompt templates/versions belong under:
 
 ```text
 config/prompts/
 ```
+
+Stage YAML references these prompt files; prompt text is not copied into model configuration or
+forked per provider. Prompt identity, version, and checksum remain part of AI provenance.
 
 Research evidence policy does not belong in AI model routing files.
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from shutil import copytree
 
 from fastapi.testclient import TestClient
 from news_ai_api.main import create_app
@@ -93,31 +94,9 @@ def test_ready_when_all_required_dependencies_are_healthy(tmp_path: Path) -> Non
 
 
 def test_ai_router_readiness_requires_quality_checking_route(tmp_path: Path) -> None:
-    models = tmp_path / "models"
-    models.mkdir()
-    (models / "providers.yaml").write_text(
-        """schema_version: 1
-llama_cpp:
-  - provider_id: local-llama
-    base_url: http://127.0.0.1:8080
-    model: local-news-ai
-    task_types: [CLAIM_EXTRACTION, EVIDENCE_ASSESSMENT, CONTENT_GENERATION]
-    request_timeout_seconds: 120
-    health_timeout_seconds: 2
-    max_context_tokens: 8192
-""",
-        encoding="utf-8",
-    )
-    (models / "routing.yaml").write_text(
-        """schema_version: 1
-mode: LOCAL
-routes:
-  CLAIM_EXTRACTION: {providers: [local-llama]}
-  EVIDENCE_ASSESSMENT: {providers: [local-llama]}
-sensitivity_provider_allowlists: {}
-""",
-        encoding="utf-8",
-    )
+    copytree(Path("config/models"), tmp_path / "models")
+    copytree(Path("config/prompts"), tmp_path / "prompts")
+    (tmp_path / "models" / "stages" / "quality-checking.yaml").unlink()
     assert _check_ai_router(AppSettings(config_dir=tmp_path)) is False
 
 
