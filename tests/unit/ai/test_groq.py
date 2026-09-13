@@ -214,6 +214,42 @@ def test_http_failures_map_to_normalized_types(status: int, error_type: type[Exc
         assert type(caught.value) is AIProviderError
 
 
+def test_json_validation_failure_maps_to_invalid_response_without_provider_body() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "secret-provider-message",
+                        "type": "invalid_request_error",
+                        "code": "json_validate_failed",
+                        "failed_generation": "secret-generated-content",
+                    }
+                },
+            )
+
+        async with _client(handler) as client:
+            await GroqProvider(
+                _config(),
+                api_key="test-secret",
+                client=client,
+            ).execute(_request())
+
+    with pytest.raises(
+        AIInvalidResponseError,
+        match="Groq failed to produce valid structured output",
+    ) as caught:
+        asyncio.run(run())
+
+    error = str(caught.value)
+
+    assert type(caught.value) is AIInvalidResponseError
+    assert "secret-provider-message" not in error
+    assert "secret-generated-content" not in error
+    assert "test-secret" not in error
+
+
 def test_transport_timeout_and_network_error_are_normalized() -> None:
     async def timeout(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("secret-timeout", request=request)
