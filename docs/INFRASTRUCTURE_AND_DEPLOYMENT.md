@@ -278,6 +278,44 @@ llama.cpp
 
 Not every logical service needs its own host process in the MVP.
 
+The production upstream owner is **`news-pipeline`**, runnable as
+`news-pipeline` or `python -m news_ai_pipeline`. It hosts concurrent bounded
+tasks for collection, ordinary outbox dispatch, normalization, clustering,
+claim extraction, research planning, evidence collection, fact checking,
+story verification, Fact Sheet generation, content generation, and quality.
+These retain their domain boundaries and canonical Redis consumer groups;
+`news-collector`, `news-processor`, `news-ai-worker`, and `news-research-worker`
+are logical stages, not separately expected host services in this deployment.
+The API, scheduler, and publisher remain separate production processes.
+
+`config/runtime/pipeline.yaml` owns typed, bounded wake/block/recovery,
+component-error backoff, startup, and shutdown settings. Startup validates
+source/runtime/AI routing configuration, checks PostgreSQL and Redis, and
+ensures canonical consumer groups at ID `0` before reporting readiness.
+It does not perform generative inference as a readiness test.
+The owner shares one engine/session factory, Redis client, and AI router
+across the existing production composition factories. Short domain
+transactions and external AI/search work remain owned by those components.
+
+Each worker serializes its own stale-pending reclaim and new-message reads;
+different stages run concurrently. The default pending idle threshold is
+15 minutes and must remain longer than healthy processing on the deployment
+to avoid reclaiming legitimate in-flight work. Reclaim uses existing durable
+idempotency/current-state checks. Redis-loss reconciliation remains an
+explicit operator command, never automatic startup behavior.
+
+Transient component errors have bounded normalized logging/backoff. Repeated
+infrastructure failure or unexpected component termination exits the owner
+nonzero rather than leaving a silently partial pipeline. SIGTERM/SIGINT stops
+new ticks, permits bounded in-flight completion, then cancels remaining tasks
+and closes owned clients and the engine. Shutdown never manufactures ACKs.
+Restart preserves pending deliveries for ordinary reclaim.
+
+`news-pipeline` is expected, manageable, and critical in the production
+service registry: its absence stops upstream progress. Host service
+installation remains deployment-owned behind the existing runtime adapters.
+Publishing pause stops publication, not collection/research/content/quality.
+
 ---
 
 # 12. Startup Dependencies

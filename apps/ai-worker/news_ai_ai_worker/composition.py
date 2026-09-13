@@ -51,11 +51,14 @@ def build_production_content_stack(
     redis_client: Any,
     consumer_name: str,
     ai_providers: Iterable[AIProvider] | None = None,
+    ai_router: AIRouter | None = None,
 ) -> ProductionContentStack:
     if not consumer_name.strip():
         raise ValueError("content consumer name must not be blank")
     loader = ConfigLoader(settings.config_dir)
-    router = build_ai_router(loader, providers=ai_providers)
+    if ai_router is not None and ai_providers is not None:
+        raise ValueError("inject either an AI router or providers")
+    router = ai_router or build_ai_router(loader, providers=ai_providers)
     router.candidate_provider_ids(
         AIRequest(
             task_type=AITaskType.CONTENT_GENERATION,
@@ -92,11 +95,14 @@ def build_production_quality_stack(
     redis_client: Any,
     consumer_name: str,
     ai_providers: Iterable[AIProvider] | None = None,
+    ai_router: AIRouter | None = None,
 ) -> ProductionQualityStack:
     if not consumer_name.strip():
         raise ValueError("quality consumer name must not be blank")
     loader = ConfigLoader(settings.config_dir)
-    router = build_ai_router(loader, providers=ai_providers)
+    if ai_router is not None and ai_providers is not None:
+        raise ValueError("inject either an AI router or providers")
+    router = ai_router or build_ai_router(loader, providers=ai_providers)
     router.candidate_provider_ids(
         AIRequest(
             task_type=AITaskType.QUALITY_CHECKING,

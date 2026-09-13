@@ -188,9 +188,12 @@ def test_profile_remains_hint_and_manual_is_safe(monkeypatch):
     assert runtime.manager.name == "manual"
     services = {entry.name: entry for entry in runtime.registry.services}
     assert services["news-api"].expected and services["news-api"].critical
+    assert services["news-pipeline"].expected and services["news-pipeline"].critical
+    assert services["news-pipeline"].manageable
     assert services["news-scheduler"].expected and not services["news-scheduler"].critical
     assert services["news-publisher"].expected and not services["news-publisher"].critical
-    assert not services["news-collector"].expected
+    for name in ("news-collector", "news-processor", "news-ai-worker", "news-research-worker"):
+        assert not services[name].expected and not services[name].manageable
     assert runtime.operation("status", "news-publisher")["state"] == "unknown"
     with pytest.raises(RuntimeOperationError, match="UNSUPPORTED_OPERATION"):
         runtime.operation("start", "news-publisher")
@@ -460,9 +463,28 @@ def test_expected_application_services_are_health_checked_read_only():
     ]
 
 
-def test_critical_expected_application_failure_is_unhealthy():
-    manager = SystemdServiceManager(Runner("failed", code=3))
+@pytest.mark.parametrize("name", ["news-api", "news-pipeline"])
+@pytest.mark.parametrize("active", [True, False])
+def test_critical_expected_application_service_health(name, active):
+    manager = SystemdServiceManager(
+        Runner("active" if active else "failed", code=0 if active else 3)
+    )
     runtime = controller(manager)
+    runtime.registry = ServiceRegistry.model_validate(
+        {
+            "schema_version": 1,
+            "services": [
+                {
+                    "name": name,
+                    "native_name": "configured-api",
+                    "service_class": "application",
+                    "expected": True,
+                    "critical": True,
+                    "manageable": True,
+                }
+            ],
+        }
+    )
     runtime._manager = manager
 
     async def dependencies(settings):
@@ -488,10 +510,21 @@ def test_critical_expected_application_failure_is_unhealthy():
 
     report = asyncio.run(monitor.collect()).report
 
-    assert next(check for check in report.checks if check.name == "news-api").status == (
-        HealthStatus.UNHEALTHY
+    assert next(check for check in report.checks if check.name == name).status == (
+        HealthStatus.HEALTHY if active else HealthStatus.UNHEALTHY
     )
-    assert report.status == HealthStatus.UNHEALTHY
+    assert report.status == (HealthStatus.HEALTHY if active else HealthStatus.UNHEALTHY)
+
+
+@pytest.mark.parametrize("action", ["status", "start", "stop", "restart", "enable", "disable"])
+def test_news_pipeline_generic_service_operations_use_registered_native_name(monkeypatch, action):
+    monkeypatch.setattr("news_ai_common.runtime.managers.shutil.which", lambda value: value)
+    runtime = build_controller(AppSettings(config_dir="config", service_manager="manual"))
+    command_runner = Runner("started")
+    runtime._manager = OpenRCServiceManager(command_runner)
+    runtime.operation(action, "news-pipeline")
+    assert len(command_runner.calls) == 1
+    assert "news-pipeline" in command_runner.calls[0]
 
 
 def test_health_timeout_and_optional_thermal_requirement(monkeypatch):
