@@ -34,7 +34,9 @@ def test_live_groq_structured_completion_normalizes_without_reasoning() -> None:
                     model="openai/gpt-oss-120b",
                     reasoning_effort=AIReasoningEffort.MEDIUM,
                     response_format=AIResponseFormat.STRUCTURED,
-                    max_tokens=64,
+                    # GPT-OSS reasoning tokens consume the completion budget; 64 tokens can
+                    # exhaust the budget before valid JSON is produced.
+                    max_tokens=1024,
                     timeout_seconds=30,
                 )
             )

@@ -169,10 +169,28 @@ class GroqProvider:
             raise AIProviderError("AI request input is not JSON serializable") from exc
 
     @staticmethod
+    def _error_code(response: httpx.Response) -> str | None:
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+
+        if not isinstance(body, dict):
+            return None
+
+        error = body.get("error")
+        if not isinstance(error, dict):
+            return None
+
+        code = error.get("code")
+        return code if isinstance(code, str) else None
+
+    @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
         status = response.status_code
         if status < 400:
             return
+
         if status == 429:
             raise AIProviderRateLimitError("Groq request was rate limited")
         if status in {401, 403}:
@@ -181,6 +199,10 @@ class GroqProvider:
             raise AIContextTooLargeError("Groq request exceeded the accepted context size")
         if status >= 500:
             raise AIProviderUnavailableError(f"Groq server returned HTTP {status}")
+
+        if status == 400 and GroqProvider._error_code(response) == "json_validate_failed":
+            raise AIInvalidResponseError("Groq failed to produce valid structured output")
+
         raise AIProviderError(f"Groq rejected request with HTTP {status}")
 
     @staticmethod
