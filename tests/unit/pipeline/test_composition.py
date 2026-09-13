@@ -36,10 +36,15 @@ def test_production_composition_reuses_stacks_shared_router_and_closed_groups(mo
             )
             assert all(w.consumer.block_ms == 1 for w in stack.workers.values())
             assert not stack.owned_ai_providers
+            acquisition = stack.owned_content_acquirer
+            assert acquisition is not None
+            acquisition.close = AsyncMock(wraps=acquisition.close)
+            assert stack.workers["normalizer"].content_acquirer is acquisition
         finally:
             await stack.close()
             await stack.close()
         client.aclose.assert_awaited_once()
+        acquisition.close.assert_awaited_once()
 
     asyncio.run(scenario())
 

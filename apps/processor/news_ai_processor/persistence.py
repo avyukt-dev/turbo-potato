@@ -6,8 +6,10 @@ the caller's SQLAlchemy transaction so they succeed or roll back together.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from news_ai_database import Article, ArticleDiscovery, ArticleVersion
@@ -51,6 +53,12 @@ class ArticlePersistenceService:
         causation_id: UUID | None = None,
         discovery_id: UUID | None = None,
     ) -> ArticlePersistenceResult:
+        if not normalized.body or not normalized.body.strip():
+            raise ValueError("normalized article requires nonempty article body")
+        if normalized.content_acquisition and hashlib.sha256(
+            normalized.body.encode()
+        ).hexdigest() != (normalized.content_acquisition.body_hash):
+            raise ValueError("normalized article acquisition hash does not match body")
         article, created_article = self._get_or_create_article(normalized)
         self._apply_latest_metadata(article, normalized)
 
@@ -164,8 +172,13 @@ class ArticlePersistenceService:
 
     @staticmethod
     def _version_metadata(normalized: NormalizedArticle) -> dict[str, Any]:
-        return {
-            "canonical_url": normalized.canonical_url,
+        location = normalized.canonical_url
+        if normalized.content_acquisition:
+            parts = urlsplit(location)
+            # Article retains exact canonical identity; diagnostic version metadata needs no query.
+            location = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        metadata = {
+            "canonical_url": location,
             "title": normalized.title,
             "author": normalized.author,
             "language": normalized.language,
@@ -178,6 +191,9 @@ class ArticlePersistenceService:
             ),
             "external_id": normalized.external_id,
         }
+        if normalized.content_acquisition:
+            metadata["content_acquisition"] = normalized.content_acquisition.model_dump(mode="json")
+        return metadata
 
     @staticmethod
     def _event_payload(

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from article_fixtures import offline_acquirer
 from fastapi.testclient import TestClient
 from news_ai_ai import (
     AIRequest,
@@ -276,6 +277,7 @@ async def _run_pipeline(
             block_ms=50,
         ),
         factory,
+        content_acquirer=offline_acquirer(),
     )
     processor = ProcessorEventWorker(
         RedisStreamConsumer(

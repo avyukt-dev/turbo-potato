@@ -240,6 +240,8 @@ class ClaimExtractionService:
             )
             if version is None:
                 raise ValueError(f"article {article.id} has no persisted version")
+            if not version.body or not version.body.strip():
+                raise ValueError("claim extraction requires usable source article body")
             articles.append(
                 StoryArticleInput(
                     article_id=article.id,

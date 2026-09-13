@@ -40,6 +40,15 @@ def _text(element: Element | None) -> str | None:
     return value or None
 
 
+def _body(element: Element | None) -> str | None:
+    if element is None or element.attrib.get("src"):
+        return None
+    value = (element.text or "") + "".join(
+        ElementTree.tostring(child, encoding="unicode") for child in element
+    )
+    return value.strip() or None
+
+
 def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -83,7 +92,8 @@ def _rss_item(item: Element, base_url: str) -> dict[str, object] | None:
         "published_at": _parse_datetime(
             _text(_first_child(item, "pubdate", "published", "updated", "date"))
         ),
-        "summary": _text(_first_child(item, "description", "summary", "encoded", "content")),
+        "summary": _text(_first_child(item, "description", "summary")),
+        "body": _body(_first_child(item, "encoded", "content")),
         "external_id": _text(_first_child(item, "guid", "id")),
     }
 
@@ -102,7 +112,8 @@ def _atom_entry(entry: Element, base_url: str) -> dict[str, object] | None:
         "published_at": _parse_datetime(
             _text(_first_child(entry, "published", "updated", "issued", "date"))
         ),
-        "summary": _text(_first_child(entry, "summary", "content")),
+        "summary": _text(_first_child(entry, "summary")),
+        "body": _body(_first_child(entry, "content")),
         "external_id": _text(_first_child(entry, "id")),
     }
 

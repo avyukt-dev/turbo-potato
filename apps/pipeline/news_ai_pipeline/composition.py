@@ -26,6 +26,7 @@ from news_ai_database import create_database_engine, create_session_factory
 from news_ai_events import OutboxDispatcher, RedisStreamConsumer, RedisStreamPublisher
 from news_ai_events.consumer_contracts import NORMALIZER_CONSUMER_GROUP, PROCESSOR_CONSUMER_GROUP
 from news_ai_processor import NormalizerEventWorker, ProcessorEventWorker, StoryClusteringService
+from news_ai_processor.acquisition import ArticleContentAcquirer, HttpArticleContentAcquirer
 from news_ai_research_worker import ProductionResearchStack, build_production_research_stack
 from redis.asyncio import Redis
 from sqlalchemy import Engine, text
@@ -49,6 +50,7 @@ class ProductionPipelineStack:
     quality: ProductionQualityStack
     workers: dict[str, Any]
     owned_ai_providers: tuple = ()
+    owned_content_acquirer: HttpArticleContentAcquirer | None = None
     _closed: bool = field(default=False, init=False)
 
     async def ensure_ready(self):
@@ -72,7 +74,12 @@ class ProductionPipelineStack:
             return
         self._closed = True
         await asyncio.wait_for(
-            _close_resources(self.owned_ai_providers, self.redis_client, self.engine),
+            _close_resources(
+                self.owned_ai_providers
+                + ((self.owned_content_acquirer,) if self.owned_content_acquirer else ()),
+                self.redis_client,
+                self.engine,
+            ),
             timeout=self.config.shutdown_timeout_seconds,
         )
 
@@ -96,6 +103,7 @@ async def build_production_pipeline_stack(
     ai_providers=None,
     feed_collector=None,
     config: PipelineConfig | None = None,
+    article_content_acquirer: ArticleContentAcquirer | None = None,
 ) -> ProductionPipelineStack:
     """Injected providers/collector use official boundaries and remain caller-owned."""
     loader = ConfigLoader(settings.config_dir)
@@ -113,6 +121,7 @@ async def build_production_pipeline_stack(
     engine = create_database_engine(database_url)
     client = None
     owned = ()
+    owned_acquirer = None
     try:
         factory = create_session_factory(engine)
         client = Redis.from_url(
@@ -133,11 +142,19 @@ async def build_production_pipeline_stack(
         research = build_production_research_stack(settings, **arguments)
         content = build_production_content_stack(settings, **arguments)
         quality = build_production_quality_stack(settings, **arguments)
+        if article_content_acquirer is None:
+            owned_acquirer = HttpArticleContentAcquirer(
+                snapshot.collection.defaults,
+                user_agent=snapshot.collection.defaults.user_agent,
+                max_concurrency=snapshot.collection.defaults.max_concurrency,
+            )
+            article_content_acquirer = owned_acquirer
         normalizer = NormalizerEventWorker(
             RedisStreamConsumer(
                 client, stream="news:articles", group=NORMALIZER_CONSUMER_GROUP, consumer=name
             ),
             factory,
+            content_acquirer=article_content_acquirer,
         )
         processor = ProcessorEventWorker(
             RedisStreamConsumer(
@@ -182,11 +199,15 @@ async def build_production_pipeline_stack(
             quality=quality,
             workers=workers,
             owned_ai_providers=owned,
+            owned_content_acquirer=owned_acquirer,
         )
     except BaseException:
         # Preserve startup failure, with every owned resource close attempted.
         with suppress(Exception):
             await asyncio.wait_for(
-                _close_resources(owned, client, engine), timeout=config.shutdown_timeout_seconds
+                _close_resources(
+                    owned + ((owned_acquirer,) if owned_acquirer else ()), client, engine
+                ),
+                timeout=config.shutdown_timeout_seconds,
             )
         raise

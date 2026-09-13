@@ -61,6 +61,16 @@ def _count(session: Session, model: type[object]) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
 
 
+@pytest.mark.parametrize("body", [None, "", "  \n "])
+def test_new_normalized_state_requires_body_even_without_acquisition_worker(session, body):
+    source = _source(session)
+    normalized = _normalized(source.id, body=body)
+    with pytest.raises(ValueError, match="nonempty article body"):
+        ArticlePersistenceService(session).persist(normalized)
+    assert _count(session, ArticleVersion) == 0
+    assert _count(session, EventOutbox) == 0
+
+
 def test_persist_creates_article_version_and_outbox_atomically(session: Session) -> None:
     source = _source(session)
     normalized = _normalized(source.id)

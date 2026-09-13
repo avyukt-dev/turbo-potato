@@ -3,10 +3,13 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
+
+from .acquisition import ContentAcquisitionProvenance
 
 
 class ArticleNormalizationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
     source_id: UUID
     source_feed_id: UUID | None = None
     url: AnyHttpUrl
@@ -16,6 +19,7 @@ class ArticleNormalizationInput(BaseModel):
     language: str | None = None
     summary: str | None = None
     body: str | None = None
+    content_acquisition: ContentAcquisitionProvenance | None = None
     external_id: str | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -44,6 +48,7 @@ class NormalizedArticle(BaseModel):
     language: str | None = None
     summary: str | None = None
     body: str | None = None
+    content_acquisition: ContentAcquisitionProvenance | None = None
     external_id: str | None = None
     retrieved_at: datetime
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

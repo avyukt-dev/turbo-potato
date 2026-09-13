@@ -17,6 +17,7 @@ from news_ai_database import (
     SourceFeedRegistryEntry,
     SourceRegistryEntry,
 )
+from news_ai_processor.acquisition import ArticleContentPolicy
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
@@ -147,7 +148,7 @@ class FeedRegistryConfig(BaseModel):
         return self
 
 
-class CollectionDefaults(BaseModel):
+class CollectionDefaults(ArticleContentPolicy):
     model_config = ConfigDict(extra="forbid")
 
     request_timeout_seconds: float = Field(default=20, gt=0, le=60)

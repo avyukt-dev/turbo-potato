@@ -37,6 +37,7 @@ from news_ai_evidence import (
     SearchRequest,
 )
 from news_ai_processor import NORMALIZER_CONSUMER_GROUP, NormalizerEventWorker
+from news_ai_processor.acquisition import ArticleContentPolicy, HttpArticleContentAcquirer
 from news_ai_runtime import DatabasePublishingControl
 from psycopg import sql
 from redis.asyncio import Redis
@@ -71,6 +72,7 @@ async def probe(factory, redis_url):
     # deleted so the probe represents total loss of its stream and consumer groups.
     stream = "news:articles"
     client = Redis.from_url(redis_url, decode_responses=True)
+    acquisition = HttpArticleContentAcquirer(ArticleContentPolicy(article_min_body_chars=1))
     try:
         await client.delete(stream)
         with factory() as session, session.begin():
@@ -134,6 +136,7 @@ async def probe(factory, redis_url):
                 block_ms=1,
             ),
             factory,
+            content_acquirer=acquisition,
         )
         consumed = await worker.run_once()
         converged = await reconciliation.reconcile(
@@ -193,6 +196,7 @@ async def probe(factory, redis_url):
             "corpus_search_samples": await corpus_samples(factory),
         }
     finally:
+        await acquisition.close()
         await client.delete(stream)
         await client.aclose()
 

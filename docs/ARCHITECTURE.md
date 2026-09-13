@@ -141,6 +141,22 @@ feed/API polling
 raw source acquisition
 ```
 
+Summary-only RSS/Atom discovery is not complete article content. The normalizer
+worker loads an immutable durable discovery task in a short transaction, acquires
+usable explicit feed content or public article-page text outside all database
+transactions, then locks/revalidates the Article and discovery before atomically
+persisting ArticleVersion, acquisition provenance, outbox intent and consumer
+completion. ArticleNormalizer itself performs no network I/O. A summary is never
+substituted for a body, and acquisition establishes neither truth nor independence.
+
+`config/sources/collection.yaml` owns article request/response/redirect/body bounds.
+Public-page acquisition requires the registered source domain (or its subdomain),
+validates every redirect and DNS destination, pins the vetted connection address,
+and uses no credentials, environment proxies, cookies or JavaScript. Static pages
+without usable bounded text fail through the existing worker failure lifecycle.
+`news-pipeline` owns and closes its bounded article transport; injected acquisition
+dependencies remain caller-owned.
+
 ## Story intelligence
 
 ```text
