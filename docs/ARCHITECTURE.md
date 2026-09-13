@@ -227,6 +227,12 @@ media storage / delivery
 
 Logical boundaries do not require one host process per component during the MVP.
 
+The deployed upstream process `news-pipeline` owns concurrent collection,
+outbox, normalization, processor, research, content, and quality tasks using
+their existing production factories. It ends at quality readiness, not human
+approval or publication. API, scheduler, and publisher remain separate owners.
+See `INFRASTRUCTURE_AND_DEPLOYMENT.md` for lifecycle and recovery policy.
+
 ---
 
 # 6. Persistence and Events

@@ -919,6 +919,33 @@ Ordinary application tests should use a fake service manager.
 
 # 43. Final Operational Rules
 
+## Upstream production owner
+
+After PostgreSQL, Redis, and configured AI services are available, start
+`news-pipeline` (or `python -m news_ai_pipeline`) using the application
+environment/configuration. Empty active feeds leave it waiting normally.
+Use `newsctl service status news-pipeline` and the existing service
+start/stop/restart operations through a supported configured native adapter;
+manual/unmanaged hosts run the executable explicitly. No privileged host
+command is executed by the pipeline itself.
+
+Check normalized startup/readiness and per-component failures alongside
+durable progress and Redis pending/lag. An unavailable critical owner degrades
+whole-system health. A fatal component error exits the process; this command
+does not automatically restart services. SIGTERM/SIGINT performs bounded
+shutdown. A new owner reclaims stale pending work under the configured idle
+threshold; do not lower that threshold below healthy AI/search processing time.
+
+Publishing pause does not pause upstream collection or quality. Generated
+content without caller media remains `NOT_READY` with quality work deferred;
+attach validated caller media through the existing authenticated boundary,
+then ordinary reclaim can finish quality. Never manually mark events processed
+to force progress. Lost Redis history still requires the explicit paused
+`newsctl events reconcile` procedure, not an automatic runner action.
+
+This software runtime does not certify physical-host cold boot, thermal
+stability, Tailscale resilience, real Meta publication, or backup RPO/RTO.
+
 ```text
 Use platform-neutral operator commands as the canonical surface.
 Detect host capability before native service operations.

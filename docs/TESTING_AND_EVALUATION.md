@@ -1055,6 +1055,18 @@ Unsafe publishing triggers publication pause before other recovery work.
 
 # 43. Final Testing Rules
 
+The upstream owner has lifecycle tests for concurrent progress, empty feeds,
+bounded backoff, dependency/group startup gating, component death, signal
+shutdown, resource ownership, and pending recovery. Production composition
+uses the existing research/content/quality factories with one shared router.
+The autonomous PostgreSQL 16 / Redis 7 test starts this owner once, injects
+only an official deterministic AIProvider and FeedCollector, and observes
+progress through `content.generated` without manually ticking any worker or
+dispatcher. Quality remains deferred before caller media; the real media
+attachment service enables `READY_FOR_REVIEW`, including after owner restart.
+No approval/publication is fabricated. These tests establish software closure,
+not physical-device cold-boot/thermal/network or live-platform acceptance.
+
 ```text
 Test facts, not only code.
 Test evidence relationships, not only source counts.

@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 newsctl = "news_ai_runtime.cli:main"
+news-pipeline = "news_ai_pipeline.__main__:main"
 
 [tool.setuptools.packages.find]
 where = [
@@ -41,6 +42,7 @@ where = [
   "apps/research-worker",
   "apps/publisher",
   "apps/scheduler",
+  "apps/pipeline",
   "packages/common",
   "packages/domain",
   "packages/database",
@@ -63,6 +65,7 @@ include = [
   "news_ai_research_worker*",
   "news_ai_publisher*",
   "news_ai_scheduler*",
+  "news_ai_pipeline*",
   "news_ai_common*",
   "news_ai_domain*",
   "news_ai_database*",
@@ -88,6 +91,7 @@ pythonpath = [
   "apps/research-worker",
   "apps/publisher",
   "apps/scheduler",
+  "apps/pipeline",
   "packages/common",
   "packages/domain",
   "packages/database",

@@ -75,13 +75,16 @@ def build_production_research_stack(
     redis_client: Any,
     consumer_name: str,
     ai_providers: Iterable[AIProvider] | None = None,
+    ai_router: AIRouter | None = None,
 ) -> ProductionResearchStack:
     """Build production classes from repository config and injected infrastructure."""
 
     if not consumer_name.strip():
         raise ValueError("research consumer name must not be blank")
     loader = ConfigLoader(settings.config_dir)
-    router = build_ai_router(loader, providers=ai_providers)
+    if ai_router is not None and ai_providers is not None:
+        raise ValueError("inject either an AI router or providers")
+    router = ai_router or build_ai_router(loader, providers=ai_providers)
     for task_type in (
         AITaskType.CLAIM_EXTRACTION,
         AITaskType.EVIDENCE_ASSESSMENT,
