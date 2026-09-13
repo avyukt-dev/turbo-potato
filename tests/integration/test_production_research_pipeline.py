@@ -225,6 +225,8 @@ async def _run_pipeline(
     quality_defect: bool,
     expected_pass: bool,
     review_decision: ReviewState | None,
+    *,
+    before_quality=None,
 ) -> None:
     engine = create_engine(database_url, pool_pre_ping=True)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -421,6 +423,8 @@ async def _run_pipeline(
         await dispatch_and_run(stack.story_verification_worker)
         await dispatch_and_run(stack.fact_sheet_worker)
         await dispatch_and_run(content_stack.worker)
+        if before_quality is not None:
+            before_quality(factory)
         await dispatch_and_run(quality_stack.worker)
         await dispatcher.dispatch_once()
 
@@ -545,7 +549,10 @@ async def _run_pipeline(
             assert variants[0].review_state is (
                 ReviewState.READY_FOR_REVIEW if expected_pass else ReviewState.NOT_READY
             )
-            assert variants[0].media_asset_ids == []
+            if before_quality is None:
+                assert variants[0].media_asset_ids == []
+            else:
+                assert len(variants[0].media_asset_ids) == 2
             assert generated.payload["content_variant_ids"] == [str(variants[0].id)]
             assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
             assert content_run.task_type == AITaskType.CONTENT_GENERATION.value
