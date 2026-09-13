@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,6 +27,8 @@ from news_ai_database import (
     Article,
     ArticleVersion,
     Base,
+    Claim,
+    EventOutbox,
     ProcessedEvent,
     Source,
     Story,
@@ -73,6 +75,20 @@ class CountingProvider:
             model="tiny-model",
             latency_ms=5,
         )
+
+
+@dataclass
+class EmptyThenValidProvider(CountingProvider):
+    async def execute(self, request: AIRequest) -> AIResponse:
+        if self.calls == 0:
+            self.calls += 1
+            return AIResponse(
+                structured={"claims": []},
+                provider=self.provider_id,
+                model="tiny-model",
+                latency_ms=5,
+            )
+        return await super().execute(request)
 
 
 class FakeConsumer:
@@ -200,6 +216,50 @@ def test_worker_processes_once_and_durable_duplicate_does_not_call_ai(tmp_path: 
     assert consumer.acked == ["1-0", "1-0"]
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(AIRun)) == 1
+        assert session.get(ProcessedEvent, (event.event_id, CLAIM_CONSUMER_GROUP)) is not None
+
+
+def test_empty_claim_retry_has_no_success_artifacts_then_converges_once(tmp_path: Path) -> None:
+    factory = _factory()
+    story = _seed(factory)
+    provider = EmptyThenValidProvider()
+    event = _event(story, EventType.STORY_CREATED)
+    message = StreamMessage(stream="news:stories", message_id="empty-1", event=event)
+    consumer = FakeConsumer([message])
+    worker = ClaimExtractionWorker(consumer, factory, _service(provider, tmp_path))
+
+    first = asyncio.run(worker.run_once())
+    assert first.retrying == 1 and consumer.acked == []
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Claim)) == 0
+        assert session.scalar(select(func.count()).select_from(AIRun)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.CLAIMS_EXTRACTED.value)
+            )
+            == 0
+        )
+        assert session.get(ProcessedEvent, (event.event_id, CLAIM_CONSUMER_GROUP)) is None
+
+    worker.reliability.clock = lambda: datetime.now(UTC) + timedelta(minutes=5)
+    second = asyncio.run(worker.run_once())
+    third = asyncio.run(worker.run_once())
+
+    assert second.processed == 1 and third.duplicates == 1
+    assert consumer.acked == ["empty-1", "empty-1"]
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Claim)) == 1
+        assert session.scalar(select(func.count()).select_from(AIRun)) == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.CLAIMS_EXTRACTED.value)
+            )
+            == 1
+        )
         assert session.get(ProcessedEvent, (event.event_id, CLAIM_CONSUMER_GROUP)) is not None
 
 

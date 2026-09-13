@@ -16,6 +16,7 @@ from news_ai_ai import (
     AIRouteAttemptOutcome,
     AIRouter,
     AIRoutingConfig,
+    AIRoutingExecutionError,
     AIRoutingMode,
     AITaskType,
     ClaimExtractionOutput,
@@ -205,6 +206,17 @@ def test_claim_output_rejects_duplicates_and_naive_timestamps() -> None:
         ClaimExtractionOutput.model_validate({"claims": [item]})
 
 
+@pytest.mark.parametrize("output", [{}, {"claims": []}, {"claims": None}])
+def test_claim_output_requires_at_least_one_claim(output) -> None:
+    with pytest.raises(ValidationError):
+        ClaimExtractionOutput.model_validate(output)
+
+
+def test_claim_output_accepts_one_valid_claim() -> None:
+    output = ClaimExtractionOutput.model_validate({"claims": [_claim()]})
+    assert len(output.claims) == 1
+
+
 def test_generate_uses_domain_validation_for_configured_fallback(tmp_path: Path) -> None:
     factory = _session_factory()
     story, _, _ = _seed_story(factory)
@@ -224,6 +236,42 @@ def test_generate_uses_domain_validation_for_configured_fallback(tmp_path: Path)
     assert execution.routed.attempts[0].outcome is AIRouteAttemptOutcome.FAILED
     assert execution.routed.attempts[0].failure_reason is AIFailureReason.INVALID_RESPONSE
     assert execution.routed.attempts[1].outcome is AIRouteAttemptOutcome.SUCCESS
+
+
+def test_empty_claims_use_invalid_response_fallback(tmp_path: Path) -> None:
+    factory = _session_factory()
+    story, _, _ = _seed_story(factory)
+    first = FakeProvider("local-a", ProviderLocality.LOCAL, [_response("local-a", [])])
+    second = FakeProvider("cloud-a", ProviderLocality.CLOUD, [_response("cloud-a", [_claim()])])
+    service = ClaimExtractionService(_router(first, second), _prompt(tmp_path))
+    with factory() as session:
+        context = service.load_context(session, story.id)
+
+    execution = asyncio.run(service.generate(context, _story_event(story.id)))
+
+    assert execution.routed.attempts[0].failure_reason is AIFailureReason.INVALID_RESPONSE
+    assert execution.routed.attempts[1].outcome is AIRouteAttemptOutcome.SUCCESS
+    assert len(execution.output.claims) == 1
+
+
+def test_all_empty_claim_providers_exhaust_routing(tmp_path: Path) -> None:
+    factory = _session_factory()
+    story, _, _ = _seed_story(factory)
+    providers = (
+        FakeProvider("local-a", ProviderLocality.LOCAL, [_response("local-a", [])]),
+        FakeProvider("cloud-a", ProviderLocality.CLOUD, [_response("cloud-a", [])]),
+    )
+    service = ClaimExtractionService(_router(*providers), _prompt(tmp_path))
+    with factory() as session:
+        context = service.load_context(session, story.id)
+
+    with pytest.raises(AIRoutingExecutionError) as caught:
+        asyncio.run(service.generate(context, _story_event(story.id)))
+
+    assert all(
+        attempt.failure_reason is AIFailureReason.INVALID_RESPONSE
+        for attempt in caught.value.attempts
+    )
 
 
 def test_persist_creates_unassessed_claim_ai_provenance_and_event(tmp_path: Path) -> None:
