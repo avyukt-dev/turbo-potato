@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from article_fixtures import offline_acquirer
 from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
 from news_ai_database import (
     Article,
@@ -16,7 +17,13 @@ from news_ai_database import (
     Source,
     SourceFeed,
 )
-from news_ai_events import EventEnvelope, EventType, StreamMessage
+from news_ai_events import (
+    EventEnvelope,
+    EventType,
+    PermanentEventError,
+    StreamMessage,
+    TransientEventError,
+)
 from news_ai_events.outbox import build_outbox_record, envelope_from_outbox
 from news_ai_processor import NORMALIZER_CONSUMER_GROUP, NormalizerEventWorker
 from sqlalchemy import create_engine, func, select
@@ -96,6 +103,63 @@ def _event(factory: sessionmaker[Session], event_id):
         return envelope_from_outbox(row)
 
 
+def test_acquisition_retry_then_success_and_duplicate_skips_fetch():
+    factory = _factory()
+    source_id, feed_id = _seed_registry(factory)
+    discovered = _discover(
+        factory, source_id, feed_id, body="Reviewed explicit body", retrieved_at=datetime.now(UTC)
+    )
+    event = _event(factory, discovered.event_id)
+    calls = []
+
+    class Acquirer:
+        async def acquire(self, task):
+            calls.append(task)
+            if len(calls) == 1:
+                raise TransientEventError("article content request timed out")
+            return await offline_acquirer().acquire(task)
+
+    consumer = FakeConsumer(messages=[StreamMessage("news:articles", "1-0", event)])
+    worker = NormalizerEventWorker(consumer, factory, content_acquirer=Acquirer())
+    assert asyncio.run(worker.run_once()).retrying == 1
+    assert consumer.acked == []
+    with factory() as session:
+        assert session.get(ProcessedEvent, (event.event_id, NORMALIZER_CONSUMER_GROUP)) is None
+        assert not session.scalar(select(ArticleVersion))
+    worker.reliability.clock = lambda: datetime.now(UTC) + timedelta(minutes=5)
+    consumer.messages = [StreamMessage("news:articles", "1-0", event)]
+    assert asyncio.run(worker.run_once()).processed == 1
+    consumer.messages = [StreamMessage("news:articles", "2-0", event)]
+    assert asyncio.run(worker.run_once()).duplicates == 1
+    assert len(calls) == 2
+    with factory() as session:
+        version = session.scalar(select(ArticleVersion))
+        assert version.version_metadata["content_acquisition"]["origin"] == "FEED_CONTENT"
+        assert session.scalar(select(func.count()).select_from(ArticleVersion)) == 1
+
+
+def test_permanent_acquisition_failure_goes_to_existing_dlq_without_normalization():
+    factory = _factory()
+    source_id, feed_id = _seed_registry(factory)
+    discovered = _discover(
+        factory, source_id, feed_id, body="Reviewed body", retrieved_at=datetime.now(UTC)
+    )
+    event = _event(factory, discovered.event_id)
+
+    class Acquirer:
+        async def acquire(self, task):
+            raise PermanentEventError("article content host is not permitted")
+
+    consumer = FakeConsumer(messages=[StreamMessage("news:articles", "1-0", event)])
+    worker = NormalizerEventWorker(consumer, factory, content_acquirer=Acquirer())
+    result = asyncio.run(worker.run_once())
+    assert result.dead_lettered == 1 and consumer.acked == ["1-0"]
+    with factory() as session:
+        assert session.scalar(select(EventDeadLetter))
+        assert not session.scalar(select(ArticleVersion))
+        assert session.get(ProcessedEvent, (event.event_id, NORMALIZER_CONSUMER_GROUP)) is None
+
+
 def test_discovery_is_durable_before_normalization_and_causation_is_preserved() -> None:
     factory = _factory()
     source_id, feed_id = _seed_registry(factory)
@@ -114,7 +178,9 @@ def test_discovery_is_durable_before_normalization_and_causation_is_preserved() 
         assert event.event_type is EventType.ARTICLE_DISCOVERED
 
     consumer = FakeConsumer(messages=[StreamMessage("news:articles", "1-0", event)])
-    result = asyncio.run(NormalizerEventWorker(consumer, factory).run_once())
+    result = asyncio.run(
+        NormalizerEventWorker(consumer, factory, content_acquirer=offline_acquirer()).run_once()
+    )
 
     assert result.processed == 1
     assert consumer.acked == ["1-0"]
@@ -148,7 +214,7 @@ def test_discovery_replay_is_idempotent_and_changed_content_creates_new_version(
 
     first_event = _event(factory, first.event_id)
     consumer = FakeConsumer(messages=[StreamMessage("news:articles", "1-0", first_event)])
-    worker = NormalizerEventWorker(consumer, factory)
+    worker = NormalizerEventWorker(consumer, factory, content_acquirer=offline_acquirer())
     assert asyncio.run(worker.run_once()).processed == 1
     consumer.messages = [StreamMessage("news:articles", "1-1", first_event)]
     assert asyncio.run(worker.run_once()).duplicates == 1
@@ -235,7 +301,9 @@ def test_legacy_discovery_with_causal_normalized_outbox_is_safely_completed() ->
         session.add_all([build_outbox_record(discovered), build_outbox_record(normalized)])
 
     consumer = FakeConsumer(messages=[StreamMessage("news:articles", "legacy-1", discovered)])
-    result = asyncio.run(NormalizerEventWorker(consumer, factory).run_once())
+    result = asyncio.run(
+        NormalizerEventWorker(consumer, factory, content_acquirer=offline_acquirer()).run_once()
+    )
 
     assert result.duplicates == 1
     assert result.dead_lettered == 0

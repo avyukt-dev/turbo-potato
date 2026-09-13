@@ -976,6 +976,16 @@ human review
 
 PostgreSQL remains the durable source of truth for these records.
 
+New article acquisition records safe typed provenance in
+`ArticleVersion.version_metadata.content_acquisition`: feed/page origin, exact
+SHA-256 of the stored normalized body, aware retrieval time, content type/byte
+count, extractor version, redirect count and final host. No raw HTML, response
+headers or URL query credentials belong in acquisition provenance. For acquired
+versions the metadata URL is query/fragment-free; the Article's canonical identity
+and the existing normalized article content-hash algorithm remain unchanged.
+Acquisition is source-material retrieval only, not evidence assessment or proof of
+truth, authority or independent corroboration.
+
 ---
 
 # 40. Research Budgets and Caching

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 import yaml
+from article_fixtures import offline_acquirer
 from integration.test_production_research_pipeline import DeterministicResearchAI
 from media_fixtures import attach_caller_media
 from news_ai_collector import CollectedArticle, FeedFetchResult
@@ -44,10 +45,8 @@ class Feed:
                     title="River gauge measured two metres",
                     language="en",
                     external_id="gauge-1",
-                    body=(
-                        "The river gauge measured two metres. "
-                        "Official flood records show this reading."
-                    ),
+                    summary="Officials announced an update.",
+                    body=None,
                     published_at=datetime(2026, 9, 13, tzinfo=UTC),
                 )
             ],
@@ -79,6 +78,7 @@ def test_real_postgres_redis_autonomous_owner_media_deferral_and_restart(
                         "key": "records",
                         "name": "Gauge records",
                         "source_type": "NEWS",
+                        "domain": "records.example",
                         "language": "en",
                     }
                 ],
@@ -110,7 +110,14 @@ def test_real_postgres_redis_autonomous_owner_media_deferral_and_restart(
     async def scenario():
         ai, feed = DeterministicResearchAI(), Feed()
         stack = await build_production_pipeline_stack(
-            settings, ai_providers=(ai,), feed_collector=feed, config=fast_config()
+            settings,
+            ai_providers=(ai,),
+            feed_collector=feed,
+            config=fast_config(),
+            article_content_acquirer=offline_acquirer(
+                "The river gauge measured two metres. Official flood records show this reading. "
+                "The bridge will reopen at 06:30 on 14 September after the structural inspection."
+            ),
         )
         factory = stack.session_factory
         with stack.engine.begin() as connection:
@@ -153,7 +160,11 @@ def test_real_postgres_redis_autonomous_owner_media_deferral_and_restart(
                 runner.stop_event.set()
                 await asyncio.wait_for(task, 5)
                 stack = await build_production_pipeline_stack(
-                    settings, ai_providers=(ai,), feed_collector=feed, config=fast_config()
+                    settings,
+                    ai_providers=(ai,),
+                    feed_collector=feed,
+                    config=fast_config(),
+                    article_content_acquirer=offline_acquirer(),
                 )
                 factory = stack.session_factory
                 # Only the external caller attaches media; all pipeline work stays autonomous.
@@ -204,6 +215,16 @@ def test_real_postgres_redis_autonomous_owner_media_deferral_and_restart(
                     variant.media_asset_ids and variant.review_state is ReviewState.READY_FOR_REVIEW
                 )
             assert feed.calls == 1
+            from news_ai_ai import AITaskType
+
+            request = next(
+                item for item in ai.requests if item.task_type is AITaskType.CLAIM_EXTRACTION
+            )
+            with factory() as session:
+                reviewed = session.scalar(select(ArticleVersion))
+                assert request.input["articles"][0]["content"] == reviewed.body
+                assert "06:30 on 14 September" in reviewed.body
+                assert reviewed.version_metadata["content_acquisition"]["origin"] == "ARTICLE_PAGE"
         finally:
             runner.stop_event.set()
             await asyncio.wait_for(task, 5)

@@ -171,7 +171,13 @@ class ArticleNormalizer:
 
         author = normalize_inline_text(article.author)
         summary = normalize_body_text(article.summary)
-        body = normalize_body_text(article.body)
+        # Acquired plain text is already normalized; do not decode literal entities again.
+        body = article.body if article.content_acquisition else normalize_body_text(article.body)
+        if article.content_acquisition and (
+            body is None
+            or hashlib.sha256(body.encode()).hexdigest() != article.content_acquisition.body_hash
+        ):
+            raise ValueError("article acquisition body hash does not match")
         language = normalize_language(article.language)
         published_at = normalize_timestamp(article.published_at)
         retrieved_at = normalize_timestamp(article.retrieved_at)
@@ -187,6 +193,7 @@ class ArticleNormalizer:
             language=language,
             summary=summary,
             body=body,
+            content_acquisition=article.content_acquisition,
             external_id=normalize_inline_text(article.external_id),
             retrieved_at=retrieved_at,
             content_hash=_content_hash(title=title, summary=summary, body=body),

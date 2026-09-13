@@ -142,6 +142,22 @@ def _seed_story(factory: sessionmaker[Session]) -> tuple[Story, Article, Article
     return story, article, version
 
 
+@pytest.mark.parametrize("body", [None, "", " \n\t "])
+def test_legacy_bodyless_source_fails_before_ai_provenance_or_claims(tmp_path, body):
+    factory = _session_factory()
+    story, _, version = _seed_story(factory)
+    with factory() as session, session.begin():
+        session.get(ArticleVersion, version.id).body = body
+    provider = FakeProvider("local", ProviderLocality.LOCAL, [RuntimeError("must not call AI")])
+    service = ClaimExtractionService(_router(provider), _prompt(tmp_path))
+    with factory() as session:
+        with pytest.raises(ValueError, match="usable source article body"):
+            service.load_context(session, story.id)
+        assert len(provider.outcomes) == 1
+        for model in (AIRun, Claim, EventOutbox):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
 def _story_event(story_id, *, event_type: EventType = EventType.STORY_CREATED) -> EventEnvelope:
     if event_type is EventType.STORY_CREATED:
         payload = {

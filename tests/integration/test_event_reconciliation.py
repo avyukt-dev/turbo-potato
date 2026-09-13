@@ -5,6 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from article_fixtures import offline_acquirer
 from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
 from news_ai_database import (
     ArticleDiscovery,
@@ -155,7 +156,7 @@ def test_real_postgres_redis_lost_stream_reconciles_original_event_to_normalizer
                 consumer="reconciliation-test",
                 block_ms=1,
             )
-            worker = NormalizerEventWorker(consumer, factory)
+            worker = NormalizerEventWorker(consumer, factory, content_acquirer=offline_acquirer())
             assert (await worker.run_once()).processed == 1
             with factory() as session:
                 processed = session.get(
@@ -242,7 +243,9 @@ def test_real_redis_missing_group_is_restored_without_resetting_existing_offset(
             groups = await client.xinfo_groups("news:articles")
             assert groups[0]["last-delivered-id"] == before
             assert repeated.groups_created == () and repeated.replayed == 1
-            result = await NormalizerEventWorker(consumer, factory).run_once()
+            result = await NormalizerEventWorker(
+                consumer, factory, content_acquirer=offline_acquirer()
+            ).run_once()
             assert result.processed == 1 and result.duplicates >= 2
             with factory() as session:
                 assert session.get(ProcessedEvent, (discovered.event_id, NORMALIZER_CONSUMER_GROUP))

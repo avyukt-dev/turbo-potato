@@ -286,6 +286,21 @@ duplicate discovery
 
 One broken source must not stop the entire collector.
 
+Article acquisition tests must distinguish summary from explicit feed body, prove
+safe bounded page retrieval and deterministic extraction, and reject unsafe URL,
+redirect/DNS destinations, binary responses and unusable/oversized text. Real
+PostgreSQL tests must prove no row locks survive acquisition, cancellation cannot
+ACK or persist normalization, and final revalidation rejects changed discovery
+input while concurrent completion creates one durable version/outbox intent.
+The autonomous PostgreSQL/Redis pipeline test must demonstrate that summary-only
+discovery acquires mocked full page content and supplies that exact durable body
+to the actual claim-extraction AIRequest, including restart/duplicate recovery.
+
+Legacy bodyless ArticleVersions remain immutable/auditable but must fail claim
+extraction before AI or new Claim/outbox persistence. Operators must use controlled
+re-ingestion of corrected source material, not mutate historical versions or reset
+ProcessedEvent state to force replay.
+
 Source collection settings must come from `config/sources/`, not editorial/research configuration.
 
 ---

@@ -4,3 +4,8 @@ defaults:
   max_concurrency: 4
   user_agent: news-ai-social-manager/0.1
   respect_retry_after: true
+  article_request_timeout_seconds: 20
+  article_max_response_bytes: 5000000
+  article_max_redirects: 5
+  article_min_body_chars: 150
+  article_max_body_chars: 200000

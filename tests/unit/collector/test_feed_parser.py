@@ -54,6 +54,34 @@ def test_parses_atom() -> None:
     assert entries[0]["summary"] == "Atom summary"
 
 
+@pytest.mark.parametrize("atom", [False, True])
+@pytest.mark.parametrize("summary,body", [(True, False), (False, True), (True, True)])
+def test_explicit_content_is_distinct_from_discovery_summary(atom, summary, body):
+    summary_xml = "<summary>Discovery context only</summary>" if summary else ""
+    if atom:
+        body_xml = (
+            "<content type='html'>&lt;p&gt;Full publisher body&lt;/p&gt;</content>" if body else ""
+        )
+        xml = (
+            f"<feed xmlns='http://www.w3.org/2005/Atom'><entry><title>Title</title>"
+            f"<link href='/story'/>{summary_xml}{body_xml}</entry></feed>"
+        )
+    else:
+        summary_xml = summary_xml.replace("summary", "description")
+        body_xml = (
+            "<content:encoded><![CDATA[<p>Full publisher body</p>]]></content:encoded>"
+            if body
+            else ""
+        )
+        xml = (
+            "<rss xmlns:content='http://purl.org/rss/1.0/modules/content/'><channel><item>"
+            f"<title>Title</title><link>/story</link>{summary_xml}{body_xml}</item></channel></rss>"
+        )
+    entries, _ = parse_feed(xml.encode(), base_url="https://example.com/feed")
+    assert entries[0]["summary"] == ("Discovery context only" if summary else None)
+    assert entries[0]["body"] == ("<p>Full publisher body</p>" if body else None)
+
+
 def test_skips_entry_without_title_or_link() -> None:
     content = b"<rss><channel><item><title>Missing link</title></item></channel></rss>"
 

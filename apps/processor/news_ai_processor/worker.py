@@ -6,18 +6,28 @@ PostgreSQL transaction, marked durably as processed, and ACKed only after that t
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from news_ai_database import Article, ArticleDiscovery, ArticleVersion, EventOutbox
+from news_ai_database import (
+    Article,
+    ArticleDiscovery,
+    ArticleVersion,
+    EventOutbox,
+    Source,
+    SourceFeed,
+)
 from news_ai_events import (
     EventEnvelope,
     EventType,
     ProcessingOutcome,
     RedisStreamConsumer,
     ReliableMessageProcessor,
+    StaleWorkError,
     StreamMessage,
     WorkerBatchResult,
     WorkerRetryPolicy,
@@ -33,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .acquisition import ArticleContentAcquirer, ArticleContentAcquisitionTask
 from .models import ArticleNormalizationInput
 from .normalizer import ArticleNormalizer
 from .persistence import ArticlePersistenceService
@@ -172,6 +183,7 @@ class NormalizerEventWorker:
         session_factory: Callable[[], Session],
         normalizer: ArticleNormalizer | None = None,
         *,
+        content_acquirer: ArticleContentAcquirer,
         retry_policy: WorkerRetryPolicy | None = None,
     ) -> None:
         expected_stream = stream_for_event(EventType.ARTICLE_DISCOVERED)
@@ -184,6 +196,7 @@ class NormalizerEventWorker:
         self.consumer = consumer
         self.session_factory = session_factory
         self.normalizer = normalizer or ArticleNormalizer()
+        self.content_acquirer = content_acquirer
         self.reliability = ReliableMessageProcessor(
             consumer,
             session_factory,
@@ -213,82 +226,32 @@ class NormalizerEventWorker:
     async def _process_messages(self, messages: Sequence[StreamMessage]) -> ProcessorBatchResult:
         return await self.reliability.process(messages, self._handle_event)
 
-    def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
-        return (
-            ProcessingOutcome.DUPLICATE
-            if self._process_event(event)
-            else ProcessingOutcome.PROCESSED
-        )
-
-    def _process_event(self, event: EventEnvelope) -> bool:
-        payload = ArticleDiscoveredV1.model_validate(event.payload)
-        if event.aggregate_type != "article" or payload.article_id != event.aggregate_id:
-            raise ValueError("article.discovered aggregate does not match payload")
+    async def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
+        task = self._load_task(event)
+        if task is None:
+            return ProcessingOutcome.DUPLICATE
+        # No Session/ORM objects survive Phase A; HTTP/DNS/extraction is outside transactions.
+        acquired = await self.content_acquirer.acquire(task)
         with self.session_factory() as session, session.begin():
-            if was_processed(
-                session,
-                event_id=event.event_id,
-                consumer_group=NORMALIZER_CONSUMER_GROUP,
-            ):
-                return True
-            discovery = session.scalar(
-                select(ArticleDiscovery)
-                .where(ArticleDiscovery.event_id == event.event_id)
-                .with_for_update()
-            )
-            article = session.get(Article, payload.article_id)
-            if discovery is None and article is not None:
-                legacy = session.scalar(
-                    select(EventOutbox)
-                    .where(
-                        EventOutbox.event_type == EventType.ARTICLE_NORMALIZED.value,
-                        EventOutbox.aggregate_id == article.id,
-                        EventOutbox.causation_id == event.event_id,
-                    )
-                    .limit(1)
-                )
-                if legacy is not None:
-                    normalized_payload = ArticleNormalizedV1.model_validate(legacy.payload)
-                    legacy_version = session.get(
-                        ArticleVersion, normalized_payload.article_version_id
-                    )
-                    if (
-                        normalized_payload.article_id == article.id
-                        and legacy_version is not None
-                        and legacy_version.article_id == article.id
-                        and legacy_version.content_hash == normalized_payload.content_hash
-                    ):
-                        mark_processed(
-                            session,
-                            event_id=event.event_id,
-                            consumer_group=NORMALIZER_CONSUMER_GROUP,
-                            result={
-                                "article_id": str(article.id),
-                                "article_version_id": str(normalized_payload.article_version_id),
-                                "legacy_completed": True,
-                                "event_id": str(legacy.event_id),
-                            },
-                        )
-                        return True
-            if discovery is None or article is None or discovery.article_id != article.id:
-                raise ValueError("article.discovered references missing durable discovery input")
-            if (
-                article.source_id != payload.source_id
-                or article.canonical_url != payload.canonical_url
-            ):
-                raise ValueError(
-                    "article.discovered payload does not match durable article identity"
-                )
+            current = self._task_in_session(session, event, lock=True)
+            if current is None:
+                return ProcessingOutcome.DUPLICATE
+            if current != task:
+                raise StaleWorkError("article discovery changed during content acquisition")
+            source_input = ArticleNormalizationInput.model_validate_json(task.input_json)
             normalized = self.normalizer.normalize(
-                ArticleNormalizationInput.model_validate(discovery.raw_payload)
+                source_input.model_copy(
+                    update={
+                        "body": acquired.body,
+                        "content_acquisition": acquired.provenance,
+                    }
+                )
             )
-            if normalized.canonical_url != article.canonical_url:
-                raise ValueError("durable discovery URL normalizes to another Article identity")
             result = ArticlePersistenceService(session).persist(
                 normalized,
                 correlation_id=event.correlation_id,
                 causation_id=event.event_id,
-                discovery_id=discovery.id,
+                discovery_id=task.discovery_id,
             )
             mark_processed(
                 session,
@@ -298,10 +261,128 @@ class NormalizerEventWorker:
                     "article_id": str(result.article_id),
                     "article_version_id": str(result.version_id),
                     "created_version": result.created_version,
-                    "event_id": str(result.event_id) if result.event_id is not None else None,
+                    "event_id": str(result.event_id) if result.event_id else None,
                 },
             )
-        return not result.created_version
+        return (
+            ProcessingOutcome.PROCESSED if result.created_version else ProcessingOutcome.DUPLICATE
+        )
+
+    def _load_task(self, event):
+        with self.session_factory() as session, session.begin():
+            return self._task_in_session(session, event, lock=False)
+
+    def _task_in_session(self, session, event, *, lock):
+        payload = ArticleDiscoveredV1.model_validate(event.payload)
+        if event.aggregate_type != "article" or payload.article_id != event.aggregate_id:
+            raise ValueError("article.discovered aggregate does not match payload")
+        # Article-first locking matches discovery/persistence writers and serializes final replay.
+        article_statement = select(Article).where(Article.id == payload.article_id)
+        if lock:
+            article_statement = article_statement.with_for_update()
+        article = session.scalar(article_statement)
+        if was_processed(
+            session,
+            event_id=event.event_id,
+            consumer_group=NORMALIZER_CONSUMER_GROUP,
+        ):
+            return None
+        discovery = session.scalar(
+            select(ArticleDiscovery)
+            .where(ArticleDiscovery.event_id == event.event_id)
+            .with_for_update()
+            if lock
+            else select(ArticleDiscovery).where(ArticleDiscovery.event_id == event.event_id)
+        )
+        if discovery is None and article is not None:
+            legacy = session.scalar(
+                select(EventOutbox)
+                .where(
+                    EventOutbox.event_type == EventType.ARTICLE_NORMALIZED.value,
+                    EventOutbox.aggregate_id == article.id,
+                    EventOutbox.causation_id == event.event_id,
+                )
+                .limit(1)
+            )
+            if legacy is not None:
+                normalized_payload = ArticleNormalizedV1.model_validate(legacy.payload)
+                legacy_version = session.get(ArticleVersion, normalized_payload.article_version_id)
+                if (
+                    normalized_payload.article_id == article.id
+                    and legacy_version is not None
+                    and legacy_version.article_id == article.id
+                    and legacy_version.content_hash == normalized_payload.content_hash
+                ):
+                    mark_processed(
+                        session,
+                        event_id=event.event_id,
+                        consumer_group=NORMALIZER_CONSUMER_GROUP,
+                        result={
+                            "article_id": str(article.id),
+                            "article_version_id": str(normalized_payload.article_version_id),
+                            "legacy_completed": True,
+                            "event_id": str(legacy.event_id),
+                        },
+                    )
+                    return None
+        if discovery is None or article is None or discovery.article_id != article.id:
+            raise ValueError("article.discovered references missing durable discovery input")
+        if article.source_id != payload.source_id or article.canonical_url != payload.canonical_url:
+            raise ValueError("article.discovered payload does not match durable article identity")
+        source_input = ArticleNormalizationInput.model_validate(discovery.raw_payload)
+        from .normalizer import canonicalize_url
+
+        if (
+            canonicalize_url(str(source_input.url)) != article.canonical_url
+            or source_input.source_id != article.source_id
+            or source_input.source_feed_id != payload.source_feed_id
+        ):
+            raise ValueError("durable discovery URL normalizes to another Article identity")
+        if discovery.normalized_article_version_id is not None:
+            version = session.get(ArticleVersion, discovery.normalized_article_version_id)
+            if version is None or version.article_id != article.id:
+                raise ValueError("discovery references invalid normalized version")
+            mark_processed(
+                session,
+                event_id=event.event_id,
+                consumer_group=NORMALIZER_CONSUMER_GROUP,
+                result={"article_version_id": str(version.id), "existing_result": True},
+            )
+            return None
+        source = session.get(Source, article.source_id)
+        feed = (
+            session.get(SourceFeed, source_input.source_feed_id)
+            if source_input.source_feed_id
+            else None
+        )
+        if source is None or (
+            source_input.source_feed_id and (feed is None or feed.source_id != source.id)
+        ):
+            raise ValueError("discovery references mismatched source/feed")
+        raw = json.dumps(discovery.raw_payload, sort_keys=True, separators=(",", ":"))
+        semantic = {
+            key: value for key, value in discovery.raw_payload.items() if key != "retrieved_at"
+        }
+        if (
+            hashlib.sha256(
+                json.dumps(semantic, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            != discovery.raw_hash
+        ):
+            raise StaleWorkError("durable discovery hash no longer matches its input")
+        return ArticleContentAcquisitionTask(
+            event_id=event.event_id,
+            article_id=article.id,
+            discovery_id=discovery.id,
+            source_id=source.id,
+            source_feed_id=source_input.source_feed_id,
+            canonical_url=article.canonical_url,
+            source_domain=source.domain,
+            raw_hash=discovery.raw_hash,
+            snapshot_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            input_json=source_input.model_dump_json(),
+            feed_body=source_input.body,
+        )
 
 
 def _load_work_item(session: Session, payload: ArticleNormalizedV1) -> ArticleNormalizedWorkItem:
