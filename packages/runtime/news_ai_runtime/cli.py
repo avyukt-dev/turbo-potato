@@ -3,13 +3,22 @@
 import argparse
 import asyncio
 import json
+from uuid import UUID
 
 from news_ai_common.config import AppSettings
 from news_ai_database import create_database_engine, create_session_factory
+from news_ai_events import (
+    DEFAULT_RECONCILIATION_LIMIT,
+    MAX_RECONCILIATION_LIMIT,
+    EventType,
+    ReconciliationMode,
+)
+from news_ai_events.consumer_contracts import CONSUMER_CONTRACT_BY_EVENT
 
 from .controller import RuntimeOperationError, build_controller
 from .health import build_monitor
 from .publishing import DatabasePublishingControl
+from .reconciliation import build_reconciliation_stack
 
 
 class SafeParser(argparse.ArgumentParser):
@@ -31,6 +40,18 @@ def parser():
     publish = commands.add_parser("publish")
     publish.add_argument("action", choices=["status", "pause", "resume"])
     publish.add_argument("--reason")
+    events = commands.add_parser("events")
+    events.add_argument("action", choices=["reconcile"])
+    mode = events.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    events.add_argument("--limit", type=int, default=DEFAULT_RECONCILIATION_LIMIT)
+    events.add_argument("--after-outbox-id", type=UUID)
+    events.add_argument("--reason")
+    events.add_argument(
+        "--event-type",
+        choices=sorted(event_type.value for event_type in CONSUMER_CONTRACT_BY_EVENT),
+    )
     return root
 
 
@@ -49,7 +70,32 @@ async def health_command(monitor):
             monitor.factory.kw["bind"].dispose()
 
 
-def main(argv=None, *, settings=None, controller=None, monitor=None, control=None):
+async def reconciliation_command(stack, args):
+    try:
+        report = await stack.service.reconcile(
+            mode=ReconciliationMode.APPLY if args.apply else ReconciliationMode.DRY_RUN,
+            limit=args.limit,
+            reason=args.reason,
+            event_type=EventType(args.event_type) if args.event_type else None,
+            after_outbox_id=args.after_outbox_id,
+        )
+        payload = report.model_dump(mode="json")
+        return payload, 2 if report.error_code else 0
+    finally:
+        close = getattr(stack, "close", None)
+        if close is not None:
+            await close()
+
+
+def main(
+    argv=None,
+    *,
+    settings=None,
+    controller=None,
+    monitor=None,
+    control=None,
+    reconciliation_stack=None,
+):
     args = parser().parse_args(argv)
     engine = None
     try:
@@ -68,7 +114,7 @@ def main(argv=None, *, settings=None, controller=None, monitor=None, control=Non
             code = 2 if isinstance(payload, dict) and payload.get("error_code") else 0
         elif args.command == "health":
             payload, code = asyncio.run(health_command(monitor or build_monitor(settings)))
-        else:
+        elif args.command == "publish":
             if control is None:
                 if not settings.database_url:
                     raise RuntimeOperationError("CONTROL_UNAVAILABLE")
@@ -81,6 +127,16 @@ def main(argv=None, *, settings=None, controller=None, monitor=None, control=Non
                     raise RuntimeOperationError("REASON_REQUIRED")
                 snapshot = control.set_paused(args.action == "pause", reason=args.reason)
             payload, code = snapshot.model_dump(mode="json"), 0 if snapshot.available else 2
+        else:
+            if not 1 <= args.limit <= MAX_RECONCILIATION_LIMIT:
+                raise RuntimeOperationError("INVALID_LIMIT")
+            if args.apply and not args.reason:
+                raise RuntimeOperationError("REASON_REQUIRED")
+            payload, code = asyncio.run(
+                reconciliation_command(
+                    reconciliation_stack or build_reconciliation_stack(settings), args
+                )
+            )
         print(json.dumps(payload, sort_keys=True))
         return code
     except RuntimeOperationError as exc:

@@ -586,6 +586,12 @@ A backup is not verified until restore has been tested.
 
 Recovery sequence should pause publication, restore durable state, restore event/runtime services, run health/smoke checks, then re-enable publication.
 
+If Redis streams or consumer groups were lost while PostgreSQL survived, a PUBLISHED
+outbox row is not proof that Redis still retains the work. Use the bounded `newsctl
+events reconcile` dry-run/apply procedure in `OPERATIONS_RUNBOOK.md`; do not mass-reset
+PUBLISHED rows to PENDING. Reconciliation uses durable consumer and domain state and
+must run with effective publication pause enabled.
+
 ---
 
 # 29. Observability

@@ -14,12 +14,11 @@ from news_ai_events import (
     WorkerBatchResult,
     WorkerRetryPolicy,
 )
+from news_ai_events.consumer_contracts import QUALITY_CONSUMER_GROUP
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from news_ai_quality import QualityAssessmentService
 from sqlalchemy.orm import Session
-
-QUALITY_CONSUMER_GROUP = "quality-worker"
 
 
 class QualityWorker:

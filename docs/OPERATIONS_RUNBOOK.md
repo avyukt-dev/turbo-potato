@@ -821,6 +821,35 @@ General recovery order:
 9. re-enable publication only after validation
 ```
 
+## 39.1 PostgreSQL restore with Redis transport loss
+
+For a verified restore/loss incident:
+
+1. Activate the environment hard publication pause where available.
+2. Activate the durable PostgreSQL publication pause before transport replay.
+3. Stop or quiet mutating workers as required by the selected restore procedure.
+4. Restore PostgreSQL with tooling compatible with the server major version.
+5. Restore canonical configuration from its protected versioned source.
+6. Restore and validate caller-owned media references/assets according to their actual
+   ownership and retention policy.
+7. Start Redis as disposable/empty transport if its state cannot be trusted.
+8. Start required consumers, or allow reconciliation to create only their missing
+   canonical groups.
+9. Run `newsctl events reconcile --dry-run --limit 100` in bounded batches.
+10. Review every `MANUAL_REVIEW_REQUIRED`, `UNSUPPORTED`, and invalid item.
+11. Run `newsctl events reconcile --apply --limit 100 --reason "verified Redis restore"`.
+12. Let workers converge while publication remains paused and repeat bounded dry-runs.
+13. Inspect publication attempts, external IDs, and AMBIGUOUS/post-intent states.
+14. Verify health, readiness, and a non-publishing smoke pipeline.
+15. Resume publication only through an explicit operator decision after validation.
+
+Redis is not a backup of PostgreSQL truth. Reconciliation does not restore missing media
+bytes or recover unknown provider IDs. AMBIGUOUS publication remains blocked, and known
+external IDs are verified rather than republished. Credentials and secrets must not be
+written to ordinary backups, logs, reasons, or reconciliation output. Restored
+configuration and media integrity remain operator responsibilities. This procedure does
+not by itself validate the environment's complete backup/restore readiness.
+
 ---
 
 # 40. Smoke Test

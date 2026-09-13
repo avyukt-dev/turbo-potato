@@ -16,6 +16,17 @@ from .payloads import (
     parse_event_payload,
     payload_model_for,
 )
+from .reconciliation import (
+    DEFAULT_RECONCILIATION_LIMIT,
+    MAX_RECONCILIATION_LIMIT,
+    RECONCILIATION_POLICIES,
+    RECONCILIATION_POLICY_BY_EVENT,
+    EventReconciliationPolicy,
+    EventReconciliationService,
+    ReconciliationDisposition,
+    ReconciliationMode,
+    ReconciliationReport,
+)
 from .reliability import (
     PermanentEventError,
     ProcessingOutcome,
@@ -33,6 +44,10 @@ from .types import EventType
 __all__ = [
     "DispatchStats",
     "EventEnvelope",
+    "EventReconciliationService",
+    "EventReconciliationPolicy",
+    "RECONCILIATION_POLICIES",
+    "RECONCILIATION_POLICY_BY_EVENT",
     "EventType",
     "ClaimsExtractedV1",
     "ContentRequestedV1",
@@ -47,6 +62,9 @@ __all__ = [
     "RedisStreamConsumer",
     "RedisStreamPublisher",
     "ReliableMessageProcessor",
+    "ReconciliationDisposition",
+    "ReconciliationMode",
+    "ReconciliationReport",
     "StaleWorkError",
     "TransientEventError",
     "RetryPolicy",
@@ -56,6 +74,8 @@ __all__ = [
     "WorkerRetryConfig",
     "WorkerRetryPolicy",
     "load_worker_retry_policy",
+    "DEFAULT_RECONCILIATION_LIMIT",
+    "MAX_RECONCILIATION_LIMIT",
     "mark_processed",
     "parse_event_payload",
     "payload_model_for",

@@ -29,6 +29,7 @@ from news_ai_database import (
 )
 from news_ai_domain import PublicationStatus as Status
 from news_ai_events import EventEnvelope, EventType, ProcessingOutcome
+from news_ai_events.consumer_contracts import PUBLISHER_CONSUMER_GROUP
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.outbox import build_outbox_record, envelope_from_outbox
 from news_ai_events.reliability import DeferredWorkError, PermanentEventError, TransientEventError
@@ -49,7 +50,7 @@ from .errors import PublicationError
 from .instagram_request import build_instagram_publication_request
 from .service import PublicationService
 
-GROUP = "publisher"
+GROUP = PUBLISHER_CONSUMER_GROUP
 PRE_INTENT = {Phase.PREPARING, Phase.PREPARED}
 
 

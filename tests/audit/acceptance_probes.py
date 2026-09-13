@@ -1,8 +1,4 @@
-"""Read-only-to-production acceptance probes in disposable local test infrastructure.
-
-Run explicitly, not as a regression gate: this records current shortcomings rather
-than encoding them as desirable product behavior. No real publisher is constructed.
-"""
+"""Production acceptance probes in explicitly disposable local test infrastructure."""
 
 import asyncio
 import json
@@ -14,8 +10,25 @@ from hashlib import sha256
 from uuid import uuid4
 
 import psycopg
-from news_ai_database import Article, ArticleVersion, Base, EventOutbox, Source
-from news_ai_events import EventEnvelope, EventType, OutboxDispatcher
+from news_ai_collector import CollectedArticle, DiscoveredArticleHandler
+from news_ai_database import (
+    Article,
+    ArticleVersion,
+    Base,
+    EventOutbox,
+    ProcessedEvent,
+    Source,
+    SourceFeed,
+)
+from news_ai_events import (
+    EventEnvelope,
+    EventReconciliationService,
+    EventType,
+    OutboxDispatcher,
+    ReconciliationMode,
+    RedisStreamConsumer,
+    RedisStreamPublisher,
+)
 from news_ai_events.outbox import build_outbox_record
 from news_ai_evidence import (
     PostgresArticleSearchProvider,
@@ -23,9 +36,11 @@ from news_ai_evidence import (
     SearchQueryFamily,
     SearchRequest,
 )
+from news_ai_processor import NORMALIZER_CONSUMER_GROUP, NormalizerEventWorker
+from news_ai_runtime import DatabasePublishingControl
 from psycopg import sql
 from redis.asyncio import Redis
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -52,32 +67,107 @@ def event():
 
 
 async def probe(factory, redis_url):
-    # A unique stream prevents deleting any other test's messages/groups.
-    stream = f"acceptance:{uuid4().hex}"
+    # main() permits only explicit local test infrastructure; this canonical key is
+    # deleted so the probe represents total loss of its stream and consumer groups.
+    stream = "news:articles"
     client = Redis.from_url(redis_url, decode_responses=True)
-
-    class ScopedPublisher:
-        async def publish(self, envelope):
-            return await client.xadd(stream, {"event": envelope.model_dump_json()})
-
-    record = build_outbox_record(event())
-    with factory() as session, session.begin():
-        session.add(record)
-    dispatcher = OutboxDispatcher(factory, ScopedPublisher())
     try:
+        await client.delete(stream)
+        with factory() as session, session.begin():
+            source = Source(name="Reconciliation acceptance", source_type="NEWS")
+            session.add(source)
+            session.flush()
+            feed = SourceFeed(
+                source_id=source.id,
+                name="Reconciliation acceptance",
+                feed_url="https://example.org/reconciliation.xml",
+                feed_type="RSS",
+            )
+            session.add(feed)
+            session.flush()
+            discovered = DiscoveredArticleHandler()(
+                session,
+                CollectedArticle(
+                    source_id=source.id,
+                    source_feed_id=feed.id,
+                    url="https://example.org/reconciliation",
+                    title="Durable transport recovery",
+                    language="en",
+                    body="PostgreSQL survives Redis transport loss.",
+                    external_id="acceptance-reconciliation",
+                ),
+                retrieved_at=datetime.now(UTC),
+            )
+        dispatcher = OutboxDispatcher(factory, RedisStreamPublisher(client))
         first = await dispatcher.dispatch_once()
         before = await client.xlen(stream)
         await client.delete(stream)
         second = await dispatcher.dispatch_once()
         with factory() as session:
-            durable = session.get(EventOutbox, record.id)
+            durable = session.scalar(
+                select(EventOutbox).where(EventOutbox.event_id == discovered.event_id)
+            )
             retained = durable.status.value == "PUBLISHED"
+        control = DatabasePublishingControl(factory)
+        reconciliation = EventReconciliationService(
+            factory,
+            RedisStreamPublisher(client),
+            client,
+            control,
+        )
+        dry = await reconciliation.reconcile(
+            mode=ReconciliationMode.DRY_RUN,
+            event_type=EventType.ARTICLE_DISCOVERED,
+        )
+        control.set_paused(True, reason="acceptance probe Redis recovery")
+        applied = await reconciliation.reconcile(
+            mode=ReconciliationMode.APPLY,
+            reason="verified disposable Redis transport loss",
+            event_type=EventType.ARTICLE_DISCOVERED,
+        )
+        worker = NormalizerEventWorker(
+            RedisStreamConsumer(
+                client,
+                stream=stream,
+                group=NORMALIZER_CONSUMER_GROUP,
+                consumer="acceptance-reconciliation",
+                block_ms=1,
+            ),
+            factory,
+        )
+        consumed = await worker.run_once()
+        converged = await reconciliation.reconcile(
+            mode=ReconciliationMode.DRY_RUN,
+            event_type=EventType.ARTICLE_DISCOVERED,
+        )
+        with factory() as session:
+            processed = session.get(
+                ProcessedEvent,
+                (discovered.event_id, NORMALIZER_CONSUMER_GROUP),
+            )
+            normalized_count = session.scalar(
+                select(func.count())
+                .select_from(EventOutbox)
+                .where(EventOutbox.event_type == EventType.ARTICLE_NORMALIZED.value)
+            )
+        # Clear the worker's downstream pending outbox intent before isolating the
+        # dispatcher diagnostic probe below.
+        await dispatcher.dispatch_once()
         loss = {
             "initial_published": first.published,
             "initial_stream_length": before,
             "durable_outbox_retained": retained,
-            "recovery_claimed": second.claimed,
-            "stream_length_after_dispatch": await client.xlen(stream),
+            "ordinary_dispatcher_claimed_after_loss": second.claimed,
+            "dry_run_replay_required": dry.replay_required,
+            "apply_replayed": applied.replayed,
+            "original_event_id_preserved": any(
+                item.event_id == discovered.event_id and item.replayed for item in applied.items
+            ),
+            "consumer_processed": consumed.processed,
+            "processed_event_recorded": processed is not None,
+            "normalized_effect_count": normalized_count,
+            "second_reconciliation_replayed": converged.replayed,
+            "second_reconciliation_already_processed": converged.already_processed,
         }
         sentinel = "SYNTHETIC_ACCEPTANCE_SECRET_DO_NOT_LOG"
 

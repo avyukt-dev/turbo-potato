@@ -1,20 +1,21 @@
 """Publisher owns only publication.scheduled; output events are ACK-only no-ops."""
 
 from news_ai_events import EventType, ReliableMessageProcessor, WorkerRetryPolicy
+from news_ai_events.consumer_contracts import PUBLISHER_CONSUMER_GROUP
 from news_ai_events.reliability import PermanentEventError
 from news_ai_publishing import PublicationError
 
 
 class PublisherWorker:
     def __init__(self, consumer, service):
-        if consumer.stream != "news:publishing" or consumer.group != "publisher":
+        if consumer.stream != "news:publishing" or consumer.group != PUBLISHER_CONSUMER_GROUP:
             raise ValueError("publisher requires canonical publishing stream/group")
         self.consumer = consumer
         self.service = service
         self.reliability = ReliableMessageProcessor(
             consumer,
             service.factory,
-            consumer_group="publisher",
+            consumer_group=PUBLISHER_CONSUMER_GROUP,
             handled_event_types=frozenset({EventType.PUBLICATION_SCHEDULED}),
             retry_policy=WorkerRetryPolicy(),
             clock=service.service.clock,

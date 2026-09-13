@@ -16,11 +16,11 @@ from news_ai_events import (
     WorkerBatchResult,
     WorkerRetryPolicy,
 )
+from news_ai_events.consumer_contracts import CLAIM_CONSUMER_GROUP
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from sqlalchemy.orm import Session
 
-CLAIM_CONSUMER_GROUP = "claim-worker"
 _HANDLED_EVENT_TYPES = frozenset({EventType.STORY_CREATED, EventType.STORY_CLUSTERED})
 
 
