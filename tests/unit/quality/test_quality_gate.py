@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from media_fixtures import attach_caller_media
 from news_ai_ai import (
     AIProviderTimeoutError,
     AIRequest,
@@ -105,7 +106,7 @@ def _factory() -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 
 
-def _seed(factory: sessionmaker[Session]):
+def _seed(factory: sessionmaker[Session], *, media: bool = True):
     story_id, sheet_id, claim_id, check_id, evidence_id, source_id = (uuid4() for _ in range(6))
     with factory() as session, session.begin():
         model = AIModel(
@@ -317,6 +318,8 @@ def _seed(factory: sessionmaker[Session]):
                 "ai_run_id": str(generation.id),
             },
         )
+    if media:
+        attach_caller_media(factory, variant.id)
     return event, draft.id, variant.id
 
 
@@ -360,6 +363,7 @@ def _add_second_variant(factory, event: EventEnvelope) -> tuple[EventEnvelope, o
         session.add(second)
         session.flush()
         second_id = second.id
+    attach_caller_media(factory, second_id)
     return (
         event.model_copy(
             update={

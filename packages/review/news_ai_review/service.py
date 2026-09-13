@@ -10,6 +10,8 @@ from typing import Any
 from uuid import UUID
 
 from news_ai_content import EditorialBrief, content_artifact_hash
+from news_ai_content.integrity import quality_artifact
+from news_ai_content.media import MediaValidationError, load_media_provenance
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -18,7 +20,6 @@ from news_ai_database import (
     ContentQualityCheck,
     ContentVariant,
     FactSheet,
-    MediaAsset,
     ReviewDecisionRecord,
     Story,
 )
@@ -26,7 +27,6 @@ from news_ai_domain import ReviewState, RiskLevel
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_evidence import FactSheetArtifact
 from news_ai_quality import QUALITY_METHODOLOGY_VERSION
-from news_ai_social import SocialAdapterError, canonical_public_media_url
 from pydantic import ValidationError
 from sqlalchemy import String, and_, case, cast, exists, func, select
 from sqlalchemy.exc import IntegrityError
@@ -404,6 +404,11 @@ class ReviewService:
             raise ReviewPreconditionError("review artifact routing changed during locking")
         if expected_version is not None and variant.version != expected_version:
             raise ReviewConflictError("requested artifact version is stale")
+        if lock and variant.media_asset_ids:
+            try:
+                load_media_provenance(session, variant, lock=True)
+            except MediaValidationError:
+                raise ReviewPreconditionError("reviewed media provenance is invalid") from None
         fact_sheet = session.get(FactSheet, draft.fact_sheet_id)
         if fact_sheet is None:
             raise ReviewPreconditionError("content Fact Sheet is missing")
@@ -486,9 +491,11 @@ class ReviewService:
             or not quality.review_required
         ):
             return "exact passing quality assessment is missing or invalid"
-        if quality.content_artifact_hash != content_artifact_hash(
-            self._quality_artifact(graph.variant)
-        ):
+        try:
+            current_hash = content_artifact_hash(self._quality_artifact(graph.variant))
+        except (MediaValidationError, ValueError, TypeError):
+            return "reviewed media or content provenance is invalid"
+        if quality.content_artifact_hash != current_hash:
             return "content changed after its exact quality assessment"
         return None
 
@@ -533,60 +540,19 @@ class ReviewService:
             if session is None:
                 raise ReviewPreconditionError("reviewed media reference is detached")
             try:
-                ordered_ids = tuple(UUID(identifier) for identifier in variant.media_asset_ids)
-            except (TypeError, ValueError) as exc:
-                raise ReviewPreconditionError("reviewed media reference is invalid") from exc
-            statement = (
-                select(MediaAsset)
-                .where(MediaAsset.id.in_(ordered_ids))
-                .order_by(MediaAsset.id)
-                .execution_options(populate_existing=True)
-            )
-            if lock_media:
-                statement = statement.with_for_update()
-            by_id = {asset.id: asset for asset in session.scalars(statement)}
-            if len(by_id) != len(ordered_ids):
-                raise ReviewPreconditionError("reviewed media reference is missing")
-            media = []
-            for identifier in ordered_ids:
-                asset = by_id[identifier]
-                try:
-                    public_url = canonical_public_media_url(asset.public_url)
-                except SocialAdapterError as exc:
-                    raise ReviewPreconditionError(
-                        "reviewed media delivery reference is invalid"
-                    ) from exc
-                media.append(
-                    {
-                        "id": str(asset.id),
-                        "file_hash": asset.file_hash,
-                        "asset_type": asset.asset_type,
-                        "mime_type": asset.mime_type,
-                        "media_format": asset.source_metadata.get("media_format")
-                        if isinstance(asset.source_metadata, dict)
-                        else None,
-                        "public_url": public_url,
-                    }
+                snapshot["media_provenance"] = load_media_provenance(
+                    session, variant, lock=lock_media
                 )
-            snapshot["media_provenance"] = media
+            except MediaValidationError:
+                raise ReviewPreconditionError("reviewed media provenance is invalid") from None
         return snapshot
 
     @staticmethod
     def _quality_artifact(variant: ContentVariant) -> dict[str, Any]:
-        return {
-            "content_variant_id": str(variant.id),
-            "content_variant_version": variant.version,
-            "platform": variant.platform,
-            "format": variant.format,
-            "language": variant.language,
-            "title": variant.title,
-            "body": variant.body,
-            "caption": variant.caption,
-            "structured_payload": variant.structured_payload,
-            "claim_ids_used": variant.claim_ids_used,
-            "source_ids_used": variant.source_ids_used,
-            "media_asset_ids": variant.media_asset_ids,
-        }
+        session = object_session(variant)
+        if session is None:
+            raise ReviewPreconditionError("quality artifact is detached")
+        return quality_artifact(session, variant)
 
     @staticmethod
     def _artifact_hash(snapshot: dict[str, Any]) -> str:

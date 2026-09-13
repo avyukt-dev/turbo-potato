@@ -107,6 +107,10 @@ def seed_candidate(factory, *, media=True, customize=None):
         }
     )
     decide(ReviewService(factory, _policy()), variant_id, actor, key=str(uuid4()))
+    if not media:
+        # A missing-media current artifact cannot retain an earlier approval.
+        with factory() as session, session.begin():
+            session.get(ContentVariant, variant_id).media_asset_ids = []
     return variant_id, account_id, actor
 
 
@@ -310,8 +314,9 @@ def test_missing_media_is_honest_blocked_not_execution_ready():
     factory, clock = _factory(), Clock()
     variant, account, actor = seed_candidate(factory, media=False)
     service, scheduler = stack(factory, clock)
-    row = service.create(request(variant, account, clock), actor)
-    assert row.status == PublicationStatus.BLOCKED and row.blocking_reason == "MEDIA_UNAVAILABLE"
+    with pytest.raises(PublicationError) as exc:
+        service.create(request(variant, account, clock), actor)
+    assert exc.value.code == "CONTENT_NOT_APPROVED"
     clock.now += timedelta(days=1)
     assert scheduler.scan() == 0
 

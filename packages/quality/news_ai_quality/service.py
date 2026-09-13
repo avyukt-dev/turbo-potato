@@ -22,6 +22,8 @@ from news_ai_ai import (
     PromptReference,
 )
 from news_ai_content import ContentGenerationOutput, EditorialBrief, content_artifact_hash
+from news_ai_content.integrity import quality_artifact
+from news_ai_content.media import MediaNotAttachedError, MediaValidationError
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -44,6 +46,7 @@ from news_ai_events import (
     parse_event_payload,
 )
 from news_ai_events.outbox import build_outbox_record
+from news_ai_events.reliability import DeferredWorkError
 from news_ai_evidence import FactSheetGenerator
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -52,9 +55,8 @@ from sqlalchemy.orm import Session
 from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
 
-# v1 predates exact content-artifact hash provenance. Historical v1 rows remain
-# immutable; all current assessments use hash-aware v2 semantic identity.
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v2"
+# v3 binds ordered durable media provenance. Historical v1/v2 checks stay immutable.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v3"
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
@@ -63,6 +65,10 @@ _TRANSIENT_FAILURES = {
     AIFailureReason.RATE_LIMIT,
     AIFailureReason.LOCAL_RESOURCE_EXHAUSTED,
 }
+
+
+class _InvalidQualityMedia(PermanentEventError):
+    """Invalid before AI; a changed in-flight media graph is instead stale."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +141,9 @@ class QualityAssessmentService:
         self.publishing_policy = publishing_policy
         self.review_required = publishing_policy.mvp.external_publication_requires_human_approval
 
-    def load_context(self, session: Session, event: EventEnvelope) -> QualityContext:
+    def load_context(
+        self, session: Session, event: EventEnvelope, *, lock_media: bool = False
+    ) -> QualityContext:
         payload = _quality_request(event)
         draft = session.get(ContentDraft, payload.content_draft_id)
         if draft is None or draft.story_id != payload.story_id:
@@ -193,7 +201,8 @@ class QualityAssessmentService:
         fact_sheet = artifact.model_dump(mode="json")
         brief = brief_model.model_dump(mode="json")
         context_variants = tuple(
-            self._variant_context(draft, item, fact_sheet, brief) for item in variants
+            self._variant_context(session, draft, item, fact_sheet, brief, lock_media=lock_media)
+            for item in variants
         )
         return QualityContext(
             draft_id=draft.id,
@@ -211,10 +220,13 @@ class QualityAssessmentService:
 
     def _variant_context(
         self,
+        session: Session,
         draft: ContentDraft,
         variant: ContentVariant,
         fact_sheet: dict[str, Any],
         brief: dict[str, Any],
+        *,
+        lock_media: bool = False,
     ) -> QualityVariantContext:
         language = variant.language.strip().replace("_", "-").lower()
         if _LANGUAGE_RE.fullmatch(language) is None:
@@ -224,8 +236,6 @@ class QualityAssessmentService:
             raise PermanentEventError("variant target conflicts with its Editorial Brief")
         if variant.review_state not in {ReviewState.NOT_READY, ReviewState.READY_FOR_REVIEW}:
             raise PermanentEventError("quality gate cannot process a human-review variant state")
-        if variant.media_asset_ids:
-            raise PermanentEventError("Stage-22 input contains fabricated media identifiers")
         try:
             claims = tuple(str(UUID(item)) for item in variant.claim_ids_used)
             sources = tuple(str(UUID(item)) for item in variant.source_ids_used)
@@ -282,20 +292,12 @@ class QualityAssessmentService:
         expected_body = "\n\n".join(f"{slide.heading}\n{slide.body}" for slide in carousel.slides)
         if variant.body != expected_body:
             raise PermanentEventError("variant body conflicts with its carousel slides")
-        artifact = {
-            "content_variant_id": str(variant.id),
-            "content_variant_version": variant.version,
-            "platform": variant.platform,
-            "format": variant.format,
-            "language": language,
-            "title": variant.title,
-            "body": variant.body,
-            "caption": variant.caption,
-            "structured_payload": carousel.structured_payload(),
-            "claim_ids_used": list(claims),
-            "source_ids_used": list(sources),
-            "media_asset_ids": variant.media_asset_ids,
-        }
+        try:
+            artifact = quality_artifact(session, variant, lock_media=lock_media)
+        except MediaNotAttachedError:
+            raise DeferredWorkError("required caller media attachment is pending") from None
+        except MediaValidationError:
+            raise _InvalidQualityMedia("content variant caller media is invalid") from None
         factual_text = "\n".join(
             [
                 fact_sheet["headline"],
@@ -397,7 +399,11 @@ class QualityAssessmentService:
                 system_prompt=self.prompt.system_prompt,
                 input={
                     "immutable_fact_sheet": context.fact_sheet,
-                    "content_artifact": variant.artifact,
+                    "content_artifact": {
+                        key: value
+                        for key, value in variant.artifact.items()
+                        if key != "media_provenance"
+                    },
                     "editorial_brief": context.editorial_brief,
                     "risk_level": context.risk_level,
                     "sensitive_topics": context.sensitive_topics,
@@ -453,11 +459,19 @@ class QualityAssessmentService:
         event: EventEnvelope,
         executions: tuple[QualityExecution, ...],
     ) -> QualityResult:
-        story = session.scalar(select(Story).where(Story.id == context.story_id).with_for_update())
+        story = session.scalar(
+            select(Story)
+            .where(Story.id == context.story_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if story is None:
             raise PermanentEventError("content Fact Sheet story no longer exists")
         draft = session.scalar(
-            select(ContentDraft).where(ContentDraft.id == context.draft_id).with_for_update()
+            select(ContentDraft)
+            .where(ContentDraft.id == context.draft_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if draft is None:
             raise PermanentEventError("content draft no longer exists")
@@ -467,9 +481,13 @@ class QualityAssessmentService:
                 .where(ContentVariant.content_draft_id == context.draft_id)
                 .order_by(ContentVariant.id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         )
-        current = self.load_context(session, event)
+        try:
+            current = self.load_context(session, event, lock_media=True)
+        except (_InvalidQualityMedia, DeferredWorkError):
+            raise StaleWorkError("content quality inputs changed during assessment") from None
         if current.event_semantic_key != context.event_semantic_key:
             raise StaleWorkError("content quality inputs changed during assessment")
         existing = self.existing_result(session, current)

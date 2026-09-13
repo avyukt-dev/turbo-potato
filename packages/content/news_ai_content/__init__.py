@@ -1,5 +1,10 @@
 """Stage-21 factual-boundary content generation package."""
 
+from .attachment import (
+    ContentMediaAttachmentService,
+    MediaAttachmentConflict,
+    MediaAttachmentRequest,
+)
 from .brief import build_editorial_brief
 from .configuration import (
     ContentStyleConfig,
@@ -28,6 +33,9 @@ from .generation import (
 from .integrity import content_artifact_hash
 
 __all__ = [
+    "ContentMediaAttachmentService",
+    "MediaAttachmentConflict",
+    "MediaAttachmentRequest",
     "BriefClaim",
     "CarouselSlide",
     "ContentDraftArtifact",
