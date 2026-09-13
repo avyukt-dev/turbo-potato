@@ -73,6 +73,52 @@ def test_malformed_html_and_namespace_paragraphs_remain_deterministic():
     )
 
 
+STORY = BODY + " Published engineering records explain the inspection findings in detail."
+
+
+@pytest.mark.parametrize(
+    "markup,expected",
+    [
+        pytest.param(
+            f"<article>Short teaser.</article><main><p>{STORY}</p></main>",
+            STORY,
+            id="short-article-then-usable-main",
+        ),
+        pytest.param(
+            "<article>Unrelated first teaser card without full content.</article>"
+            "<article>Unrelated second teaser card without full content.</article>"
+            "<article>Unrelated third teaser card without full content.</article>"
+            f"<main><p>{STORY}</p></main>",
+            STORY,
+            id="unrelated-article-cards-not-concatenated",
+        ),
+        pytest.param(
+            f"<body><main>{'Unrelated main text. ' * 10}</main>"
+            f"<article><p>{STORY}</p></article><p>Unrelated body.</p></body>",
+            STORY,
+            id="substantial-article-preferred",
+        ),
+        pytest.param(
+            f"<body><article>Teaser.</article><main>Summary.</main><p>{STORY}</p></body>",
+            "Teaser.\n\nSummary.\n\n" + STORY,
+            id="usable-body-fallback",
+        ),
+        pytest.param(
+            "<body><article>Teaser.</article><main>Summary.</main></body>",
+            None,
+            id="no-usable-candidate-permanent-error",
+        ),
+    ],
+)
+def test_individual_semantic_candidates_skip_teasers_before_body_fallback(markup, expected):
+    policy = ArticleContentPolicy(article_min_body_chars=100)
+    if expected is None:
+        with pytest.raises(PermanentEventError, match="could not be extracted"):
+            extract_article_text(markup, html=True, policy=policy)
+    else:
+        assert extract_article_text(markup, html=True, policy=policy) == expected
+
+
 @pytest.mark.parametrize("body", ["", "  ", "tiny", "<script>only script</script>"])
 def test_unusable_content_is_permanent(body):
     with pytest.raises(PermanentEventError):

@@ -116,13 +116,11 @@ class _ArticleTextParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.stack = []
         self.parts = {"article": [], "main": [], "body": []}
+        self.active_candidates = []
 
     def _add(self, value):
         if not any(tag in self.ignored for tag in self.stack):
             self.parts["body"].append(value)
-            for target in ("article", "main"):
-                if target in self.stack:
-                    self.parts[target].append(value)
 
     def handle_starttag(self, tag, attrs):
         tag = tag.rsplit(":", 1)[-1]
@@ -130,6 +128,12 @@ class _ArticleTextParser(HTMLParser):
             raise PermanentEventError("article content markup is too deeply nested")
         if tag not in self.voids:
             self.stack.append(tag)
+        if tag in {"article", "main"} and not any(t in self.ignored for t in self.stack):
+            # Each element owns a range in the shared visible-text buffer, so
+            # siblings remain separate and nested markup does not multiply storage.
+            span = [len(self.parts["body"]), None]
+            self.parts[tag].append(span)
+            self.active_candidates.append((len(self.stack), span))
         if tag in self.blocks:
             self._add("\n\n")
 
@@ -140,6 +144,13 @@ class _ArticleTextParser(HTMLParser):
         if tag in self.stack:
             position = len(self.stack) - 1 - self.stack[::-1].index(tag)
             del self.stack[position:]
+            remaining = []
+            for depth, span in self.active_candidates:
+                if depth > len(self.stack):
+                    span[1] = len(self.parts["body"])
+                else:
+                    remaining.append((depth, span))
+            self.active_candidates = remaining
 
     def handle_startendtag(self, tag, attrs):
         tag = tag.rsplit(":", 1)[-1]
@@ -149,14 +160,17 @@ class _ArticleTextParser(HTMLParser):
     def handle_data(self, data):
         self._add(data)
 
-    def text(self):
+    def text(self, *, min_chars):
         from .normalizer import normalize_body_text
 
-        for target in ("article", "main", "body"):
-            text = normalize_body_text("".join(self.parts[target]))
-            if text:
-                return text
-        return None
+        # Semantic type priority, then document order; short preferred elements
+        # must not prevent a later usable element or the final bounded fallback.
+        for target in ("article", "main"):
+            for start, end in self.parts[target]:
+                text = normalize_body_text("".join(self.parts["body"][start:end]))
+                if text and len(text) >= min_chars:
+                    return text
+        return normalize_body_text("".join(self.parts["body"]))
 
 
 def extract_article_text(content: str, *, html: bool, policy: ArticleContentPolicy) -> str:
@@ -166,7 +180,7 @@ def extract_article_text(content: str, *, html: bool, policy: ArticleContentPoli
         parser = _ArticleTextParser()
         parser.feed(content)
         parser.close()
-        text = parser.text()
+        text = parser.text(min_chars=policy.article_min_body_chars)
     else:
         text = normalize_body_text(content)
     if not text or len(text) < policy.article_min_body_chars:
