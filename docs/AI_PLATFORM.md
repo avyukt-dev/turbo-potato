@@ -228,6 +228,28 @@ Models should be enabled/disabled without rewriting business logic.
 
 # 10. AI Configuration Ownership
 
+The current primary CLOUD adapter is Groq using `openai/gpt-oss-120b`, with local
+llama.cpp as fallback. All four active stages select Groq first in HYBRID mode;
+sensitive-topic authorization explicitly allows both providers and remains fail-closed.
+Groq uses one bounded HTTP chat-completions request without SDK dependencies or adapter retries.
+Only INVALID_RESPONSE, TIMEOUT, RATE_LIMIT, and UNAVAILABLE authorize local fallback;
+policy rejection, unknown failures, and context overflow do not.
+
+`AIRequest.reasoning_effort` is a provider-neutral LOW/MEDIUM/HIGH preference. The current
+stage default is MEDIUM; an explicit request preference overrides it. Groq consumes it,
+while llama.cpp intentionally ignores it without losing fallback eligibility. Attempts retain
+the selected model and effective preference through existing routing-attempt JSON provenance.
+Groq requests `include_reasoning: false`; returned private reasoning fields are not normalized,
+logged, or persisted. Request mapping follows the official
+[Groq reasoning contract](https://console.groq.com/docs/reasoning) and
+[chat-completions API](https://console.groq.com/docs/api-reference).
+
+Groq receives only existing pipeline context. Built-in browsing, retrieval, and tools are not
+enabled; the Research Engine remains the evidence authority. Prompts and semantic validators
+are shared across providers. The configured credential reference is `GROQ_API_KEY`, never a
+committed key value; missing credentials fail startup/readiness. Adaptive retries/backoff are
+reserved for a later resilience layer.
+
 Model/provider configuration belongs under:
 
 ```text

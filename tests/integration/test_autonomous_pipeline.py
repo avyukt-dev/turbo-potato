@@ -111,7 +111,7 @@ def test_real_postgres_redis_autonomous_owner_media_deferral_and_restart(
         ai, feed = DeterministicResearchAI(), Feed()
         stack = await build_production_pipeline_stack(
             settings,
-            ai_providers=(ai,),
+            ai_providers=(ai, DeterministicResearchAI(provider_id="local-llama")),
             feed_collector=feed,
             config=fast_config(),
             article_content_acquirer=offline_acquirer(
@@ -161,7 +161,7 @@ def test_real_postgres_redis_autonomous_owner_media_deferral_and_restart(
                 await asyncio.wait_for(task, 5)
                 stack = await build_production_pipeline_stack(
                     settings,
-                    ai_providers=(ai,),
+                    ai_providers=(ai, DeterministicResearchAI(provider_id="local-llama")),
                     feed_collector=feed,
                     config=fast_config(),
                     article_content_acquirer=offline_acquirer(),

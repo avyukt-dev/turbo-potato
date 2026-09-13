@@ -76,14 +76,16 @@ pytestmark = pytest.mark.skipif(
 @dataclass
 class DeterministicResearchAI:
     quality_defect: bool = False
-    provider_id: str = "local-llama"
+    provider_id: str = "groq"
     requests: list[AIRequest] = field(default_factory=list)
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             provider_id=self.provider_id,
-            locality=ProviderLocality.LOCAL,
+            locality=ProviderLocality.CLOUD
+            if self.provider_id == "groq"
+            else ProviderLocality.LOCAL,
             task_types=frozenset(
                 {
                     AITaskType.CLAIM_EXTRACTION,
@@ -93,7 +95,9 @@ class DeterministicResearchAI:
                 }
             ),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
-            models=frozenset({"local-news-ai"}),
+            models=frozenset(
+                {"openai/gpt-oss-120b" if self.provider_id == "groq" else "local-news-ai"}
+            ),
         )
 
     async def execute(self, request: AIRequest) -> AIResponse:
@@ -252,21 +256,21 @@ async def _run_pipeline(
         session_factory=factory,
         redis_client=redis,
         consumer_name="production-e2e",
-        ai_providers=(ai,),
+        ai_providers=(ai, DeterministicResearchAI(provider_id="local-llama")),
     )
     content_stack = build_production_content_stack(
         settings,
         session_factory=factory,
         redis_client=redis,
         consumer_name="production-content-e2e",
-        ai_providers=(ai,),
+        ai_providers=(ai, DeterministicResearchAI(provider_id="local-llama")),
     )
     quality_stack = build_production_quality_stack(
         settings,
         session_factory=factory,
         redis_client=redis,
         consumer_name="production-quality-e2e",
-        ai_providers=(ai,),
+        ai_providers=(ai, DeterministicResearchAI(provider_id="local-llama")),
     )
     normalizer = NormalizerEventWorker(
         RedisStreamConsumer(

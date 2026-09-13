@@ -9,6 +9,7 @@ from news_ai_ai import (
     AIPolicyConfigLoader,
     AIProvidersConfig,
     AIProvidersConfigLoader,
+    AIReasoningEffort,
     AIRequest,
     AIResponseFormat,
     AIRoutingMode,
@@ -44,24 +45,31 @@ EXPECTED = {
 }
 
 
-def test_production_provider_policy_and_all_closed_stages_preserve_llama_behavior() -> None:
+def test_production_provider_policy_and_stages_configure_groq_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     loader = ConfigLoader("config")
     provider_config = AIProvidersConfigLoader(loader).load()
-    assert len(provider_config.providers) == 1
-    provider = provider_config.providers[0]
-    assert provider.adapter_type == "llama_cpp"
-    assert provider.provider_id == "local-llama"
-    assert str(provider.base_url).rstrip("/") == "http://127.0.0.1:8080"
-    assert provider.model == "local-news-ai"
-    assert provider.request_timeout_seconds == 120
-    assert provider.health_timeout_seconds == 2
-    assert provider.max_context_tokens == 8192
+    assert [item.adapter_type for item in provider_config.providers] == ["groq", "llama_cpp"]
+    groq, llama = provider_config.providers
+    assert groq.provider_id == "groq"
+    assert str(groq.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
+    assert groq.model == "openai/gpt-oss-120b"
+    assert groq.default_max_completion_tokens == 8192
+    assert groq.api_key_env == "GROQ_API_KEY"
+    assert groq.max_context_tokens == 131072
+    assert llama.provider_id == "local-llama"
+    assert str(llama.base_url).rstrip("/") == "http://127.0.0.1:8080"
+    assert llama.model == "local-news-ai"
+    assert llama.request_timeout_seconds == 120
+    assert llama.health_timeout_seconds == 2
+    assert llama.max_context_tokens == 8192
 
     policy = AIPolicyConfigLoader(loader).load()
-    assert policy.mode is AIRoutingMode.LOCAL
+    assert policy.mode is AIRoutingMode.HYBRID
     assert len(policy.sensitivity_provider_allowlists) == 12
     assert all(
-        value == frozenset({"local-llama"})
+        value == frozenset({"groq", "local-llama"})
         for value in policy.sensitivity_provider_allowlists.values()
     )
 
@@ -76,12 +84,22 @@ def test_production_provider_policy_and_all_closed_stages_preserve_llama_behavio
         assert stage.prompt.version == "v1"
         assert stage.prompt.path == prompt_path
         assert [(item.provider_id, item.model) for item in stage.providers] == [
-            ("local-llama", "local-news-ai")
+            ("groq", "openai/gpt-oss-120b"),
+            ("local-llama", "local-news-ai"),
         ]
-        assert stage.fallback_on == frozenset({AIFailureReason.INVALID_RESPONSE})
+        assert stage.request_defaults.reasoning_effort is AIReasoningEffort.MEDIUM
+        assert stage.fallback_on == frozenset(
+            {
+                AIFailureReason.INVALID_RESPONSE,
+                AIFailureReason.TIMEOUT,
+                AIFailureReason.RATE_LIMIT,
+                AIFailureReason.UNAVAILABLE,
+            }
+        )
         prompt = stage_loader.resolve_prompt(stage)
         assert hashlib.sha256(prompt.read_text(encoding="utf-8").strip().encode()).hexdigest()
 
+    monkeypatch.setenv("GROQ_API_KEY", "test-placeholder")
     router = build_ai_router(loader)
     for _, (task, _, _) in EXPECTED.items():
         request = AIRequest(
@@ -90,7 +108,7 @@ def test_production_provider_policy_and_all_closed_stages_preserve_llama_behavio
             input={},
             response_format=AIResponseFormat.STRUCTURED,
         )
-        assert router.candidate_provider_ids(request) == ("local-llama",)
+        assert router.candidate_provider_ids(request) == ("groq", "local-llama")
 
 
 def test_provider_configuration_is_closed_and_secret_is_only_an_environment_reference() -> None:
@@ -126,6 +144,31 @@ def test_provider_configuration_is_closed_and_secret_is_only_an_environment_refe
     )
     assert config.providers[0].api_key_env == "NEWS_AI_LLAMA_API_KEY"
     assert "secret-value" not in config.model_dump_json()
+
+    with pytest.raises(ValidationError, match="must be unique"):
+        AIProvidersConfig.model_validate(
+            {
+                "providers": [
+                    config.providers[0].model_dump(),
+                    config.providers[0].model_dump(),
+                ]
+            }
+        )
+
+
+def test_production_factory_requires_groq_key_and_builds_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = ConfigLoader("config")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="GROQ_API_KEY"):
+        build_ai_router(loader)
+    monkeypatch.setenv("GROQ_API_KEY", "test-placeholder")
+    router = build_ai_router(loader)
+    assert {item.provider_id for item in router.registry.capabilities()} == {
+        "groq",
+        "local-llama",
+    }
 
 
 def test_stage_loader_fails_when_required_file_or_prompt_is_missing(tmp_path: Path) -> None:

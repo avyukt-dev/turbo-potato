@@ -21,7 +21,7 @@ def test_production_composition_reuses_stacks_shared_router_and_closed_groups(mo
     async def scenario():
         stack = await build_production_pipeline_stack(
             AppSettings(database_url="sqlite://", redis_url="redis://localhost"),
-            ai_providers=(provider,),
+            ai_providers=(provider, DeterministicResearchAI(provider_id="local-llama")),
             config=fast_config(),
         )
         try:

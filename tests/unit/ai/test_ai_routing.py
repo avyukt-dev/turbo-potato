@@ -10,12 +10,17 @@ from news_ai_ai import (
     AIInvalidResponseError,
     AIPolicyConfig,
     AIPolicyConfigLoader,
+    AIProviderError,
     AIProviderPolicyError,
+    AIProviderRateLimitError,
     AIProviderRegistry,
     AIProviderTimeoutError,
+    AIProviderUnavailableError,
+    AIReasoningEffort,
     AIRequest,
     AIResponse,
     AIResponseFormat,
+    AIRouteAttempt,
     AIRouteAttemptOutcome,
     AIRouter,
     AIRoutingExecutionError,
@@ -26,6 +31,7 @@ from news_ai_ai import (
     AIStageId,
     AIStagePromptConfig,
     AIStageProviderSelection,
+    AIStageRequestDefaults,
     AITaskType,
     ProviderCapabilities,
     ProviderLocality,
@@ -280,3 +286,141 @@ def test_unsupported_task_fails_closed() -> None:
     router = AIRouter(_registry(), _policy(), _stages())
     with pytest.raises(AIRoutingPolicyError, match="no AI stage"):
         router.candidate_provider_ids(_request(task_type=AITaskType.SUMMARIZATION))
+
+
+def _groq_router(
+    groq_outcome: AIResponse | Exception,
+    local_outcome: AIResponse | Exception | None = None,
+) -> tuple[AIRouter, FakeProvider, FakeProvider]:
+    groq = FakeProvider(
+        "groq",
+        ProviderLocality.CLOUD,
+        frozenset({"openai/gpt-oss-120b"}),
+        [groq_outcome],
+    )
+    local = FakeProvider(
+        "local-llama",
+        ProviderLocality.LOCAL,
+        frozenset({"local-news-ai"}),
+        [local_outcome or _response("local-llama", "local-news-ai")],
+    )
+    selections = (
+        AIStageProviderSelection(provider_id="groq", model="openai/gpt-oss-120b"),
+        AIStageProviderSelection(provider_id="local-llama", model="local-news-ai"),
+    )
+    stages = {
+        stage_id: AIStageConfig(
+            stage_id=stage_id,
+            task_type=task,
+            prompt=AIStagePromptConfig(
+                prompt_id=stage_id.value,
+                version="v1",
+                path=f"prompts/{stage_id.value}/v1.txt",
+            ),
+            providers=selections,
+            fallback_on=frozenset(
+                {
+                    AIFailureReason.INVALID_RESPONSE,
+                    AIFailureReason.TIMEOUT,
+                    AIFailureReason.RATE_LIMIT,
+                    AIFailureReason.UNAVAILABLE,
+                }
+            ),
+            request_defaults=AIStageRequestDefaults(reasoning_effort=AIReasoningEffort.MEDIUM),
+        )
+        for stage_id, task in (
+            (AIStageId.CLAIM_EXTRACTION, AITaskType.CLAIM_EXTRACTION),
+            (AIStageId.EVIDENCE_ASSESSMENT, AITaskType.EVIDENCE_ASSESSMENT),
+            (AIStageId.CONTENT_GENERATION, AITaskType.CONTENT_GENERATION),
+            (AIStageId.QUALITY_CHECKING, AITaskType.QUALITY_CHECKING),
+        )
+    }
+    policy = AIPolicyConfig(
+        mode=AIRoutingMode.HYBRID,
+        sensitivity_provider_allowlists={"SENSITIVE": frozenset({"groq", "local-llama"})},
+    )
+    return AIRouter(AIProviderRegistry((groq, local)), policy, stages), groq, local
+
+
+def test_groq_primary_uses_stage_reasoning_default_and_success_stops_fallback() -> None:
+    router, groq, local = _groq_router(_response("groq", "openai/gpt-oss-120b"))
+    result = asyncio.run(router.execute(_request(sensitivity=("SENSITIVE",))))
+    assert groq.requests[0].model == "openai/gpt-oss-120b"
+    assert groq.requests[0].reasoning_effort is AIReasoningEffort.MEDIUM
+    assert not local.requests
+    assert result.attempts[0].model == "openai/gpt-oss-120b"
+    assert result.attempts[0].reasoning_effort is AIReasoningEffort.MEDIUM
+    assert result.attempts[0].outcome is AIRouteAttemptOutcome.SUCCESS
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (AIProviderTimeoutError("timeout"), AIFailureReason.TIMEOUT),
+        (AIProviderUnavailableError("unavailable"), AIFailureReason.UNAVAILABLE),
+        (AIProviderRateLimitError("limited"), AIFailureReason.RATE_LIMIT),
+        (AIInvalidResponseError("invalid"), AIFailureReason.INVALID_RESPONSE),
+    ],
+)
+def test_safe_groq_failures_fallback_to_llama_with_model_and_reasoning_provenance(
+    failure: Exception,
+    reason: AIFailureReason,
+) -> None:
+    router, groq, local = _groq_router(failure)
+    result = asyncio.run(router.execute(_request(reasoning_effort=AIReasoningEffort.HIGH)))
+    assert groq.requests[0].reasoning_effort is AIReasoningEffort.HIGH
+    assert local.requests[0].model == "local-news-ai"
+    assert local.requests[0].reasoning_effort is AIReasoningEffort.HIGH
+    assert [
+        (item.provider_id, item.model, item.reasoning_effort, item.failure_reason)
+        for item in result.attempts
+    ] == [
+        ("groq", "openai/gpt-oss-120b", AIReasoningEffort.HIGH, reason),
+        ("local-llama", "local-news-ai", AIReasoningEffort.HIGH, None),
+    ]
+
+
+@pytest.mark.parametrize("failure", [AIProviderPolicyError("denied"), AIProviderError("other")])
+def test_groq_policy_and_unknown_failures_do_not_fallback(failure: Exception) -> None:
+    router, _, local = _groq_router(failure)
+    with pytest.raises(AIRoutingExecutionError):
+        asyncio.run(router.execute(_request()))
+    assert not local.requests
+
+
+def test_allowed_provider_can_select_local_without_losing_reasoning_preference() -> None:
+    router, groq, local = _groq_router(_response("groq", "openai/gpt-oss-120b"))
+    result = asyncio.run(router.execute(_request(allowed_providers=("local-llama",))))
+    assert not groq.requests
+    assert local.requests[0].reasoning_effort is AIReasoningEffort.MEDIUM
+    assert result.response.provider == "local-llama"
+
+
+def test_historical_route_attempt_is_readable_without_new_preference_fields() -> None:
+    attempt = AIRouteAttempt.model_validate(
+        {"provider_id": "local-llama", "outcome": "SUCCESS", "failure_reason": None}
+    )
+    assert attempt.model is None
+    assert attempt.reasoning_effort is None
+
+
+def test_domain_validation_failure_can_fallback_from_groq() -> None:
+    router, _, local = _groq_router(_response("groq", "openai/gpt-oss-120b"))
+
+    def validate(response: AIResponse) -> None:
+        if response.provider == "groq":
+            raise AIInvalidResponseError("domain schema rejected output")
+
+    result = asyncio.run(router.execute(_request(), response_validator=validate))
+    assert local.requests
+    assert result.attempts[0].failure_reason is AIFailureReason.INVALID_RESPONSE
+
+
+def test_groq_context_overflow_does_not_fallback_to_smaller_local_model() -> None:
+    from news_ai_ai import AIContextTooLargeError
+
+    router, _, local = _groq_router(AIContextTooLargeError("context"))
+    with pytest.raises(AIRoutingExecutionError) as caught:
+        asyncio.run(router.execute(_request()))
+    assert caught.value.attempts[0].failure_reason is AIFailureReason.CONTEXT_TOO_LARGE
+    assert not local.requests

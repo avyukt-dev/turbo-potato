@@ -1,15 +1,15 @@
 schema_version: 1
-mode: LOCAL
+mode: HYBRID
 sensitivity_provider_allowlists:
-  COMMUNAL_VIOLENCE: [local-llama]
-  RELIGIOUS_ACCUSATION: [local-llama]
-  RELIGIOUS_VIOLENCE: [local-llama]
-  CRIMINAL_ALLEGATION: [local-llama]
-  SEXUAL_ASSAULT: [local-llama]
-  TERRORISM: [local-llama]
-  WAR_CASUALTIES: [local-llama]
-  ELECTION_FRAUD: [local-llama]
-  SC_ST_ALLEGATION: [local-llama]
-  CASTE_RELATED_ACCUSATION: [local-llama]
-  BLASPHEMY_ALLEGATION: [local-llama]
-  UNVERIFIED_BREAKING_NEWS: [local-llama]
+  COMMUNAL_VIOLENCE: [groq, local-llama]
+  RELIGIOUS_ACCUSATION: [groq, local-llama]
+  RELIGIOUS_VIOLENCE: [groq, local-llama]
+  CRIMINAL_ALLEGATION: [groq, local-llama]
+  SEXUAL_ASSAULT: [groq, local-llama]
+  TERRORISM: [groq, local-llama]
+  WAR_CASUALTIES: [groq, local-llama]
+  ELECTION_FRAUD: [groq, local-llama]
+  SC_ST_ALLEGATION: [groq, local-llama]
+  CASTE_RELATED_ACCUSATION: [groq, local-llama]
+  BLASPHEMY_ALLEGATION: [groq, local-llama]
+  UNVERIFIED_BREAKING_NEWS: [groq, local-llama]
