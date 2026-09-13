@@ -88,7 +88,7 @@ class ClaimExtractionOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    claims: tuple[ClaimExtractionItem, ...] = ()
+    claims: tuple[ClaimExtractionItem, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def reject_duplicate_claims(self) -> ClaimExtractionOutput:
