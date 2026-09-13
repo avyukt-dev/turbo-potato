@@ -227,6 +227,7 @@ async def _run_pipeline(
     review_decision: ReviewState | None,
     *,
     before_quality=None,
+    publish_mock: bool = False,
 ) -> None:
     engine = create_engine(database_url, pool_pre_ping=True)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -423,9 +424,45 @@ async def _run_pipeline(
         await dispatch_and_run(stack.story_verification_worker)
         await dispatch_and_run(stack.fact_sheet_worker)
         await dispatch_and_run(content_stack.worker)
+        with factory() as session:
+            assert session.scalar(select(ContentVariant)).media_asset_ids == []
+        if publish_mock:
+            await dispatcher.dispatch_once()
+            deferred = await quality_stack.worker.run_once()
+            assert deferred.retrying == 1 and deferred.failed == deferred.dead_lettered == 0
+            assert (await redis.xpending("news:content", "quality-worker"))["pending"] == 1
+            from news_ai_database import EventDeadLetter, EventProcessingAttempt
+
+            with factory() as session:
+                assert session.scalar(select(func.count()).select_from(ContentQualityCheck)) == 0
+                assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 0
+                assert session.scalar(select(func.count()).select_from(EventProcessingAttempt)) == 0
+                generated_row = session.scalar(
+                    select(EventOutbox).where(EventOutbox.event_type == "content.generated")
+                )
+                assert (
+                    session.scalar(
+                        select(ProcessedEvent).where(
+                            ProcessedEvent.event_id == generated_row.event_id,
+                            ProcessedEvent.consumer_group == "quality-worker",
+                        )
+                    )
+                    is None
+                )
+            assert not any(
+                request.task_type is AITaskType.QUALITY_CHECKING for request in ai.requests
+            )
         if before_quality is not None:
             before_quality(factory)
-        await dispatch_and_run(quality_stack.worker)
+        else:
+            from media_fixtures import attach_caller_media
+
+            attach_caller_media(factory)
+        if publish_mock:
+            _, resumed = await quality_stack.worker.recover_once(min_idle_ms=1)
+            assert resumed.processed == 1 and resumed.failed == resumed.dead_lettered == 0
+        else:
+            await dispatch_and_run(quality_stack.worker)
         await dispatcher.dispatch_once()
 
         with factory() as session:
@@ -549,10 +586,7 @@ async def _run_pipeline(
             assert variants[0].review_state is (
                 ReviewState.READY_FOR_REVIEW if expected_pass else ReviewState.NOT_READY
             )
-            if before_quality is None:
-                assert variants[0].media_asset_ids == []
-            else:
-                assert len(variants[0].media_asset_ids) == 2
+            assert len(variants[0].media_asset_ids) == 2
             assert generated.payload["content_variant_ids"] == [str(variants[0].id)]
             assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
             assert content_run.task_type == AITaskType.CONTENT_GENERATION.value
@@ -567,7 +601,7 @@ async def _run_pipeline(
             assert quality_check.content_variant_version == variants[0].version
             assert quality_check.fact_sheet_id == sheet.id
             assert quality_check.fact_sheet_version == sheet.version
-            assert quality_check.methodology_version == "quality-gate-methodology-v2"
+            assert quality_check.methodology_version == "quality-gate-methodology-v3"
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"
@@ -782,6 +816,128 @@ async def _run_pipeline(
                 for _message_id, fields in await redis.xrange(stream)
             )
 
+        if publish_mock:
+            assert expected_pass and review_decision is ReviewState.APPROVED
+            from news_ai_database import PublicationAttempt, SocialAccount, SocialAccountStatus
+            from news_ai_domain import PublicationStatus
+            from news_ai_publisher import build_production_publisher_stack
+            from news_ai_publishing import CreatePublicationRequest
+            from news_ai_review import ReviewCapability, ReviewerPrincipal
+            from news_ai_runtime import DatabasePublishingControl
+            from news_ai_scheduler import build_production_scheduler_stack
+            from news_ai_social import SocialSettings
+
+            class NoGraphTransport:
+                calls = 0
+
+                async def request(self, *args, **kwargs):
+                    self.calls += 1
+                    raise AssertionError("MOCK must not call Graph")
+
+            transport = NoGraphTransport()
+            now = datetime.now(UTC)
+
+            def clock():
+                return now
+
+            account_id = uuid4()
+            with factory() as session, session.begin():
+                session.add(
+                    SocialAccount(
+                        id=account_id,
+                        platform="INSTAGRAM",
+                        account_name="synthetic mock",
+                        account_identifier="synthetic-caller-account",
+                        status=SocialAccountStatus.ACTIVE,
+                        capabilities={"image": True, "carousel": True},
+                    )
+                )
+            principal = ReviewerPrincipal(
+                reviewer_id=settings.reviewer_id,
+                capabilities=frozenset({ReviewCapability.PUBLISH}),
+            )
+            scheduler_stack = build_production_scheduler_stack(
+                settings, session_factory=factory, clock=clock
+            )
+            publisher_stack = build_production_publisher_stack(
+                settings,
+                session_factory=factory,
+                redis_client=redis,
+                clock=clock,
+                social_settings=SocialSettings(environment="test", social_mode="MOCK"),
+                transport=transport,
+            )
+            publisher_stack.worker.consumer.block_ms = 1
+            control = DatabasePublishingControl(factory, clock=clock)
+            control.set_paused(False, reason="synthetic isolated MOCK acceptance")
+            publication = scheduler_stack.service.create(
+                CreatePublicationRequest(
+                    content_variant_id=variant_id,
+                    social_account_id=account_id,
+                    scheduled_at=now,
+                    idempotency_key="slice-a-mock",
+                ),
+                principal,
+                correlation_id=generated.correlation_id,
+            )
+            assert scheduler_stack.scheduler.scan() == 1
+            assert scheduler_stack.scheduler.scan() == 0
+            await publisher_stack.worker.ensure_ready()
+            await dispatcher.dispatch_once()
+            ack = publisher_stack.worker.consumer.ack
+
+            async def committed_ack(message):
+                if message.event.event_type is EventType.PUBLICATION_SCHEDULED:
+                    assert (
+                        scheduler_stack.service.get(publication.id).status
+                        is PublicationStatus.PUBLISHED
+                    )
+                await ack(message)
+
+            publisher_stack.worker.consumer.ack = committed_ack
+            assert (await publisher_stack.worker.run_once()).processed == 1
+            with factory() as session:
+                row = session.get(Publication, publication.id)
+                assert row.status is PublicationStatus.PUBLISHED
+                attempt = session.scalar(select(PublicationAttempt))
+                assert attempt.external_post_id == row.external_post_id
+                approval = session.get(ReviewDecisionRecord, row.review_decision_id)
+                quality = session.get(ContentQualityCheck, row.quality_check_id)
+                from news_ai_content import content_artifact_hash
+                from news_ai_content.integrity import quality_artifact
+
+                assert quality.passed
+                assert quality.content_artifact_hash == content_artifact_hash(
+                    quality_artifact(session, session.get(ContentVariant, variant_id))
+                )
+                assert len(approval.artifact_snapshot["media_provenance"]) == 2
+                current_variant = session.get(ContentVariant, variant_id)
+                assert [item["id"] for item in approval.artifact_snapshot["media_provenance"]] == (
+                    current_variant.media_asset_ids
+                )
+                from news_ai_publishing import build_instagram_publication_request
+                from news_ai_social import load_instagram_config
+
+                request = build_instagram_publication_request(
+                    session, current_variant, load_instagram_config("config")
+                )
+                assert [str(item.public_url) for item in request.media_items] == [
+                    item["public_url"] for item in approval.artifact_snapshot["media_provenance"]
+                ]
+                scheduled = session.scalar(
+                    select(EventOutbox).where(EventOutbox.event_type == "publication.scheduled")
+                )
+                replay = envelope_from_outbox(scheduled).model_dump_json()
+            await redis.xadd("news:publishing", {"event": replay})
+            assert (await publisher_stack.worker.run_once()).duplicates == 1
+            assert (await dispatcher.dispatch_once()).published == 1
+            assert (await publisher_stack.worker.run_once()).ignored == 1
+            assert transport.calls == 0
+            assert publisher_stack.service.service.attempts(publication.id)[0].provider_metadata[
+                "mock"
+            ]
+            await redis.xgroup_destroy("news:publishing", "publisher")
+
         if not expected_pass:
             quality_call_count = len(
                 [
@@ -859,3 +1015,13 @@ async def _run_pipeline(
         await redis.delete(*streams)
         await redis.aclose()
         engine.dispose()
+
+
+def test_real_postgres_redis_ingestion_to_explicit_review_and_mock_publication(monkeypatch):
+    assert DATABASE_URL is not None and REDIS_URL is not None
+    if os.getenv("NEWS_AI_ENVIRONMENT") != "test":
+        pytest.skip("destructive pipeline isolation requires test environment")
+    monkeypatch.setenv("NEWS_AI_PUBLISHING_PAUSED", "false")
+    asyncio.run(
+        _run_pipeline(DATABASE_URL, REDIS_URL, False, True, ReviewState.APPROVED, publish_mock=True)
+    )

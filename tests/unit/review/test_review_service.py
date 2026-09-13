@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from media_fixtures import persist_caller_assets
 from news_ai_common.config import ConfigLoader
 from news_ai_content import content_artifact_hash
+from news_ai_content.integrity import quality_artifact
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -196,6 +198,12 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
             )
             session.add(variant)
             session.flush()
+            slide = variant.structured_payload["slides"][0]
+            variant.structured_payload = {
+                **variant.structured_payload,
+                "slides": [slide, {**slide, "position": 2}],
+            }
+            variant.media_asset_ids = [str(item) for item in persist_caller_assets(session)]
             session.add(
                 ContentQualityCheck(
                     content_draft_id=draft.id,
@@ -204,22 +212,7 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
                     fact_sheet_id=sheet_id,
                     fact_sheet_version=1,
                     methodology_version=QUALITY_METHODOLOGY_VERSION,
-                    content_artifact_hash=content_artifact_hash(
-                        {
-                            "content_variant_id": str(variant.id),
-                            "content_variant_version": variant.version,
-                            "platform": variant.platform,
-                            "format": variant.format,
-                            "language": variant.language,
-                            "title": variant.title,
-                            "body": variant.body,
-                            "caption": variant.caption,
-                            "structured_payload": variant.structured_payload,
-                            "claim_ids_used": variant.claim_ids_used,
-                            "source_ids_used": variant.source_ids_used,
-                            "media_asset_ids": variant.media_asset_ids,
-                        }
-                    ),
+                    content_artifact_hash=content_artifact_hash(quality_artifact(session, variant)),
                     factual_accuracy_passed=True,
                     source_alignment_passed=True,
                     citation_alignment_passed=True,
