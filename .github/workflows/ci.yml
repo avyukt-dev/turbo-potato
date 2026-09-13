@@ -6,6 +6,7 @@ on:
       - development
       - "feature/**"
       - "audit/**"
+      - "fix/**"
   pull_request:
     branches:
       - main

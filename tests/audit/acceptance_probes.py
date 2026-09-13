@@ -91,6 +91,8 @@ async def probe(factory, redis_url):
         failed = await OutboxDispatcher(factory, UnsafeFailure()).dispatch_once()
         with factory() as session:
             error = session.get(EventOutbox, failure_row.id).last_error or ""
+        assert error == "OUTBOX_TRANSPORT_FAILED:INTERNAL"
+        assert sentinel not in error
         return {
             "redis_transport_loss": loss,
             "outbox_error_sanitization": {
