@@ -628,7 +628,8 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
         CheckConstraint(
             "actor_id IS NOT NULL OR action IN ('PUBLICATION_SCHEDULED','PUBLICATION_BLOCKED',"
             "'PUBLICATION_EXECUTION_STARTED','PUBLICATION_EXECUTED','PUBLICATION_FAILED',"
-            "'PUBLICATION_RETRY_SCHEDULED','PUBLICATION_RECOVERY')",
+            "'PUBLICATION_RETRY_SCHEDULED','PUBLICATION_RECOVERY',"
+            "'RUNTIME_PUBLISHING_PAUSED','RUNTIME_PUBLISHING_RESUMED')",
             name="audit_system_actor",
         ),
     )

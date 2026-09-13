@@ -655,6 +655,20 @@ review may continue
 new external publication calls stop
 ```
 
+The production control is a PostgreSQL `runtime_controls` row updated through
+`newsctl publish pause|resume`. Its value is combined with the
+`NEWS_AI_PUBLISHING_PAUSED=true` deployment hard pause; a database resume cannot
+override that environment pause. Scheduler and publisher re-read the shared
+control, and inability to read it denies external publishing.
+
+`newsctl runtime detect`, service operations, and health reporting use the typed
+service registry and `RuntimeController`. Native commands remain inside runtime
+adapters, and runtime profiles are hints rather than capability proof.
+
+Prometheus-compatible `/metrics` is read-only aggregate telemetry. Metric labels
+exclude durable IDs, account identifiers, content, URLs, credentials, and raw
+provider errors.
+
 ---
 
 # 33. Security Boundaries

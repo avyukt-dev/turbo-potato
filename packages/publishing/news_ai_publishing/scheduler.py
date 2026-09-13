@@ -14,18 +14,21 @@ from .service import PublicationService
 
 
 class PublicationScheduler:
-    def __init__(self, service: PublicationService, config: SchedulerConfig):
+    def __init__(self, service: PublicationService, config: SchedulerConfig, *, paused=None):
         self.service = service
         self.config = config
+        self.paused = paused or (lambda: self.config.publishing_paused)
 
     def scan(self) -> int:
-        if self.config.publishing_paused:
+        if self.paused():
             return 0
         now = utc(self.service.clock())
         dispatched = 0
         # One graph per transaction avoids holding unrelated Story/account locks
         # across the batch (which could create cross-story lock-order cycles).
         for _ in range(self.config.batch_size):
+            if self.paused():
+                break
             with self.service.session_factory() as session, session.begin():
                 row = session.scalar(
                     select(Publication)

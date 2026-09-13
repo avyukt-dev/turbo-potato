@@ -1,0 +1,13 @@
+schema_version: 1
+services:
+  - {name: news-api, native_name: news-api, service_class: application, manageable: true}
+  - {name: news-scheduler, native_name: news-scheduler, service_class: application, manageable: true}
+  - {name: news-publisher, native_name: news-publisher, service_class: application, manageable: true}
+  # Logical stages without standalone production entrypoints remain unmanaged.
+  - {name: news-collector, native_name: news-collector, service_class: application}
+  - {name: news-processor, native_name: news-processor, service_class: application}
+  - {name: news-ai-worker, native_name: news-ai-worker, service_class: application}
+  - {name: news-research-worker, native_name: news-research-worker, service_class: application}
+  - {name: postgres, native_name: postgresql, service_class: infrastructure, manageable: true, critical: true, expected: true}
+  - {name: redis, native_name: redis, service_class: infrastructure, manageable: true, critical: true, expected: true}
+  - {name: llama, native_name: llama, service_class: infrastructure, manageable: true}

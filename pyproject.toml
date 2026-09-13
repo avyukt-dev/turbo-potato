@@ -19,6 +19,8 @@ dependencies = [
   "PyYAML>=6.0,<7.0",
   "redis>=5.2,<7.0",
   "SQLAlchemy>=2.0,<3.0",
+  "psutil>=6.0,<8.0",
+  "prometheus-client>=0.21,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-newsctl = "news_ai_common.runtime.cli:main"
+newsctl = "news_ai_runtime.cli:main"
 
 [tool.setuptools.packages.find]
 where = [
@@ -51,6 +53,7 @@ where = [
   "packages/review",
   "packages/social",
   "packages/publishing",
+  "packages/runtime",
 ]
 include = [
   "news_ai_api*",
@@ -72,6 +75,7 @@ include = [
   "news_ai_review*",
   "news_ai_social*",
   "news_ai_publishing*",
+  "news_ai_runtime*",
 ]
 
 [tool.pytest.ini_options]
@@ -96,6 +100,7 @@ pythonpath = [
   "packages/review",
   "packages/social",
   "packages/publishing",
+  "packages/runtime",
 ]
 testpaths = ["tests"]
 addopts = "-q"
