@@ -10,6 +10,7 @@ from news_ai_database.models import EventOutbox, OutboxStatus
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from .diagnostics import OutboxFailureContext, safe_outbox_diagnostic
 from .outbox import envelope_from_outbox, mark_failed, mark_published, mark_publishing, mark_retry
 
 
@@ -134,12 +135,19 @@ class OutboxDispatcher:
             if record is not None and record.status == OutboxStatus.PUBLISHING:
                 mark_published(record, at=now)
 
-    def _mark_error(self, record_id: UUID, *, error: Exception, now: datetime) -> bool:
+    def _mark_error(
+        self,
+        record_id: UUID,
+        *,
+        error: Exception,
+        context: OutboxFailureContext,
+        now: datetime,
+    ) -> bool:
         with self.session_factory() as session, session.begin():
             record = session.get(EventOutbox, record_id, with_for_update=True)
             if record is None or record.status != OutboxStatus.PUBLISHING:
                 return False
-            message = f"{type(error).__name__}: {error}"
+            message = safe_outbox_diagnostic(context, error)
             if record.attempt_count > self.retry_policy.retry_budget:
                 mark_failed(record, error=message)
                 return False
@@ -157,13 +165,16 @@ class OutboxDispatcher:
         published = retried = failed = 0
 
         for record_id in record_ids:
+            context = OutboxFailureContext.STATE_UPDATE
             try:
                 event, _attempt_count = self._load_event(record_id)
+                context = OutboxFailureContext.TRANSPORT
                 await self.publisher.publish(event)
+                context = OutboxFailureContext.STATE_UPDATE
                 self._mark_success(record_id, now=datetime.now(UTC))
                 published += 1
             except Exception as exc:  # provider/network errors are normalized into retry state here
-                if self._mark_error(record_id, error=exc, now=datetime.now(UTC)):
+                if self._mark_error(record_id, error=exc, context=context, now=datetime.now(UTC)):
                     retried += 1
                 else:
                     failed += 1
