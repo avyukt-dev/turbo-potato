@@ -231,6 +231,24 @@ class EventReconciliationService:
                     created.append(
                         ReconciliationTarget(stream=item.stream, consumer_group=item.consumer_group)
                     )
+            # The durable pause is dynamic: classification and group restoration
+            # do not authorize a later transport side effect under an old snapshot.
+            try:
+                fresh = self.publishing_control.snapshot()
+                available = fresh.available
+                paused = bool(fresh.effective_pause) if available else None
+            except Exception:
+                available, paused = False, None
+            if not available or not paused:
+                return self._report(
+                    mode,
+                    limit,
+                    paused,
+                    updated,
+                    after_outbox_id=after_outbox_id,
+                    groups_created=created,
+                    error_code="CONTROL_UNAVAILABLE" if not available else "PUBLISHING_NOT_PAUSED",
+                )
             try:
                 await self.publisher.publish(event)
             except Exception:
@@ -410,7 +428,11 @@ class EventReconciliationService:
             publishing_paused=paused,
             limit=limit,
             after_outbox_id=after_outbox_id,
-            next_after_outbox_id=items[-1].outbox_id if items else None,
+            # Interrupted pages are retried from their original boundary. Duplicate
+            # transport copies are preferable to skipping unvisited durable work.
+            next_after_outbox_id=(
+                after_outbox_id if error_code else items[-1].outbox_id if items else None
+            ),
             scanned=len(items),
             replay_required=count(ReconciliationDisposition.REPLAY_REQUIRED),
             replayed=sum(item.replayed for item in items),
@@ -597,19 +619,9 @@ def _non_publication_disposition(
             )
             if latest != sheet.version:
                 return ReconciliationDisposition.DOMAIN_COMPLETE
-            draft = session.scalar(
-                select(ContentDraft.id)
-                .where(
-                    ContentDraft.fact_sheet_id == sheet.id,
-                    ContentDraft.fact_sheet_version == sheet.version,
-                )
-                .limit(1)
-            )
-            return (
-                ReconciliationDisposition.DOMAIN_COMPLETE
-                if draft is not None
-                else ReconciliationDisposition.REPLAY_REQUIRED
-            )
+            # Only consumer history or exact downstream causation proves this
+            # request complete. The content worker owns semantic operation identity.
+            return ReconciliationDisposition.REPLAY_REQUIRED
         if event.event_type is EventType.CONTENT_GENERATED:
             draft = session.get(ContentDraft, UUID(payload["content_draft_id"]))
             if draft is None or draft.story_id != UUID(payload["story_id"]):

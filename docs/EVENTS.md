@@ -998,6 +998,11 @@ publication work is not replayed. `ProcessedEvent` remains primary completion ev
 workers still reload current PostgreSQL state, so repeated transport copies are safe.
 Reports return `next_after_outbox_id`; pass it as `--after-outbox-id` to advance through
 deterministically ordered bounded pages instead of repeatedly scanning the same history.
+Advance only using the cursor from a successful page. Interrupted APPLY deliberately
+returns the original page boundary, so retrying cannot skip unreplayed work. Retries may
+restore duplicate Redis copies of the same event; consumer idempotency is the safety
+mechanism, and correctness takes precedence over suppressing transport duplicates.
+APPLY freshly checks effective publication pause/control availability before every XADD.
 
 This operation is explicit incident recovery, not a periodic scan or a replacement for
 normal outbox dispatch, pending-message reclaim, or publication-attempt recovery.

@@ -5,11 +5,14 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from news_ai_database import (
     Article,
     ArticleDiscovery,
     ArticleVersion,
     Base,
+    ContentDraft,
+    ContentVariant,
     EventOutbox,
     ProcessedEvent,
     Publication,
@@ -357,6 +360,192 @@ def test_database_failure_is_normalized():
     report = run(reconciler)
     assert report.error_code == "DATABASE_UNAVAILABLE"
     assert SENTINEL not in report.model_dump_json()
+
+
+def test_partial_transport_failure_cursor_retries_entire_page_without_skipping():
+    db = factory()
+    _, boundary = discovered(db, at=NOW - timedelta(seconds=1), title="prior page")
+    events = [
+        discovered(db, at=NOW + timedelta(seconds=index), title=f"candidate {index}")[0]
+        for index in range(3)
+    ]
+    publisher = Publisher(fail_after=1)
+    reconciler, _, _ = service(db, publisher=publisher)
+    failed = run(reconciler, ReconciliationMode.APPLY, reason="recover", after_outbox_id=boundary)
+    assert failed.error_code == "TRANSPORT_REPLAY_FAILED"
+    assert failed.replayed == 1 and [item.replayed for item in failed.items] == [True, False, False]
+    assert failed.next_after_outbox_id == boundary
+    assert SENTINEL not in failed.model_dump_json()
+    publisher.fail_after = None
+    resumed = run(
+        reconciler,
+        ReconciliationMode.APPLY,
+        reason="recover again",
+        after_outbox_id=failed.next_after_outbox_id,
+    )
+    assert resumed.replayed == 3
+    assert {item.event_id for item in publisher.events} == {item.event_id for item in events}
+    # Completion remains consumer-owned; replay itself never fabricates history.
+    with db() as session, session.begin():
+        for event in events:
+            session.add(ProcessedEvent(event_id=event.event_id, consumer_group="normalizer"))
+    converged = run(reconciler, ReconciliationMode.APPLY, reason="verify", after_outbox_id=boundary)
+    assert converged.already_processed == 3 and converged.replayed == 0
+
+
+def test_group_failure_retains_first_page_cursor():
+    db = factory()
+    for index in range(3):
+        discovered(db, at=NOW + timedelta(seconds=index), title=f"group candidate {index}")
+    reconciler, publisher, _ = service(db, groups=Groups(fail=True))
+    failed = run(reconciler, ReconciliationMode.APPLY, reason="recover")
+    assert failed.error_code == "GROUP_RESTORE_FAILED"
+    assert failed.next_after_outbox_id is None and publisher.events == []
+    assert SENTINEL not in failed.model_dump_json()
+    reconciler, _, _ = service(db)
+    assert (
+        run(
+            reconciler,
+            ReconciliationMode.APPLY,
+            reason="retry",
+            after_outbox_id=failed.next_after_outbox_id,
+        ).replayed
+        == 3
+    )
+
+
+@pytest.mark.parametrize("lost_control", ["resumed", "unavailable", "exception"])
+def test_each_xadd_rechecks_control_and_interruption_cursor_converges(lost_control):
+    class ChangingControl(Control):
+        calls = 0
+
+        def snapshot(self):
+            self.calls += 1
+            if self.calls == 3:
+                if lost_control == "exception":
+                    raise RuntimeError(f"postgresql://user:{SENTINEL}@host/database")
+                return SimpleNamespace(
+                    available=lost_control != "unavailable", effective_pause=False
+                )
+            return super().snapshot()
+
+    db = factory()
+    events = [
+        discovered(db, at=NOW + timedelta(seconds=index), title=f"pause candidate {index}")[0]
+        for index in range(2)
+    ]
+    control = ChangingControl()
+    reconciler, publisher, _ = service(db, control=control)
+    failed = run(reconciler, ReconciliationMode.APPLY, reason="recover")
+    assert control.calls == 3
+    assert failed.error_code == (
+        "PUBLISHING_NOT_PAUSED" if lost_control == "resumed" else "CONTROL_UNAVAILABLE"
+    )
+    assert [item.event_id for item in publisher.events] == [events[0].event_id]
+    assert failed.replayed == 1 and failed.next_after_outbox_id is None
+    assert SENTINEL not in failed.model_dump_json()
+    resumed = run(
+        reconciler,
+        ReconciliationMode.APPLY,
+        reason="paused again",
+        after_outbox_id=failed.next_after_outbox_id,
+    )
+    assert resumed.replayed == 2
+    assert {item.event_id for item in publisher.events} == {item.event_id for item in events}
+
+
+def test_content_request_unrelated_draft_is_not_completion_but_exact_causation_is():
+    from unit.review.test_review_service import seed_reviewable
+
+    db = factory()
+    variant_id = seed_reviewable(db)[0]
+    with db() as session, session.begin():
+        variant = session.get(ContentVariant, variant_id)
+        draft = session.get(ContentDraft, variant.content_draft_id)
+        request = EventEnvelope(
+            event_type=EventType.CONTENT_REQUESTED,
+            producer="fact-sheet-builder",
+            producer_version="1",
+            aggregate_type="story",
+            aggregate_id=draft.story_id,
+            idempotency_key="lost-content-request",
+            payload={
+                "story_id": str(draft.story_id),
+                "fact_sheet_id": str(draft.fact_sheet_id),
+                "requested_platforms": ["INSTAGRAM"],
+                "requested_formats": ["CAROUSEL"],
+            },
+        )
+        row = build_outbox_record(request)
+        row.status = OutboxStatus.PUBLISHED
+        row.published_at = NOW
+        session.add(row)
+        generated = EventEnvelope(
+            event_type=EventType.CONTENT_GENERATED,
+            producer="content-worker",
+            producer_version="1",
+            aggregate_type="content_draft",
+            aggregate_id=draft.id,
+            causation_id=request.event_id,
+            idempotency_key="generated-exact-request",
+            payload={
+                "story_id": str(draft.story_id),
+                "content_draft_id": str(draft.id),
+                "content_variant_ids": [str(variant.id)],
+                "ai_run_id": str(draft.created_by_ai_run_id),
+            },
+        )
+    reconciler, publisher, _ = service(db)
+    assert run(reconciler).replay_required == 1
+    assert run(reconciler, ReconciliationMode.APPLY, reason="recover").replayed == 1
+    assert publisher.events[0].event_id == request.event_id
+    with db() as session, session.begin():
+        session.add(build_outbox_record(generated))
+    report = run(reconciler)
+    assert report.domain_complete == 1 and report.replay_required == 0
+
+
+def test_reconciled_content_request_leaves_semantic_identity_to_normal_worker():
+    from news_ai_ai_worker import ContentGenerationWorker
+    from unit.content.test_content_generation import (
+        ContentAI,
+        FakeConsumer,
+        _message,
+        _seed,
+        _service,
+    )
+
+    db, ai = factory(), ContentAI()
+    event, _, _ = _seed(db)
+    previous = event.model_copy(update={"event_id": uuid4(), "idempotency_key": "previous"})
+    consumer = FakeConsumer([_message(previous)])
+    content_service = _service(ai)
+    worker = ContentGenerationWorker(consumer, db, content_service)
+    assert asyncio.run(worker.run_once()).processed == 1
+    with db() as session, session.begin():
+        row = build_outbox_record(event)
+        row.status = OutboxStatus.PUBLISHED
+        row.published_at = NOW
+        session.add(row)
+    # A changed methodology is a legitimate distinct operation, owned exclusively
+    # by the content service, even though the referenced Fact Sheet is identical.
+    content_service.style = content_service.style.model_copy(
+        update={"methodology_version": "content-generation-methodology-v2"}
+    )
+    reconciler, publisher, _ = service(db)
+    report = run(
+        reconciler,
+        ReconciliationMode.APPLY,
+        reason="recover",
+        event_type=EventType.CONTENT_REQUESTED,
+    )
+    assert report.replayed == 1
+    consumer.messages = [_message(publisher.events[0], "2-0")]
+    assert asyncio.run(worker.run_once()).processed == 1
+    with db() as session:
+        assert len(list(session.scalars(select(ContentDraft)))) == 2
+    assert ai.calls == 2
+    assert run(reconciler, event_type=EventType.CONTENT_REQUESTED).already_processed == 1
 
 
 def publication_event(db, *, status=PublicationStatus.SCHEDULED):
