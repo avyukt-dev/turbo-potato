@@ -13,14 +13,13 @@ from news_ai_events import (
     StreamMessage,
     WorkerRetryPolicy,
 )
+from news_ai_events.consumer_contracts import FACT_SHEET_CONSUMER_GROUP
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from news_ai_evidence import FactSheetGenerator
 from sqlalchemy.orm import Session
 
 from .worker import ResearchWorkerBatchResult
-
-FACT_SHEET_CONSUMER_GROUP = "fact-sheet-builder"
 
 
 class FactSheetWorker:

@@ -192,6 +192,16 @@ PostgreSQL remains authoritative.
 
 Tests must verify Redis loss does not erase durable business state.
 
+Redis transport-loss acceptance coverage must also prove that ordinary dispatch does
+not reclaim PUBLISHED history, while explicit bounded reconciliation preserves the
+original event identity, restores missing canonical groups without resetting existing
+offsets, runs the real consumer exactly once at the durable boundary, and then converges
+through `ProcessedEvent` or current domain state. Mixed completed/incomplete histories
+and Stage-26 publication ambiguity/external-ID fences require real PostgreSQL and Redis
+coverage. Failure injection must cover PostgreSQL reads, publishing-control reads,
+consumer-group creation, event deserialization, and Redis XADD without leaking raw
+payloads or exceptions.
+
 ---
 
 # 6. Event Contract Tests

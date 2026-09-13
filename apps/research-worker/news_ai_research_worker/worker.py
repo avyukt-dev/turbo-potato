@@ -19,15 +19,15 @@ from news_ai_events import (
     WorkerBatchResult,
     WorkerRetryPolicy,
 )
+from news_ai_events.consumer_contracts import (
+    EVIDENCE_COLLECTION_CONSUMER_GROUP,
+    RESEARCH_PLANNING_CONSUMER_GROUP,
+)
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from news_ai_evidence import EvidenceEngine, ResearchCollectionDisposition
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-RESEARCH_PLANNING_CONSUMER_GROUP = "research-planner"
-EVIDENCE_COLLECTION_CONSUMER_GROUP = "evidence-collector"
-
 
 ResearchWorkerBatchResult = WorkerBatchResult
 

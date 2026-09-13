@@ -13,15 +13,16 @@ from news_ai_events import (
     StreamMessage,
     WorkerRetryPolicy,
 )
+from news_ai_events.consumer_contracts import (
+    FACT_CHECK_CONSUMER_GROUP,
+    STORY_VERIFICATION_CONSUMER_GROUP,
+)
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from news_ai_evidence import FactCheckEngine
 from sqlalchemy.orm import Session
 
 from .worker import ResearchWorkerBatchResult
-
-FACT_CHECK_CONSUMER_GROUP = "fact-checker"
-STORY_VERIFICATION_CONSUMER_GROUP = "story-verifier"
 
 
 class FactCheckWorker:

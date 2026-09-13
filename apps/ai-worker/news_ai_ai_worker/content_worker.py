@@ -15,11 +15,10 @@ from news_ai_events import (
     WorkerBatchResult,
     WorkerRetryPolicy,
 )
+from news_ai_events.consumer_contracts import CONTENT_CONSUMER_GROUP
 from news_ai_events.idempotency import mark_processed, was_processed
 from news_ai_events.streams import stream_for_event
 from sqlalchemy.orm import Session
-
-CONTENT_CONSUMER_GROUP = "content-worker"
 
 
 class ContentGenerationWorker:
