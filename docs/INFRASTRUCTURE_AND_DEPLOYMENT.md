@@ -663,7 +663,12 @@ control, and inability to read it denies external publishing.
 
 `newsctl runtime detect`, service operations, and health reporting use the typed
 service registry and `RuntimeController`. Native commands remain inside runtime
-adapters, and runtime profiles are hints rather than capability proof.
+adapters, and runtime profiles are ordering hints rather than capability proof;
+omitted native managers remain detection candidates and manual mode is only a
+fallback unless explicitly selected by an operator. The production registry marks
+the runnable API, scheduler, and publisher processes as expected. API unavailability
+is critical; scheduler or publisher unavailability degrades health while durable
+publication work remains recoverable.
 
 Prometheus-compatible `/metrics` is read-only aggregate telemetry. Metric labels
 exclude durable IDs, account identifiers, content, URLs, credentials, and raw

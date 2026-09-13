@@ -189,9 +189,10 @@ def test_metrics_real_postgres_redis_aggregates_and_no_privileged_http(factory, 
             )
             assert b'news_ai_publications{platform="INSTAGRAM",status="BLOCKED"} 1.0' in payload
             assert (
-                b'news_ai_publication_attempts{error_class="AUTHENTICATION",status="BLOCKED"} 1.0'
+                b'news_ai_publication_attempts{error_class="PERMANENT",status="BLOCKED"} 1.0'
                 in payload
             )
+            assert b'error_class="AUTHENTICATION"' not in payload
             assert b'news_ai_social_accounts{platform="INSTAGRAM",status="ACTIVE"} 1.0' in payload
             assert b'news_ai_outbox_events{status="PENDING"} 2.0' in payload
             assert SENTINEL.encode() not in payload and str(row.id).encode() not in payload

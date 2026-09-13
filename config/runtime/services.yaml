@@ -1,8 +1,10 @@
 schema_version: 1
 services:
-  - {name: news-api, native_name: news-api, service_class: application, manageable: true}
-  - {name: news-scheduler, native_name: news-scheduler, service_class: application, manageable: true}
-  - {name: news-publisher, native_name: news-publisher, service_class: application, manageable: true}
+  # The API is a critical request boundary; scheduler/publisher downtime delays
+  # publication but preserves durable work, so those services are non-critical.
+  - {name: news-api, native_name: news-api, service_class: application, manageable: true, critical: true, expected: true}
+  - {name: news-scheduler, native_name: news-scheduler, service_class: application, manageable: true, expected: true}
+  - {name: news-publisher, native_name: news-publisher, service_class: application, manageable: true, expected: true}
   # Logical stages without standalone production entrypoints remain unmanaged.
   - {name: news-collector, native_name: news-collector, service_class: application}
   - {name: news-processor, native_name: news-processor, service_class: application}

@@ -1,7 +1,9 @@
 import asyncio
 import subprocess
 import sys
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from news_ai_common.config import AppSettings
@@ -12,13 +14,26 @@ from news_ai_common.runtime.managers import (
     SystemdServiceManager,
     SysVServiceManager,
 )
-from news_ai_database import AuditLog, RuntimeControl
+from news_ai_database import (
+    AuditLog,
+    PublicationAttempt,
+    PublicationAttemptPhase,
+    PublicationAttemptStatus,
+    RuntimeControl,
+    SocialAccount,
+    SocialAccountStatus,
+)
 from news_ai_runtime.cli import main
-from news_ai_runtime.contracts import HealthStatus, MonitoringConfig, ServiceRegistry
+from news_ai_runtime.contracts import (
+    HealthReport,
+    HealthStatus,
+    MonitoringConfig,
+    ServiceRegistry,
+)
 from news_ai_runtime.controller import RuntimeController, RuntimeOperationError, build_controller
-from news_ai_runtime.health import HealthMonitor
+from news_ai_runtime.health import HealthMonitor, OperationalSnapshot, database_samples
 from news_ai_runtime.metrics import render_metrics
-from news_ai_runtime.publishing import DatabasePublishingControl
+from news_ai_runtime.publishing import DatabasePublishingControl, PublishingControlSnapshot
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from unit.review.test_review_service import _factory
@@ -171,12 +186,49 @@ def test_profile_remains_hint_and_manual_is_safe(monkeypatch):
     runtime = build_controller(AppSettings(config_dir="config", service_manager="manual"))
     assert runtime.profile.hints.thermal_monitoring_required
     assert runtime.manager.name == "manual"
+    services = {entry.name: entry for entry in runtime.registry.services}
+    assert services["news-api"].expected and services["news-api"].critical
+    assert services["news-scheduler"].expected and not services["news-scheduler"].critical
+    assert services["news-publisher"].expected and not services["news-publisher"].critical
+    assert not services["news-collector"].expected
     assert runtime.operation("status", "news-publisher")["state"] == "unknown"
     with pytest.raises(RuntimeOperationError, match="UNSUPPORTED_OPERATION"):
         runtime.operation("start", "news-publisher")
     monkeypatch.setenv("NEWS_AI_RUNTIME_PROFILE", "../../foo")
     with pytest.raises(RuntimeOperationError, match="INVALID_PROFILE"):
         build_controller(AppSettings(config_dir="config"))
+
+
+def test_explicit_unusable_native_override_does_not_fall_back(monkeypatch):
+    from news_ai_common.runtime import ServiceManager, ServiceResult, ServiceState
+
+    class Manager(ServiceManager):
+        def __init__(self, name, available):
+            super().__init__()
+            self.name, self.available = name, available
+
+        def probe(self):
+            return self.available
+
+        def status(self, service):
+            return ServiceResult(ServiceState.ACTIVE, 0)
+
+        start = stop = status
+
+    monkeypatch.delenv("NEWS_AI_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(
+        "news_ai_runtime.controller.OpenRCServiceManager", lambda: Manager("openrc", False)
+    )
+    monkeypatch.setattr(
+        "news_ai_runtime.controller.SystemdServiceManager", lambda: Manager("systemd", True)
+    )
+    monkeypatch.setattr(
+        "news_ai_runtime.controller.SysVServiceManager", lambda: Manager("sysv", True)
+    )
+    runtime = build_controller(AppSettings(config_dir="config", service_manager="openrc"))
+
+    with pytest.raises(RuntimeOperationError, match="UNSUPPORTED_MANAGER"):
+        _ = runtime.manager
 
 
 @pytest.mark.parametrize(
@@ -247,10 +299,199 @@ def test_health_aggregation_metrics_and_no_secret_leakage(monkeypatch, failed):
     snapshot = asyncio.run(monitor.collect())
     assert snapshot.report.status == (HealthStatus.UNHEALTHY if failed else HealthStatus.DEGRADED)
     # Manual expected services have unknown state, rather than a guessed host command.
+    services = {
+        check.name: check for check in snapshot.report.checks if check.category == "SERVICES"
+    }
+    assert {
+        "news-api",
+        "news-scheduler",
+        "news-publisher",
+        "postgres",
+        "redis",
+    } <= services.keys()
+    assert all(check.status == HealthStatus.UNKNOWN for check in services.values())
+    assert "news-collector" not in services
     assert SENTINEL not in snapshot.report.model_dump_json()
     exposition = render_metrics(snapshot).decode()
     assert 'news_ai_component_ready{component="postgres"}' in exposition
     assert SENTINEL not in exposition
+
+
+def test_publication_attempt_error_classes_and_platforms_are_bounded():
+    factory = thread_factory()
+    now = datetime.now(UTC)
+    with factory() as session, session.begin():
+        for index, error_class in enumerate(
+            ("TRANSIENT", "PERMANENT", "AMBIGUOUS", SENTINEL), start=1
+        ):
+            session.add(
+                PublicationAttempt(
+                    publication_id=uuid4(),
+                    attempt_number=index,
+                    status=PublicationAttemptStatus.BLOCKED,
+                    phase=PublicationAttemptPhase.COMPLETE,
+                    execution_request_hash=f"{index:x}" * 64,
+                    error_code="AUTHENTICATION",
+                    error_class=error_class,
+                    error_message=SENTINEL,
+                    retryable=False,
+                    ambiguous=error_class == "AMBIGUOUS",
+                    started_at=now,
+                    completed_at=now,
+                    lease_token=uuid4(),
+                    lease_expires_at=now,
+                )
+            )
+        for platform in ("TELEGRAM", SENTINEL):
+            session.add(
+                SocialAccount(
+                    platform=platform,
+                    account_name=platform,
+                    account_identifier=platform,
+                    status=SocialAccountStatus.ACTIVE,
+                )
+            )
+
+    samples = database_samples(factory, MonitoringConfig(schema_version=1), now)
+    report = HealthReport(
+        status=HealthStatus.HEALTHY,
+        timestamp=now.isoformat(),
+        runtime_profile=None,
+        service_manager="manual",
+        checks=(),
+    )
+    payload = render_metrics(OperationalSnapshot(report, tuple(samples))).decode()
+
+    for error_class in ("TRANSIENT", "PERMANENT", "AMBIGUOUS", "OTHER"):
+        assert f'error_class="{error_class}"' in payload
+    assert 'error_class="AUTHENTICATION"' not in payload
+    assert 'platform="TELEGRAM"' in payload
+    assert 'platform="OTHER"' in payload
+    assert SENTINEL not in payload
+
+
+def test_expected_application_services_are_health_checked_read_only():
+    registry = ServiceRegistry.model_validate(
+        {
+            "schema_version": 1,
+            "services": [
+                {
+                    "name": "news-api",
+                    "native_name": "news-api",
+                    "service_class": "application",
+                    "expected": True,
+                    "critical": True,
+                },
+                {
+                    "name": "news-scheduler",
+                    "native_name": "news-scheduler",
+                    "service_class": "application",
+                    "expected": True,
+                },
+                {
+                    "name": "news-publisher",
+                    "native_name": "news-publisher",
+                    "service_class": "application",
+                    "expected": True,
+                },
+                {
+                    "name": "news-collector",
+                    "native_name": "news-collector",
+                    "service_class": "application",
+                    "expected": False,
+                    "critical": True,
+                },
+            ],
+        }
+    )
+    calls = []
+
+    class ReadOnlyController:
+        profile = None
+        manager = SimpleNamespace(name="fake")
+
+        def __init__(self):
+            self.registry = registry
+
+        def operation(self, action, name):
+            calls.append((action, name))
+            return {
+                "state": {
+                    "news-api": "active",
+                    "news-scheduler": "inactive",
+                    "news-publisher": "failed",
+                }[name],
+                "error_code": None,
+            }
+
+    async def dependencies(settings):
+        return {name: True for name in ("postgres", "redis", "ai_router")}
+
+    control = SimpleNamespace(
+        snapshot=lambda: PublishingControlSnapshot(
+            environment_pause=False,
+            database_pause=False,
+            effective_pause=False,
+            available=True,
+        )
+    )
+    monitor = HealthMonitor(
+        AppSettings(),
+        MonitoringConfig(schema_version=1),
+        ReadOnlyController(),
+        control,
+        dependency_probe=dependencies,
+        system_probe=lambda config: {},
+        dns_probe=lambda *args, **kwargs: True,
+    )
+
+    report = asyncio.run(monitor.collect()).report
+    services = {check.name: check for check in report.checks if check.category == "SERVICES"}
+
+    assert services["news-api"].status == HealthStatus.HEALTHY
+    assert services["news-scheduler"].status == HealthStatus.UNHEALTHY
+    assert services["news-publisher"].status == HealthStatus.UNHEALTHY
+    assert "news-collector" not in services
+    assert report.status == HealthStatus.DEGRADED
+    assert calls == [
+        ("status", "news-api"),
+        ("status", "news-scheduler"),
+        ("status", "news-publisher"),
+    ]
+
+
+def test_critical_expected_application_failure_is_unhealthy():
+    manager = SystemdServiceManager(Runner("failed", code=3))
+    runtime = controller(manager)
+    runtime._manager = manager
+
+    async def dependencies(settings):
+        return {name: True for name in ("postgres", "redis", "ai_router")}
+
+    control = SimpleNamespace(
+        snapshot=lambda: PublishingControlSnapshot(
+            environment_pause=False,
+            database_pause=False,
+            effective_pause=False,
+            available=True,
+        )
+    )
+    monitor = HealthMonitor(
+        AppSettings(),
+        MonitoringConfig(schema_version=1),
+        runtime,
+        control,
+        dependency_probe=dependencies,
+        system_probe=lambda config: {},
+        dns_probe=lambda *args, **kwargs: True,
+    )
+
+    report = asyncio.run(monitor.collect()).report
+
+    assert next(check for check in report.checks if check.name == "news-api").status == (
+        HealthStatus.UNHEALTHY
+    )
+    assert report.status == HealthStatus.UNHEALTHY
 
 
 def test_health_timeout_and_optional_thermal_requirement(monkeypatch):

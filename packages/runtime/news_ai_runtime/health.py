@@ -24,7 +24,7 @@ from .controller import build_controller
 from .dependencies import run_dependency_checks
 from .publishing import DatabasePublishingControl
 
-PLATFORMS = ("INSTAGRAM", "X", "FACEBOOK", "YOUTUBE", "LINKEDIN")
+PLATFORMS = ("INSTAGRAM", "X", "FACEBOOK", "TELEGRAM")
 JOB_STATUSES = (
     "PENDING",
     "RUNNING",
@@ -57,10 +57,7 @@ ATTEMPT_STATUSES = (
 )
 ERROR_CLASSES = (
     "TRANSIENT",
-    "RATE_LIMIT",
-    "AUTHENTICATION",
-    "PERMISSION",
-    "VALIDATION",
+    "PERMANENT",
     "AMBIGUOUS",
 )
 ACCOUNT_STATUSES = ("ACTIVE", "PAUSED", "AUTH_ERROR", "RATE_LIMITED", "DISABLED", "REAUTH_REQUIRED")
@@ -140,7 +137,7 @@ def database_samples(factory, config, now):
                 PublicationAttempt,
                 (
                     ("status", PublicationAttempt.status, ATTEMPT_STATUSES),
-                    ("error_class", PublicationAttempt.error_code, ERROR_CLASSES),
+                    ("error_class", PublicationAttempt.error_class, ERROR_CLASSES),
                 ),
             ),
             (

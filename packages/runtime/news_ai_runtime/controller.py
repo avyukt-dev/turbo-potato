@@ -7,13 +7,24 @@ from news_ai_common.config import ConfigDomain, ConfigLoader
 from news_ai_common.diagnostics import safe_text
 from news_ai_common.runtime import RuntimeDetector, UnsupportedOperation
 from news_ai_common.runtime.managers import (
-    ManualServiceManager,
     OpenRCServiceManager,
     SystemdServiceManager,
     SysVServiceManager,
 )
 
 from .contracts import RuntimeProfile, ServiceRegistry
+
+NATIVE_MANAGER_ORDER = ("openrc", "systemd", "sysv")
+
+
+def _ordered_native_managers(managers, preferred=()):
+    """Apply profile preferences as ordering hints without suppressing capabilities."""
+    by_name = {manager.name: manager for manager in managers}
+    ordered_names = []
+    for name in (*preferred, *NATIVE_MANAGER_ORDER):
+        if name in by_name and name not in ordered_names:
+            ordered_names.append(name)
+    return [by_name[name] for name in ordered_names]
 
 
 class RuntimeOperationError(RuntimeError):
@@ -130,19 +141,14 @@ def build_controller(settings, *, detector=None):
         if profile.profile_id != profile_id:
             raise RuntimeOperationError("INVALID_PROFILE")
     if detector is None:
-        candidates = {
-            manager.name: manager
-            for manager in (
-                OpenRCServiceManager(),
-                SystemdServiceManager(),
-                SysVServiceManager(),
-                ManualServiceManager(),
-            )
-        }
-        order = (
-            profile.hints.preferred_service_managers if profile else ("openrc", "systemd", "sysv")
+        managers = (
+            OpenRCServiceManager(),
+            SystemdServiceManager(),
+            SysVServiceManager(),
         )
+        preferred = profile.hints.preferred_service_managers if profile else ()
         detector = RuntimeDetector(
-            candidates=[candidates[name] for name in order], override=settings.service_manager
+            candidates=_ordered_native_managers(managers, preferred),
+            override=settings.service_manager,
         )
     return RuntimeController(registry, detector=detector, profile=profile)
