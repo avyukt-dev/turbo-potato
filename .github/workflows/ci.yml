@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - development
+      - "feature/**"
+      - "audit/**"
+      - "fix/**"
+  pull_request:
+    branches:
+      - main
+      - development
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: news_ai
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d news_ai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      NEWS_AI_ENVIRONMENT: test
+      NEWS_AI_CONFIG_DIR: config
+      NEWS_AI_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/news_ai
+      NEWS_AI_REDIS_URL: redis://127.0.0.1:6379/0
+      NEWS_AI_READINESS_TIMEOUT_SECONDS: "5"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format
+        run: ruff format --check apps packages migrations tests
+
+      - name: Compile
+        run: python -m compileall -q apps packages migrations tests
+
+      - name: Upgrade database
+        run: alembic upgrade head
+
+      - name: Check migration drift
+        run: alembic check
+
+      - name: Test
+        run: pytest
+
+      - name: Downgrade database
+        run: alembic downgrade base
+
+      - name: Re-upgrade database
+        run: alembic upgrade head

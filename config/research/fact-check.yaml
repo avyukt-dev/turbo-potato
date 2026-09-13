@@ -1,0 +1,33 @@
+schema_version: 1
+labels:
+  - "TRUE"
+  - "MOSTLY_TRUE"
+  - "PARTIALLY_TRUE"
+  - "MISLEADING"
+  - "OUT_OF_CONTEXT"
+  - "UNVERIFIED"
+  - "FALSE"
+  - "FABRICATED"
+  - "SATIRE"
+invariants:
+  unverified_is_false: false
+  verdict_is_separate_from_claim_verification_status: true
+  count_independent_groups_not_articles: true
+  primary_evidence_can_satisfy_corroboration: true
+thresholds:
+  LOW:
+    credible_strength: 0.40
+    decisive_strength: 0.75
+    min_independent_groups: 0
+  MEDIUM:
+    credible_strength: 0.45
+    decisive_strength: 0.80
+    min_independent_groups: 1
+  HIGH:
+    credible_strength: 0.50
+    decisive_strength: 0.85
+    min_independent_groups: 2
+  CRITICAL:
+    credible_strength: 0.60
+    decisive_strength: 0.90
+    min_independent_groups: 2

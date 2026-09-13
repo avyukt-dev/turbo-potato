@@ -1,0 +1,28 @@
+schema_version: 1
+mode: LOCAL
+routes:
+  CLAIM_EXTRACTION:
+    providers: [local-llama]
+    fallback_on: [INVALID_RESPONSE]
+  EVIDENCE_ASSESSMENT:
+    providers: [local-llama]
+    fallback_on: [INVALID_RESPONSE]
+  CONTENT_GENERATION:
+    providers: [local-llama]
+    fallback_on: [INVALID_RESPONSE]
+  QUALITY_CHECKING:
+    providers: [local-llama]
+    fallback_on: [INVALID_RESPONSE]
+sensitivity_provider_allowlists:
+  COMMUNAL_VIOLENCE: [local-llama]
+  RELIGIOUS_ACCUSATION: [local-llama]
+  RELIGIOUS_VIOLENCE: [local-llama]
+  CRIMINAL_ALLEGATION: [local-llama]
+  SEXUAL_ASSAULT: [local-llama]
+  TERRORISM: [local-llama]
+  WAR_CASUALTIES: [local-llama]
+  ELECTION_FRAUD: [local-llama]
+  SC_ST_ALLEGATION: [local-llama]
+  CASTE_RELATED_ACCUSATION: [local-llama]
+  BLASPHEMY_ALLEGATION: [local-llama]
+  UNVERIFIED_BREAKING_NEWS: [local-llama]

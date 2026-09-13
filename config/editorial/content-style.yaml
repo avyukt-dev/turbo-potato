@@ -1,0 +1,12 @@
+schema_version: 1
+methodology_version: content-generation-methodology-v1
+default_target:
+  platform: INSTAGRAM
+  format: CAROUSEL
+default_tone: clear, measured, and evidence-led
+default_generation_language: en
+defaults:
+  source_aware: true
+  explicit_about_uncertainty: true
+  avoid_unsupported_motive_attribution: true
+  avoid_sensational_overstatement: true

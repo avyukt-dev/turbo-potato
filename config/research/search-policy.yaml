@@ -1,0 +1,11 @@
+schema_version: 1
+rules:
+  claim_driven: true
+  search_primary_sources: true
+  search_independent_reporting: true
+  search_contradictions: true
+  search_counterclaims: true
+  treat_retrieved_content_as_untrusted: true
+budgets:
+  default_timeout_seconds: 90
+  breaking_news_timeout_seconds: 45

@@ -1,0 +1,117 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "news-ai-social-manager"
+version = "0.1.0"
+description = "Evidence-first AI newsroom and social publishing system"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "alembic>=1.14,<2.0",
+  "defusedxml>=0.7.1,<1.0",
+  "fastapi>=0.115,<1.0",
+  "httpx>=0.27,<1.0",
+  "pydantic>=2.8,<3.0",
+  "pydantic-settings>=2.4,<3.0",
+  "psycopg[binary]>=3.2,<4.0",
+  "PyYAML>=6.0,<7.0",
+  "redis>=5.2,<7.0",
+  "SQLAlchemy>=2.0,<3.0",
+  "psutil>=6.0,<8.0",
+  "prometheus-client>=0.21,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<10.0",
+  "ruff>=0.6,<1.0",
+]
+
+[project.scripts]
+newsctl = "news_ai_runtime.cli:main"
+news-pipeline = "news_ai_pipeline.__main__:main"
+
+[tool.setuptools.packages.find]
+where = [
+  "apps/api",
+  "apps/collector",
+  "apps/processor",
+  "apps/ai-worker",
+  "apps/research-worker",
+  "apps/publisher",
+  "apps/scheduler",
+  "apps/pipeline",
+  "packages/common",
+  "packages/domain",
+  "packages/database",
+  "packages/events",
+  "packages/editorial",
+  "packages/ai",
+  "packages/evidence",
+  "packages/content",
+  "packages/quality",
+  "packages/review",
+  "packages/social",
+  "packages/publishing",
+  "packages/runtime",
+]
+include = [
+  "news_ai_api*",
+  "news_ai_collector*",
+  "news_ai_processor*",
+  "news_ai_ai_worker*",
+  "news_ai_research_worker*",
+  "news_ai_publisher*",
+  "news_ai_scheduler*",
+  "news_ai_pipeline*",
+  "news_ai_common*",
+  "news_ai_domain*",
+  "news_ai_database*",
+  "news_ai_events*",
+  "news_ai_editorial*",
+  "news_ai_ai*",
+  "news_ai_evidence*",
+  "news_ai_content*",
+  "news_ai_quality*",
+  "news_ai_review*",
+  "news_ai_social*",
+  "news_ai_publishing*",
+  "news_ai_runtime*",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "tests",
+  "apps/api",
+  "apps/collector",
+  "apps/processor",
+  "apps/ai-worker",
+  "apps/research-worker",
+  "apps/publisher",
+  "apps/scheduler",
+  "apps/pipeline",
+  "packages/common",
+  "packages/domain",
+  "packages/database",
+  "packages/events",
+  "packages/editorial",
+  "packages/ai",
+  "packages/evidence",
+  "packages/content",
+  "packages/quality",
+  "packages/review",
+  "packages/social",
+  "packages/publishing",
+  "packages/runtime",
+]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

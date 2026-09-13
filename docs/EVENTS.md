@@ -584,6 +584,12 @@ Publisher must reload PostgreSQL and re-check approval/current state before exte
 }
 ```
 
+Version 1 remains unchanged and requires a non-empty `external_url`.
+Version 2 has the same fields, but `external_url` may be `null`: a provider can
+confirm the exact published media ID without returning a permalink. Publishers
+emit version 2 rather than fabricate a URL. Both versions require confirmed
+publication; a container ID or an unverified publish response is insufficient.
+
 ---
 
 # 25. Publication Failed
@@ -969,6 +975,37 @@ LIVE
 Publishing side effects require explicit live eligibility and current durable approval state.
 
 Replay must never automatically re-publish historical content because an old `publication.scheduled` event is replayed.
+
+## 44.1 Redis transport-loss reconciliation
+
+A `PUBLISHED` outbox row proves that the dispatcher completed a prior Redis write; it
+does not prove Redis still retains that transport copy. After verified Redis loss,
+operators may restore bounded unfinished work from:
+
+```text
+original PUBLISHED event_outbox envelope
+        + ProcessedEvent for the canonical consumer group
+        + event-specific current PostgreSQL state
+        + a closed event/stream/consumer policy
+```
+
+`newsctl events reconcile --dry-run --limit 100` is read-only. APPLY requires an
+existing effective publication pause, a bounded limit, and a reason. It restores the
+original envelope and event ID directly to the canonical stream, creates only missing
+canonical consumer groups at `0`, and never resets an existing group offset or mutates
+outbox history. Unsupported, malformed, obsolete, completed, and unsafe post-intent
+publication work is not replayed. `ProcessedEvent` remains primary completion evidence;
+workers still reload current PostgreSQL state, so repeated transport copies are safe.
+Reports return `next_after_outbox_id`; pass it as `--after-outbox-id` to advance through
+deterministically ordered bounded pages instead of repeatedly scanning the same history.
+Advance only using the cursor from a successful page. Interrupted APPLY deliberately
+returns the original page boundary, so retrying cannot skip unreplayed work. Retries may
+restore duplicate Redis copies of the same event; consumer idempotency is the safety
+mechanism, and correctness takes precedence over suppressing transport duplicates.
+APPLY freshly checks effective publication pause/control availability before every XADD.
+
+This operation is explicit incident recovery, not a periodic scan or a replacement for
+normal outbox dispatch, pending-message reclaim, or publication-attempt recovery.
 
 ---
 

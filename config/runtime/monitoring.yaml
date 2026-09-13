@@ -1,0 +1,16 @@
+schema_version: 1
+critical_dependencies: [postgres, redis, ai_router]
+health_check_timeout_seconds: 5
+disk_path: .
+disk_warning_percent: 90
+memory_warning_percent: 90
+temperature_warning_celsius: 75
+dns_target: localhost
+tailscale_expected: false
+check_services: true
+streams:
+  - {stream: 'news:articles', groups: [normalizer, processor]}
+  - {stream: 'news:stories', groups: [claim-worker, research-planner, fact-sheet-builder]}
+  - {stream: 'news:evidence', groups: [evidence-collector, fact-checker, story-verifier]}
+  - {stream: 'news:content', groups: [content-worker, quality-worker]}
+  - {stream: 'news:publishing', groups: [publisher]}

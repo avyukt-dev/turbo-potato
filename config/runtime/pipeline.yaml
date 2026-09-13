@@ -1,0 +1,12 @@
+schema_version: 1
+collector_wake_interval_seconds: 30
+dispatcher_interval_seconds: 1
+worker_idle_interval_seconds: 0.1
+consumer_block_ms: 1000
+pending_recovery_interval_seconds: 30
+# Do not reclaim fresh work; allow bounded AI/provider work to finish first.
+pending_min_idle_ms: 900000
+component_error_backoff_seconds: 5
+max_consecutive_component_failures: 12
+startup_timeout_seconds: 30
+shutdown_timeout_seconds: 30

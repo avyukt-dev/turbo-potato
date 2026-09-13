@@ -1,0 +1,8 @@
+schema_version: 1
+delays_seconds:
+  - 30
+  - 120
+  - 600
+  - 1800
+  - 7200
+jitter_ratio: 0.2

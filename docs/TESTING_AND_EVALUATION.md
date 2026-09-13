@@ -192,6 +192,16 @@ PostgreSQL remains authoritative.
 
 Tests must verify Redis loss does not erase durable business state.
 
+Redis transport-loss acceptance coverage must also prove that ordinary dispatch does
+not reclaim PUBLISHED history, while explicit bounded reconciliation preserves the
+original event identity, restores missing canonical groups without resetting existing
+offsets, runs the real consumer exactly once at the durable boundary, and then converges
+through `ProcessedEvent` or current domain state. Mixed completed/incomplete histories
+and Stage-26 publication ambiguity/external-ID fences require real PostgreSQL and Redis
+coverage. Failure injection must cover PostgreSQL reads, publishing-control reads,
+consumer-group creation, event deserialization, and Redis XADD without leaking raw
+payloads or exceptions.
+
 ---
 
 # 6. Event Contract Tests
@@ -275,6 +285,21 @@ duplicate discovery
 ```
 
 One broken source must not stop the entire collector.
+
+Article acquisition tests must distinguish summary from explicit feed body, prove
+safe bounded page retrieval and deterministic extraction, and reject unsafe URL,
+redirect/DNS destinations, binary responses and unusable/oversized text. Real
+PostgreSQL tests must prove no row locks survive acquisition, cancellation cannot
+ACK or persist normalization, and final revalidation rejects changed discovery
+input while concurrent completion creates one durable version/outbox intent.
+The autonomous PostgreSQL/Redis pipeline test must demonstrate that summary-only
+discovery acquires mocked full page content and supplies that exact durable body
+to the actual claim-extraction AIRequest, including restart/duplicate recovery.
+
+Legacy bodyless ArticleVersions remain immutable/auditable but must fail claim
+extraction before AI or new Claim/outbox persistence. Operators must use controlled
+re-ingestion of corrected source material, not mutate historical versions or reset
+ProcessedEvent state to force replay.
 
 Source collection settings must come from `config/sources/`, not editorial/research configuration.
 
@@ -1044,6 +1069,18 @@ Unsafe publishing triggers publication pause before other recovery work.
 ---
 
 # 43. Final Testing Rules
+
+The upstream owner has lifecycle tests for concurrent progress, empty feeds,
+bounded backoff, dependency/group startup gating, component death, signal
+shutdown, resource ownership, and pending recovery. Production composition
+uses the existing research/content/quality factories with one shared router.
+The autonomous PostgreSQL 16 / Redis 7 test starts this owner once, injects
+only an official deterministic AIProvider and FeedCollector, and observes
+progress through `content.generated` without manually ticking any worker or
+dispatcher. Quality remains deferred before caller media; the real media
+attachment service enables `READY_FOR_REVIEW`, including after owner restart.
+No approval/publication is fabricated. These tests establish software closure,
+not physical-device cold-boot/thermal/network or live-platform acceptance.
 
 ```text
 Test facts, not only code.

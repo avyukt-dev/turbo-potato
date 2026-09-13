@@ -1,0 +1,18 @@
+schema_version: 1
+profile_id: poco-beryllium
+device:
+  family: Xiaomi POCO F1
+  codename: beryllium
+resource_class: constrained_mobile_server
+hints:
+  architecture: aarch64
+  preferred_service_managers:
+    - openrc
+    - systemd
+    - sysv
+  battery_available: true
+  thermal_monitoring_required: true
+  tailscale_expected: true
+rules:
+  capability_detection_is_authoritative: true
+  profile_must_not_force_unavailable_utility: true

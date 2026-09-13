@@ -1,0 +1,9 @@
+schema_version: 1
+rules:
+  count_independent_evidence_groups_not_article_count: true
+  detect_syndication_and_shared_origin: true
+  retain_contradictory_evidence: true
+  ai_model_agreement_is_not_corroboration: true
+  unresolved_counts_as_independent: false
+near_duplicate_similarity_threshold: 0.82
+shingle_size: 5

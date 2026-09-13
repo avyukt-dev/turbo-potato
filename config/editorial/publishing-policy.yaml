@@ -1,0 +1,7 @@
+schema_version: 1
+mvp:
+  external_publication_requires_human_approval: true
+  low_risk_auto_approval_enabled: false
+future:
+  low_risk_auto_approval_default_enabled: false
+  mandatory_review_categories_may_bypass_human_review: false
