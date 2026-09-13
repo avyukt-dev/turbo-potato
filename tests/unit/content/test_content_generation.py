@@ -68,7 +68,7 @@ class ContentAI:
             locality=ProviderLocality.LOCAL,
             task_types=frozenset({AITaskType.CONTENT_GENERATION}),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
-            models=frozenset({"content-test-model"}),
+            models=frozenset({"local-news-ai"}),
         )
 
     async def execute(self, request: AIRequest) -> AIResponse:
@@ -108,7 +108,7 @@ class ContentAI:
         return AIResponse(
             structured=output,
             provider=self.provider_id,
-            model="content-test-model",
+            model=request.model or "content-test-model",
             latency_ms=2,
         )
 

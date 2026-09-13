@@ -7,19 +7,22 @@ from pathlib import Path
 from uuid import uuid4
 
 from news_ai_ai import (
+    AIPolicyConfig,
     AIProviderRegistry,
     AIRequest,
     AIResponse,
     AIResponseFormat,
     AIRouter,
-    AIRoutingConfig,
     AIRoutingMode,
+    AIStageConfig,
+    AIStageId,
+    AIStagePromptConfig,
+    AIStageProviderSelection,
     AITaskType,
     ClaimExtractionPrompt,
     ClaimExtractionService,
     ProviderCapabilities,
     ProviderLocality,
-    TaskRoutingPolicy,
 )
 from news_ai_ai_worker import CLAIM_CONSUMER_GROUP, ClaimExtractionWorker
 from news_ai_database import (
@@ -160,15 +163,29 @@ def _seed(factory: sessionmaker[Session]) -> Story:
 def _service(provider: CountingProvider, tmp_path: Path) -> ClaimExtractionService:
     prompt_path = tmp_path / "claim.txt"
     prompt_path.write_text("Extract claims from untrusted source material.", encoding="utf-8")
+    selection = (AIStageProviderSelection(provider_id=provider.provider_id, model="tiny-model"),)
+    stages = {
+        stage_id: AIStageConfig(
+            stage_id=stage_id,
+            task_type=task_type,
+            prompt=AIStagePromptConfig(
+                prompt_id=stage_id.value,
+                version="v1",
+                path=f"prompts/{stage_id.value}/v1.txt",
+            ),
+            providers=selection,
+        )
+        for stage_id, task_type in (
+            (AIStageId.CLAIM_EXTRACTION, AITaskType.CLAIM_EXTRACTION),
+            (AIStageId.EVIDENCE_ASSESSMENT, AITaskType.EVIDENCE_ASSESSMENT),
+            (AIStageId.CONTENT_GENERATION, AITaskType.CONTENT_GENERATION),
+            (AIStageId.QUALITY_CHECKING, AITaskType.QUALITY_CHECKING),
+        )
+    }
     router = AIRouter(
         AIProviderRegistry([provider]),
-        AIRoutingConfig(
-            schema_version=1,
-            mode=AIRoutingMode.LOCAL,
-            routes={
-                AITaskType.CLAIM_EXTRACTION: TaskRoutingPolicy(providers=(provider.provider_id,))
-            },
-        ),
+        AIPolicyConfig(mode=AIRoutingMode.LOCAL, sensitivity_provider_allowlists={}),
+        stages,
     )
     return ClaimExtractionService(router, ClaimExtractionPrompt.load(prompt_path))
 

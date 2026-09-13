@@ -6,7 +6,7 @@ The API reports dependency health but does not expose connection strings or prov
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from news_ai_ai import AIRequest, AIResponseFormat, AIRoutingError, AITaskType, build_ai_router
+from news_ai_ai import AIRoutingError, AITaskType, build_ai_router
 from news_ai_common.config import AppSettings, ConfigError, ConfigLoader
 from news_ai_database.session import create_database_engine
 from sqlalchemy import text
@@ -82,14 +82,7 @@ def _check_ai_router(settings: AppSettings) -> bool:
             AITaskType.CONTENT_GENERATION,
             AITaskType.QUALITY_CHECKING,
         ):
-            request = AIRequest(
-                task_type=task_type,
-                system_prompt="readiness route validation",
-                input={},
-                response_format=AIResponseFormat.STRUCTURED,
-            )
-            if not router.candidate_provider_ids(request):
-                return False
+            router.validate_stage(task_type)
     except (AIRoutingError, ConfigError, KeyError, OSError, ValueError):
         return False
     return True

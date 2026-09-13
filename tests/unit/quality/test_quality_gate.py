@@ -66,7 +66,7 @@ class QualityAI:
             locality=ProviderLocality.LOCAL,
             task_types=frozenset({AITaskType.QUALITY_CHECKING}),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
-            models=frozenset({"quality-test-model"}),
+            models=frozenset({"local-news-ai"}),
         )
 
     async def execute(self, request: AIRequest) -> AIResponse:
@@ -95,7 +95,7 @@ class QualityAI:
         return AIResponse(
             structured=output,
             provider=self.provider_id,
-            model="quality-test-model",
+            model=request.model or "quality-test-model",
             latency_ms=1,
         )
 

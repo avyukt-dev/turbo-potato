@@ -93,7 +93,7 @@ class DeterministicResearchAI:
                 }
             ),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
-            models=frozenset({"deterministic-research-model"}),
+            models=frozenset({"local-news-ai"}),
         )
 
     async def execute(self, request: AIRequest) -> AIResponse:
@@ -194,7 +194,7 @@ class DeterministicResearchAI:
         return AIResponse(
             structured=structured,
             provider=self.provider_id,
-            model="deterministic-research-model",
+            model=request.model or "deterministic-research-model",
             latency_ms=1,
         )
 

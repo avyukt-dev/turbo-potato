@@ -1,0 +1,11 @@
+schema_version: 1
+stage_id: content-generation
+task_type: CONTENT_GENERATION
+prompt:
+  prompt_id: content-generation
+  version: v1
+  path: prompts/content/v1.txt
+providers:
+  - provider_id: local-llama
+    model: local-news-ai
+fallback_on: [INVALID_RESPONSE]

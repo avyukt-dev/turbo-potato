@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from news_ai_ai import (
     AIProvider,
-    AIRequest,
-    AIResponseFormat,
     AIRouter,
+    AIStageConfigLoader,
     AITaskType,
     build_ai_router,
 )
@@ -59,19 +57,19 @@ def build_production_content_stack(
     if ai_router is not None and ai_providers is not None:
         raise ValueError("inject either an AI router or providers")
     router = ai_router or build_ai_router(loader, providers=ai_providers)
-    router.candidate_provider_ids(
-        AIRequest(
-            task_type=AITaskType.CONTENT_GENERATION,
-            system_prompt="composition route validation",
-            input={},
-            response_format=AIResponseFormat.STRUCTURED,
-        )
+    router.validate_stage(AITaskType.CONTENT_GENERATION)
+    stage_loader = AIStageConfigLoader(loader)
+    stage = router.stage_config(AITaskType.CONTENT_GENERATION)
+    prompt = ContentGenerationPrompt.load(
+        stage_loader.resolve_prompt(stage), version=stage.prompt.version
     )
+    if prompt.prompt_id != stage.prompt.prompt_id:
+        raise ValueError("content-generation prompt identity does not match stage configuration")
     editorial_loader = EditorialConfigLoader(loader)
     style = editorial_loader.load_content_style()
     service = ContentGenerationService(
         router,
-        ContentGenerationPrompt.load(Path(settings.config_dir) / "prompts" / "content" / "v1.txt"),
+        prompt,
         style,
         editorial_loader.load_publishing_policy(),
     )
@@ -103,18 +101,16 @@ def build_production_quality_stack(
     if ai_router is not None and ai_providers is not None:
         raise ValueError("inject either an AI router or providers")
     router = ai_router or build_ai_router(loader, providers=ai_providers)
-    router.candidate_provider_ids(
-        AIRequest(
-            task_type=AITaskType.QUALITY_CHECKING,
-            system_prompt="composition route validation",
-            input={},
-            response_format=AIResponseFormat.STRUCTURED,
-        )
-    )
+    router.validate_stage(AITaskType.QUALITY_CHECKING)
+    stage_loader = AIStageConfigLoader(loader)
+    stage = router.stage_config(AITaskType.QUALITY_CHECKING)
+    prompt = QualityPrompt.load(stage_loader.resolve_prompt(stage), version=stage.prompt.version)
+    if prompt.prompt_id != stage.prompt.prompt_id:
+        raise ValueError("quality prompt identity does not match stage configuration")
     editorial_loader = EditorialConfigLoader(loader)
     service = QualityAssessmentService(
         router,
-        QualityPrompt.load(Path(settings.config_dir) / "prompts" / "quality" / "v1.txt"),
+        prompt,
         editorial_loader.load_content_style(),
         editorial_loader.load_publishing_policy(),
     )

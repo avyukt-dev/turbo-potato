@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from news_ai_ai import (
@@ -49,6 +51,11 @@ def _factory() -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 
 
+def _prompt_checksum(relative_path: str) -> str:
+    text = (Path("config") / relative_path).read_text(encoding="utf-8").strip()
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def test_production_research_stack_uses_production_boundaries() -> None:
     provider = ConfiguredAIProvider(
         frozenset(
@@ -71,6 +78,16 @@ def test_production_research_stack_uses_production_boundaries() -> None:
     assert isinstance(search, PostgresArticleSearchProvider)
     assert stack.evidence_engine.source_resolver is stack.source_resolver
     assert stack.claim_worker.service.router is stack.ai_router
+    assert stack.claim_worker.service.prompt.prompt_id == "claim-extraction"
+    assert stack.claim_worker.service.prompt.version == "v1"
+    assert stack.claim_worker.service.prompt.checksum == _prompt_checksum(
+        "prompts/claim-extraction/v1.txt"
+    )
+    assert stack.evidence_engine.assessor.prompt.prompt_id == "evidence-assessment"
+    assert stack.evidence_engine.assessor.prompt.version == "v1"
+    assert stack.evidence_engine.assessor.prompt.checksum == _prompt_checksum(
+        "prompts/evidence-assessment/v1.txt"
+    )
     assert not hasattr(stack, "content_worker")
     assert stack.fact_sheet_worker.generator.requested_platforms == ("INSTAGRAM",)
     assert stack.fact_sheet_worker.generator.requested_formats == ("CAROUSEL",)
@@ -99,6 +116,9 @@ def test_production_content_stack_uses_official_router_and_worker_boundaries() -
         ai_providers=(provider,),
     )
     assert stack.service.router is stack.ai_router
+    assert stack.service.prompt.prompt_id == "content-generation"
+    assert stack.service.prompt.version == "v1"
+    assert stack.service.prompt.checksum == _prompt_checksum("prompts/content/v1.txt")
     assert stack.worker.service is stack.service
     assert stack.worker.consumer.group == "content-worker"
 
@@ -125,6 +145,9 @@ def test_production_quality_stack_uses_official_router_and_worker_boundaries() -
         ai_providers=(provider,),
     )
     assert stack.service.router is stack.ai_router
+    assert stack.service.prompt.prompt_id == "content-quality"
+    assert stack.service.prompt.version == "v1"
+    assert stack.service.prompt.checksum == _prompt_checksum("prompts/quality/v1.txt")
     assert stack.worker.service is stack.service
     assert stack.worker.consumer.group == "quality-worker"
 

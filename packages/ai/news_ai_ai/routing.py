@@ -1,14 +1,23 @@
-"""Configuration-driven AI provider routing with bounded fallback."""
+"""Stage-centric AI routing with bounded, policy-authorized fallback."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import StrEnum
+from pathlib import Path
 
-from news_ai_common.config import ConfigDomain, ConfigLoader
+from news_ai_common.config import ConfigError, ConfigLoader
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .contracts import AIRequest, AIResponse, AITaskType, ProviderId, ProviderLocality
+from .contracts import (
+    AIRequest,
+    AIResponse,
+    AIResponseFormat,
+    AITaskType,
+    ModelId,
+    ProviderId,
+    ProviderLocality,
+)
 from .provider import (
     AIContextTooLargeError,
     AIInvalidResponseError,
@@ -41,65 +50,90 @@ class AIFailureReason(StrEnum):
     OTHER = "OTHER"
 
 
-class AIRouteAttemptOutcome(StrEnum):
-    SUCCESS = "SUCCESS"
-    FAILED = "FAILED"
+class AIStageId(StrEnum):
+    CLAIM_EXTRACTION = "claim-extraction"
+    EVIDENCE_ASSESSMENT = "evidence-assessment"
+    CONTENT_GENERATION = "content-generation"
+    QUALITY_CHECKING = "quality-checking"
 
 
-class TaskRoutingPolicy(BaseModel):
-    """Ordered provider preference and explicitly allowed fallback failures for one task."""
+_STAGE_TASKS: dict[AIStageId, AITaskType] = {
+    AIStageId.CLAIM_EXTRACTION: AITaskType.CLAIM_EXTRACTION,
+    AIStageId.EVIDENCE_ASSESSMENT: AITaskType.EVIDENCE_ASSESSMENT,
+    AIStageId.CONTENT_GENERATION: AITaskType.CONTENT_GENERATION,
+    AIStageId.QUALITY_CHECKING: AITaskType.QUALITY_CHECKING,
+}
+_TASK_STAGES = {task: stage for stage, task in _STAGE_TASKS.items()}
+_STAGE_PROMPT_IDS: dict[AIStageId, str] = {
+    AIStageId.CLAIM_EXTRACTION: "claim-extraction",
+    AIStageId.EVIDENCE_ASSESSMENT: "evidence-assessment",
+    AIStageId.CONTENT_GENERATION: "content-generation",
+    AIStageId.QUALITY_CHECKING: "content-quality",
+}
 
+
+class AIStageProviderSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    provider_id: ProviderId
+    model: ModelId
 
-    providers: tuple[ProviderId, ...]
+
+class AIStagePromptConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    prompt_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9-]*$")
+    version: str = Field(min_length=2, max_length=64, pattern=r"^v[1-9][0-9]*$")
+    path: str = Field(min_length=1, max_length=512)
+
+    @field_validator("path")
+    @classmethod
+    def require_safe_prompt_path(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or path.suffix.lower() != ".txt" or ".." in path.parts:
+            raise ValueError("prompt path must be a safe relative text path")
+        return value
+
+
+class AIStageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: int = Field(default=1, ge=1, le=1)
+    stage_id: AIStageId
+    task_type: AITaskType
+    prompt: AIStagePromptConfig
+    providers: tuple[AIStageProviderSelection, ...]
     fallback_on: frozenset[AIFailureReason] = frozenset()
 
     @field_validator("providers")
     @classmethod
-    def validate_providers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def require_unique_providers(
+        cls, value: tuple[AIStageProviderSelection, ...]
+    ) -> tuple[AIStageProviderSelection, ...]:
         if not value:
-            raise ValueError("task routing policy must contain at least one provider")
-        if len(value) != len(set(value)):
-            raise ValueError("task routing providers must be unique")
+            raise ValueError("stage configuration must contain at least one provider")
+        ids = [item.provider_id for item in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("stage provider IDs must be unique")
         return value
 
     @field_validator("fallback_on")
     @classmethod
     def forbid_unsafe_fallback_reasons(
-        cls,
-        value: frozenset[AIFailureReason],
+        cls, value: frozenset[AIFailureReason]
     ) -> frozenset[AIFailureReason]:
-        forbidden = {AIFailureReason.POLICY_REJECTION, AIFailureReason.OTHER}
-        if value & forbidden:
+        if value & {AIFailureReason.POLICY_REJECTION, AIFailureReason.OTHER}:
             raise ValueError("policy rejection and unknown failures cannot authorize fallback")
         return value
 
 
-class AIRoutingConfig(BaseModel):
-    """Routing policy owned exclusively by config/models/routing.yaml."""
-
+class AIPolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: int = Field(ge=1)
+    schema_version: int = Field(default=1, ge=1, le=1)
     mode: AIRoutingMode = AIRoutingMode.HYBRID
-    routes: dict[AITaskType, TaskRoutingPolicy]
-    sensitivity_provider_allowlists: dict[str, frozenset[ProviderId]] = Field(default_factory=dict)
-
-    @field_validator("routes")
-    @classmethod
-    def require_routes(
-        cls,
-        value: dict[AITaskType, TaskRoutingPolicy],
-    ) -> dict[AITaskType, TaskRoutingPolicy]:
-        if not value:
-            raise ValueError("AI routing config must define at least one task route")
-        return value
+    sensitivity_provider_allowlists: dict[str, frozenset[ProviderId]]
 
     @field_validator("sensitivity_provider_allowlists")
     @classmethod
     def validate_sensitivity_allowlists(
-        cls,
-        value: dict[str, frozenset[str]],
+        cls, value: dict[str, frozenset[str]]
     ) -> dict[str, frozenset[str]]:
         for sensitivity, providers in value.items():
             if not sensitivity.strip():
@@ -109,23 +143,54 @@ class AIRoutingConfig(BaseModel):
         return value
 
 
-class AIRoutingConfigLoader:
-    """Load the routing policy from the canonical model-configuration domain."""
+class AIPolicyConfigLoader:
+    def __init__(self, loader: ConfigLoader) -> None:
+        self.loader = loader
+
+    def load(self) -> AIPolicyConfig:
+        return self.loader.load_model("models/policy.yaml", AIPolicyConfig)
+
+
+class AIStageConfigLoader:
+    """Load the closed set of production stages; arbitrary directory files are ignored."""
 
     def __init__(self, loader: ConfigLoader) -> None:
         self.loader = loader
 
-    def load(self) -> AIRoutingConfig:
-        return self.loader.load_domain_file(
-            ConfigDomain.MODELS,
-            "routing.yaml",
-            AIRoutingConfig,
-        )
+    def load(self, stage_id: AIStageId) -> AIStageConfig:
+        config = self.loader.load_model(f"models/stages/{stage_id.value}.yaml", AIStageConfig)
+        if config.stage_id is not stage_id:
+            raise ConfigError(f"stage configuration identity does not match {stage_id.value}")
+        if config.task_type is not _STAGE_TASKS[stage_id]:
+            raise ConfigError(f"stage configuration task does not match {stage_id.value}")
+        if config.prompt.prompt_id != _STAGE_PROMPT_IDS[stage_id]:
+            raise ConfigError(f"prompt identity does not match {stage_id.value}")
+        self.resolve_prompt(config)
+        return config
+
+    def load_all(self) -> dict[AIStageId, AIStageConfig]:
+        return {stage_id: self.load(stage_id) for stage_id in AIStageId}
+
+    def resolve_prompt(self, config: AIStageConfig) -> Path:
+        candidate = (self.loader.root / config.prompt.path).resolve()
+        try:
+            candidate.relative_to(self.loader.root)
+        except ValueError as exc:
+            raise ConfigError("prompt path escapes configured root") from exc
+        if candidate.suffix.lower() != ".txt":
+            raise ConfigError("prompt configuration must reference a text file")
+        if not candidate.is_file():
+            raise ConfigError(f"prompt file not found: {config.prompt.path}")
+        return candidate
+
+
+class AIRouteAttemptOutcome(StrEnum):
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
 
 
 class AIRouteAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     provider_id: ProviderId
     outcome: AIRouteAttemptOutcome
     failure_reason: AIFailureReason | None = None
@@ -140,25 +205,20 @@ class AIRouteAttempt(BaseModel):
 
 
 class AIRoutedResponse(BaseModel):
-    """Successful response plus the bounded fallback history used to obtain it."""
-
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     response: AIResponse
     attempts: tuple[AIRouteAttempt, ...]
 
 
 class AIRoutingError(AIProviderError):
-    """Base failure for configuration-driven AI routing."""
+    pass
 
 
 class AIRoutingPolicyError(AIRoutingError):
-    """Routing policy cannot authorize any provider for the request."""
+    pass
 
 
 class AIRoutingExecutionError(AIRoutingError):
-    """Execution failed before an allowed fallback could produce a response."""
-
     def __init__(self, attempts: tuple[AIRouteAttempt, ...]) -> None:
         self.attempts = attempts
         last = attempts[-1] if attempts else None
@@ -167,56 +227,65 @@ class AIRoutingExecutionError(AIRoutingError):
 
 
 class AIRouter:
-    """Select providers from configured policy and execute bounded, policy-safe fallback."""
+    """Select a provider/model from the stage and apply global authorization policy."""
 
-    def __init__(self, registry: AIProviderRegistry, config: AIRoutingConfig) -> None:
+    def __init__(
+        self,
+        registry: AIProviderRegistry,
+        policy: AIPolicyConfig,
+        stages: Mapping[AIStageId, AIStageConfig],
+    ) -> None:
         self.registry = registry
-        self.config = config
-        self._validate_provider_references()
+        self.policy = policy
+        self.stages = dict(stages)
+        self._validate_configuration()
+
+    def stage_config(self, task_type: AITaskType) -> AIStageConfig:
+        stage_id = _TASK_STAGES.get(task_type)
+        if stage_id is None or stage_id not in self.stages:
+            raise AIRoutingPolicyError(f"no AI stage configured for task {task_type.value}")
+        return self.stages[stage_id]
 
     def candidate_provider_ids(self, request: AIRequest) -> tuple[str, ...]:
-        policy = self.config.routes.get(request.task_type)
-        if policy is None:
-            raise AIRoutingPolicyError(f"no AI route configured for task {request.task_type.value}")
-
+        stage = self.stage_config(request.task_type)
+        self._reject_conflicting_model(request, stage)
         self._require_sensitivity_policy(request)
         candidates: list[str] = []
-        for provider_id in policy.providers:
-            provider = self.registry.get(provider_id)
+        for selection in stage.providers:
+            provider = self.registry.get(selection.provider_id)
+            attempt_request = request.model_copy(update={"model": selection.model})
             if not self._mode_allows(provider.capabilities.locality):
                 continue
-            if not self._sensitivity_allows(provider_id, request.sensitivity):
+            if not self._sensitivity_allows(selection.provider_id, request.sensitivity):
                 continue
-            if not provider.capabilities.supports(request):
+            if not provider.capabilities.supports(attempt_request):
                 continue
-            candidates.append(provider_id)
-
+            candidates.append(selection.provider_id)
         if not candidates:
             raise AIRoutingPolicyError("no configured AI provider is authorized and compatible")
         return tuple(candidates)
 
+    def validate_stage(self, task_type: AITaskType) -> None:
+        self.candidate_provider_ids(
+            AIRequest(
+                task_type=task_type,
+                system_prompt="stage route validation",
+                input={},
+                response_format=AIResponseFormat.STRUCTURED,
+            )
+        )
+
     async def execute(
-        self,
-        request: AIRequest,
-        *,
-        response_validator: ResponseValidator | None = None,
+        self, request: AIRequest, *, response_validator: ResponseValidator | None = None
     ) -> AIRoutedResponse:
-        """Execute one task with policy-bounded fallback.
-
-        A domain validator may reject syntactically valid provider output with
-        ``AIInvalidResponseError``. Such rejection participates in the same configured fallback
-        policy as provider-level structured-output validation.
-        """
-
-        policy = self.config.routes.get(request.task_type)
-        if policy is None:
-            raise AIRoutingPolicyError(f"no AI route configured for task {request.task_type.value}")
-
+        stage = self.stage_config(request.task_type)
+        selections = {item.provider_id: item for item in stage.providers}
         candidates = self.candidate_provider_ids(request)
         attempts: list[AIRouteAttempt] = []
         for index, provider_id in enumerate(candidates):
+            attempt_request = request.model_copy(update={"model": selections[provider_id].model})
             try:
-                response = await self.registry.execute(provider_id, request)
+                response = await self.registry.execute(provider_id, attempt_request)
                 if response_validator is not None:
                     response_validator(response)
             except AIProviderError as exc:
@@ -228,52 +297,63 @@ class AIRouter:
                         failure_reason=reason,
                     )
                 )
-                has_next = index + 1 < len(candidates)
-                if not has_next or reason not in policy.fallback_on:
+                if index + 1 >= len(candidates) or reason not in stage.fallback_on:
                     raise AIRoutingExecutionError(tuple(attempts)) from exc
                 continue
-
             attempts.append(
-                AIRouteAttempt(
-                    provider_id=provider_id,
-                    outcome=AIRouteAttemptOutcome.SUCCESS,
-                )
+                AIRouteAttempt(provider_id=provider_id, outcome=AIRouteAttemptOutcome.SUCCESS)
             )
             return AIRoutedResponse(response=response, attempts=tuple(attempts))
-
         raise AIRoutingExecutionError(tuple(attempts))
 
-    def _validate_provider_references(self) -> None:
+    def _validate_configuration(self) -> None:
+        if set(self.stages) != set(AIStageId):
+            raise AIRoutingPolicyError("all production AI stages must be configured")
+        for stage_id, stage in self.stages.items():
+            if stage.stage_id is not stage_id or stage.task_type is not _STAGE_TASKS[stage_id]:
+                raise AIRoutingPolicyError("AI stage identity and task mapping must be canonical")
         referenced = {
-            provider_id
-            for policy in self.config.routes.values()
-            for provider_id in policy.providers
+            item.provider_id for stage in self.stages.values() for item in stage.providers
         }
         referenced.update(
-            provider_id
-            for providers in self.config.sensitivity_provider_allowlists.values()
-            for provider_id in providers
+            item
+            for providers in self.policy.sensitivity_provider_allowlists.values()
+            for item in providers
         )
         for provider_id in sorted(referenced):
             try:
-                self.registry.get(provider_id)
+                provider = self.registry.get(provider_id)
             except KeyError as exc:
                 raise AIRoutingPolicyError(
-                    f"AI routing config references unregistered provider {provider_id!r}"
+                    f"AI configuration references unregistered provider {provider_id!r}"
                 ) from exc
+            for stage in self.stages.values():
+                for selection in stage.providers:
+                    if selection.provider_id == provider_id and (
+                        provider.capabilities.models
+                        and selection.model not in provider.capabilities.models
+                    ):
+                        raise AIRoutingPolicyError(
+                            f"AI stage model is not exposed by provider {provider_id!r}"
+                        )
+
+    @staticmethod
+    def _reject_conflicting_model(request: AIRequest, stage: AIStageConfig) -> None:
+        if request.model is not None and request.model != stage.providers[0].model:
+            raise AIRoutingPolicyError("request model conflicts with stage-owned configuration")
 
     def _mode_allows(self, locality: ProviderLocality) -> bool:
-        if self.config.mode is AIRoutingMode.HYBRID:
+        if self.policy.mode is AIRoutingMode.HYBRID:
             return True
-        if self.config.mode is AIRoutingMode.LOCAL:
+        if self.policy.mode is AIRoutingMode.LOCAL:
             return locality is ProviderLocality.LOCAL
         return locality is ProviderLocality.CLOUD
 
     def _require_sensitivity_policy(self, request: AIRequest) -> None:
         missing = sorted(
-            sensitivity
-            for sensitivity in request.sensitivity
-            if sensitivity not in self.config.sensitivity_provider_allowlists
+            item
+            for item in request.sensitivity
+            if item not in self.policy.sensitivity_provider_allowlists
         )
         if missing:
             raise AIRoutingPolicyError(
@@ -282,8 +362,8 @@ class AIRouter:
 
     def _sensitivity_allows(self, provider_id: str, sensitivities: tuple[str, ...]) -> bool:
         return all(
-            provider_id in self.config.sensitivity_provider_allowlists[sensitivity]
-            for sensitivity in sensitivities
+            provider_id in self.policy.sensitivity_provider_allowlists[item]
+            for item in sensitivities
         )
 
 
