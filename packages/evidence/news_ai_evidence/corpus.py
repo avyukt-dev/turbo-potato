@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from news_ai_database import Article, ArticleVersion, Source
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .contracts import (
@@ -23,6 +26,55 @@ from .contracts import (
 from .provider import SearchCapabilityError
 
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_STREAM_BATCH_SIZE = 256
+
+
+@dataclass(frozen=True, slots=True)
+class _CorpusCandidate:
+    score: int
+    url: str
+    version_id: UUID
+    article_id: UUID
+    source_id: UUID
+    title: str | None
+    snippet: str
+    source_name: str
+    published_at: datetime | None
+    retrieved_at: datetime
+    language: str | None
+    version_number: int
+    content_hash: str
+
+    @property
+    def order_key(self) -> tuple[int, str, str]:
+        return (-self.score, self.url, str(self.version_id))
+
+
+class _BoundedCandidates:
+    """Exact top-K unique URLs without retaining the scanned corpus."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.by_url: dict[str, _CorpusCandidate] = {}
+        self.maximum_size = 0
+
+    def consider(self, candidate: _CorpusCandidate) -> None:
+        existing = self.by_url.get(candidate.url)
+        if existing is not None:
+            if candidate.order_key < existing.order_key:
+                self.by_url[candidate.url] = candidate
+            return
+        if len(self.by_url) < self.limit:
+            self.by_url[candidate.url] = candidate
+        else:
+            worst = max(self.by_url.values(), key=lambda item: item.order_key)
+            if candidate.order_key < worst.order_key:
+                del self.by_url[worst.url]
+                self.by_url[candidate.url] = candidate
+        self.maximum_size = max(self.maximum_size, len(self.by_url))
+
+    def ordered(self) -> list[_CorpusCandidate]:
+        return sorted(self.by_url.values(), key=lambda item: item.order_key)
 
 
 class PostgresArticleSearchProvider:
@@ -63,6 +115,20 @@ class PostgresArticleSearchProvider:
                 results=(),
             )
 
+        results = await asyncio.to_thread(self._search_sync, request, query_tokens)
+        return SearchResponse(
+            request_id=request.request_id,
+            provider_id=self.provider_id,
+            retrieved_at=self.clock(),
+            results=results,
+        )
+
+    def _search_sync(
+        self,
+        request: SearchRequest,
+        query_tokens: tuple[str, ...],
+    ) -> tuple[SearchResult, ...]:
+        # The Session is created, consumed and closed inside this worker thread.
         latest = (
             select(
                 ArticleVersion.article_id,
@@ -71,74 +137,139 @@ class PostgresArticleSearchProvider:
             .group_by(ArticleVersion.article_id)
             .subquery()
         )
-        with self.session_factory() as session:
-            rows = list(
-                session.execute(
-                    select(Article, ArticleVersion, Source)
-                    .join(Source, Source.id == Article.source_id)
-                    .join(latest, latest.c.article_id == Article.id)
-                    .join(
-                        ArticleVersion,
-                        (ArticleVersion.article_id == latest.c.article_id)
-                        & (ArticleVersion.version_number == latest.c.version_number),
-                    )
-                    .where(Source.is_active.is_(True))
-                    .order_by(Article.id, ArticleVersion.id)
+        statement = (
+            select(
+                Article.id,
+                Article.source_id,
+                Article.canonical_url,
+                Article.title,
+                Article.language,
+                Article.published_at,
+                ArticleVersion.id,
+                ArticleVersion.version_number,
+                ArticleVersion.content_hash,
+                ArticleVersion.body,
+                ArticleVersion.retrieved_at,
+                Source.name,
+                Source.domain,
+            )
+            .join(Source, Source.id == Article.source_id)
+            .join(latest, latest.c.article_id == Article.id)
+            .join(
+                ArticleVersion,
+                (ArticleVersion.article_id == latest.c.article_id)
+                & (ArticleVersion.version_number == latest.c.version_number),
+            )
+            .where(Source.is_active.is_(True))
+        )
+        if request.published_after is not None:
+            statement = statement.where(Article.published_at >= request.published_after)
+        if request.published_before is not None:
+            statement = statement.where(Article.published_at <= request.published_before)
+        if request.language:
+            base = request.language.casefold().split("-", 1)[0]
+            language = func.lower(Article.language)
+            statement = statement.where(or_(language == base, language.like(base + "-%")))
+        if request.include_domains:
+            statement = statement.where(
+                or_(
+                    Source.domain.is_(None),
+                    Source.domain == "",
+                    func.lower(Source.domain).in_(request.include_domains),
+                )
+            )
+        if request.exclude_domains:
+            statement = statement.where(
+                or_(
+                    Source.domain.is_(None),
+                    func.lower(Source.domain).not_in(request.exclude_domains),
                 )
             )
 
-        ranked: list[tuple[int, str, str, SearchResult]] = []
-        for article, version, source in rows:
-            if not _matches_filters(request, article, source):
-                continue
-            material = " ".join(item for item in (article.title, version.body) if item)
-            score = _lexical_score(query_tokens, material)
-            if score == 0:
-                continue
-            snippet = _bounded_snippet(version.body or article.title or "", query_tokens)
-            result = SearchResult(
-                url=article.canonical_url,
-                title=article.title,
-                snippet=snippet,
-                source_name=source.name,
-                candidate_type=CandidateSourceType.NEWS_ARTICLE,
-                rank=1,
-                published_at=_aware_utc(article.published_at),
-                updated_at=_aware_utc(version.retrieved_at),
-                language=article.language,
-                metadata={
-                    "source_id": str(source.id),
-                    "article_id": str(article.id),
-                    "article_version_id": str(version.id),
-                    "article_version_number": version.version_number,
-                    "content_hash": version.content_hash,
-                    "canonical_url": article.canonical_url,
-                    "published_at": (
-                        _aware_utc(article.published_at).isoformat()
-                        if article.published_at is not None
-                        else None
-                    ),
-                    "source_retrieved_at": _aware_utc(version.retrieved_at).isoformat(),
-                },
+        retained = _BoundedCandidates(request.max_results)
+        with self.session_factory() as session:
+            rows = session.execute(
+                statement.execution_options(
+                    stream_results=True,
+                    yield_per=_STREAM_BATCH_SIZE,
+                )
             )
-            ranked.append((score, article.canonical_url, str(version.id), result))
+            for row in rows:
+                (
+                    article_id,
+                    source_id,
+                    url,
+                    title,
+                    language,
+                    published_at,
+                    version_id,
+                    version_number,
+                    content_hash,
+                    body,
+                    retrieved_at,
+                    source_name,
+                    source_domain,
+                ) = row
+                if not _matches_filter_values(
+                    request,
+                    language=language,
+                    published_at=published_at,
+                    source_domain=source_domain,
+                    canonical_url=url,
+                ):
+                    continue
+                material = " ".join(item for item in (title, body) if item)
+                score = _lexical_score(query_tokens, material)
+                if score == 0:
+                    continue
+                retained.consider(
+                    _CorpusCandidate(
+                        score=score,
+                        url=url,
+                        version_id=version_id,
+                        article_id=article_id,
+                        source_id=source_id,
+                        title=title,
+                        snippet=_bounded_snippet(body or title or "", query_tokens),
+                        source_name=source_name,
+                        published_at=_aware_utc(published_at),
+                        retrieved_at=_aware_utc(retrieved_at),
+                        language=language,
+                        version_number=version_number,
+                        content_hash=content_hash,
+                    )
+                )
 
-        ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-        deduplicated: list[SearchResult] = []
-        seen_urls: set[str] = set()
-        for _, url, _, result in ranked:
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
-            deduplicated.append(result.model_copy(update={"rank": len(deduplicated) + 1}))
-            if len(deduplicated) == request.max_results:
-                break
-        return SearchResponse(
-            request_id=request.request_id,
-            provider_id=self.provider_id,
-            retrieved_at=self.clock(),
-            results=tuple(deduplicated),
-        )
+        results = []
+        for rank, candidate in enumerate(retained.ordered(), start=1):
+            results.append(
+                SearchResult(
+                    url=candidate.url,
+                    title=candidate.title,
+                    snippet=candidate.snippet,
+                    source_name=candidate.source_name,
+                    candidate_type=CandidateSourceType.NEWS_ARTICLE,
+                    rank=rank,
+                    published_at=candidate.published_at,
+                    updated_at=candidate.retrieved_at,
+                    language=candidate.language,
+                    metadata={
+                        "source_id": str(candidate.source_id),
+                        "article_id": str(candidate.article_id),
+                        "article_version_id": str(candidate.version_id),
+                        "article_version_number": candidate.version_number,
+                        "content_hash": candidate.content_hash,
+                        "canonical_url": candidate.url,
+                        "published_at": (
+                            candidate.published_at.isoformat()
+                            if candidate.published_at is not None
+                            else None
+                        ),
+                        "source_retrieved_at": candidate.retrieved_at.isoformat(),
+                    },
+                )
+            )
+        return tuple(results)
 
 
 def _tokens(value: str) -> tuple[str, ...]:
@@ -151,14 +282,31 @@ def _lexical_score(query_tokens: tuple[str, ...], material: str) -> int:
 
 
 def _matches_filters(request: SearchRequest, article: Article, source: Source) -> bool:
+    return _matches_filter_values(
+        request,
+        language=article.language,
+        published_at=article.published_at,
+        source_domain=source.domain,
+        canonical_url=article.canonical_url,
+    )
+
+
+def _matches_filter_values(
+    request: SearchRequest,
+    *,
+    language: str | None,
+    published_at: datetime | None,
+    source_domain: str | None,
+    canonical_url: str,
+) -> bool:
     if request.language:
-        if article.language is None:
+        if language is None:
             return False
         requested = request.language.casefold().split("-", 1)[0]
-        actual = article.language.casefold().split("-", 1)[0]
+        actual = language.casefold().split("-", 1)[0]
         if requested != actual:
             return False
-    published = _aware_utc(article.published_at)
+    published = _aware_utc(published_at)
     if request.published_after is not None and (
         published is None or published < request.published_after
     ):
@@ -167,7 +315,7 @@ def _matches_filters(request: SearchRequest, article: Article, source: Source) -
         published is None or published > request.published_before
     ):
         return False
-    domain = (source.domain or urlsplit(article.canonical_url).hostname or "").casefold()
+    domain = (source_domain or urlsplit(canonical_url).hostname or "").casefold()
     if request.include_domains and domain not in request.include_domains:
         return False
     return not request.exclude_domains or domain not in request.exclude_domains
