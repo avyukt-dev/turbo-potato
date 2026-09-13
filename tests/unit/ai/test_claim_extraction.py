@@ -9,15 +9,19 @@ from uuid import uuid4
 import pytest
 from news_ai_ai import (
     AIFailureReason,
+    AIPolicyConfig,
     AIProviderRegistry,
     AIRequest,
     AIResponse,
     AIResponseFormat,
     AIRouteAttemptOutcome,
     AIRouter,
-    AIRoutingConfig,
     AIRoutingExecutionError,
     AIRoutingMode,
+    AIStageConfig,
+    AIStageId,
+    AIStagePromptConfig,
+    AIStageProviderSelection,
     AITaskType,
     ClaimExtractionOutput,
     ClaimExtractionPrompt,
@@ -25,7 +29,6 @@ from news_ai_ai import (
     ProviderCapabilities,
     ProviderLocality,
     StaleStoryContextError,
-    TaskRoutingPolicy,
 )
 from news_ai_database import (
     AIModel,
@@ -78,18 +81,38 @@ def _response(provider: str, claims: list[dict[str, object]]) -> AIResponse:
 
 
 def _router(*providers: FakeProvider) -> AIRouter:
+    selections = tuple(
+        AIStageProviderSelection(
+            provider_id=provider.provider_id, model=f"{provider.provider_id}-model"
+        )
+        for provider in providers
+    )
+    stages = {
+        stage_id: AIStageConfig(
+            stage_id=stage_id,
+            task_type=task_type,
+            prompt=AIStagePromptConfig(
+                prompt_id=stage_id.value,
+                version="v1",
+                path=f"prompts/{stage_id.value}/v1.txt",
+            ),
+            providers=selections,
+            fallback_on=frozenset({AIFailureReason.INVALID_RESPONSE}),
+        )
+        for stage_id, task_type in (
+            (AIStageId.CLAIM_EXTRACTION, AITaskType.CLAIM_EXTRACTION),
+            (AIStageId.EVIDENCE_ASSESSMENT, AITaskType.EVIDENCE_ASSESSMENT),
+            (AIStageId.CONTENT_GENERATION, AITaskType.CONTENT_GENERATION),
+            (AIStageId.QUALITY_CHECKING, AITaskType.QUALITY_CHECKING),
+        )
+    }
     return AIRouter(
         AIProviderRegistry(list(providers)),
-        AIRoutingConfig(
-            schema_version=1,
+        AIPolicyConfig(
             mode=AIRoutingMode.HYBRID,
-            routes={
-                AITaskType.CLAIM_EXTRACTION: TaskRoutingPolicy(
-                    providers=tuple(provider.provider_id for provider in providers),
-                    fallback_on=frozenset({AIFailureReason.INVALID_RESPONSE}),
-                )
-            },
+            sensitivity_provider_allowlists={},
         ),
+        stages,
     )
 
 

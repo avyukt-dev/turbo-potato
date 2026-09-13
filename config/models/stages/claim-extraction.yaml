@@ -1,0 +1,11 @@
+schema_version: 1
+stage_id: claim-extraction
+task_type: CLAIM_EXTRACTION
+prompt:
+  prompt_id: claim-extraction
+  version: v1
+  path: prompts/claim-extraction/v1.txt
+providers:
+  - provider_id: local-llama
+    model: local-news-ai
+fallback_on: [INVALID_RESPONSE]

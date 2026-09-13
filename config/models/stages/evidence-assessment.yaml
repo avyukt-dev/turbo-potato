@@ -1,0 +1,11 @@
+schema_version: 1
+stage_id: evidence-assessment
+task_type: EVIDENCE_ASSESSMENT
+prompt:
+  prompt_id: evidence-assessment
+  version: v1
+  path: prompts/evidence-assessment/v1.txt
+providers:
+  - provider_id: local-llama
+    model: local-news-ai
+fallback_on: [INVALID_RESPONSE]

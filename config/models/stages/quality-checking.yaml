@@ -1,0 +1,11 @@
+schema_version: 1
+stage_id: quality-checking
+task_type: QUALITY_CHECKING
+prompt:
+  prompt_id: content-quality
+  version: v1
+  path: prompts/quality/v1.txt
+providers:
+  - provider_id: local-llama
+    model: local-news-ai
+fallback_on: [INVALID_RESPONSE]

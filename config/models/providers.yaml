@@ -1,6 +1,7 @@
 schema_version: 1
-llama_cpp:
+providers:
   - provider_id: local-llama
+    adapter_type: llama_cpp
     base_url: http://127.0.0.1:8080
     model: local-news-ai
     task_types:
