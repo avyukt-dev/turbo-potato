@@ -14,10 +14,12 @@ from .claim_extraction import (
 from .configuration import (
     AIProvidersConfig,
     AIProvidersConfigLoader,
+    ConfiguredGroqProvider,
     ConfiguredLlamaCppProvider,
     build_ai_router,
 )
 from .contracts import (
+    AIReasoningEffort,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -28,6 +30,7 @@ from .contracts import (
     TokenUsage,
     metadata_contains_secret_key,
 )
+from .groq import GroqProvider, GroqProviderConfig
 from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig
 from .provider import (
     AICapabilityError,
@@ -60,6 +63,7 @@ from .routing import (
     AIStageId,
     AIStagePromptConfig,
     AIStageProviderSelection,
+    AIStageRequestDefaults,
 )
 
 __all__ = [
@@ -80,8 +84,10 @@ __all__ = [
     "AIProviderUnavailableError",
     "AIProvidersConfig",
     "AIProvidersConfigLoader",
+    "ConfiguredGroqProvider",
     "ConfiguredLlamaCppProvider",
     "AIRequest",
+    "AIReasoningEffort",
     "AIResponse",
     "AIResponseFormat",
     "AIRouteAttempt",
@@ -97,6 +103,7 @@ __all__ = [
     "AIStageId",
     "AIStagePromptConfig",
     "AIStageProviderSelection",
+    "AIStageRequestDefaults",
     "AITaskType",
     "ClaimExtractionExecution",
     "ClaimExtractionItem",
@@ -104,6 +111,8 @@ __all__ = [
     "ClaimExtractionPrompt",
     "ClaimExtractionResult",
     "ClaimExtractionService",
+    "GroqProvider",
+    "GroqProviderConfig",
     "LlamaCppProvider",
     "LlamaCppProviderConfig",
     "PromptReference",

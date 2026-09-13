@@ -10,6 +10,7 @@ from news_ai_common.config import ConfigError, ConfigLoader
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .contracts import (
+    AIReasoningEffort,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -93,6 +94,11 @@ class AIStagePromptConfig(BaseModel):
         return value
 
 
+class AIStageRequestDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    reasoning_effort: AIReasoningEffort | None = None
+
+
 class AIStageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: int = Field(default=1, ge=1, le=1)
@@ -101,6 +107,7 @@ class AIStageConfig(BaseModel):
     prompt: AIStagePromptConfig
     providers: tuple[AIStageProviderSelection, ...]
     fallback_on: frozenset[AIFailureReason] = frozenset()
+    request_defaults: AIStageRequestDefaults = Field(default_factory=AIStageRequestDefaults)
 
     @field_validator("providers")
     @classmethod
@@ -192,6 +199,8 @@ class AIRouteAttemptOutcome(StrEnum):
 class AIRouteAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider_id: ProviderId
+    model: ModelId | None = None
+    reasoning_effort: AIReasoningEffort | None = None
     outcome: AIRouteAttemptOutcome
     failure_reason: AIFailureReason | None = None
 
@@ -253,7 +262,7 @@ class AIRouter:
         candidates: list[str] = []
         for selection in stage.providers:
             provider = self.registry.get(selection.provider_id)
-            attempt_request = request.model_copy(update={"model": selection.model})
+            attempt_request = self._attempt_request(request, stage, selection)
             if not self._mode_allows(provider.capabilities.locality):
                 continue
             if not self._sensitivity_allows(selection.provider_id, request.sensitivity):
@@ -283,7 +292,8 @@ class AIRouter:
         candidates = self.candidate_provider_ids(request)
         attempts: list[AIRouteAttempt] = []
         for index, provider_id in enumerate(candidates):
-            attempt_request = request.model_copy(update={"model": selections[provider_id].model})
+            selection = selections[provider_id]
+            attempt_request = self._attempt_request(request, stage, selection)
             try:
                 response = await self.registry.execute(provider_id, attempt_request)
                 if response_validator is not None:
@@ -293,6 +303,8 @@ class AIRouter:
                 attempts.append(
                     AIRouteAttempt(
                         provider_id=provider_id,
+                        model=selection.model,
+                        reasoning_effort=attempt_request.reasoning_effort,
                         outcome=AIRouteAttemptOutcome.FAILED,
                         failure_reason=reason,
                     )
@@ -301,7 +313,12 @@ class AIRouter:
                     raise AIRoutingExecutionError(tuple(attempts)) from exc
                 continue
             attempts.append(
-                AIRouteAttempt(provider_id=provider_id, outcome=AIRouteAttemptOutcome.SUCCESS)
+                AIRouteAttempt(
+                    provider_id=provider_id,
+                    model=selection.model,
+                    reasoning_effort=attempt_request.reasoning_effort,
+                    outcome=AIRouteAttemptOutcome.SUCCESS,
+                )
             )
             return AIRoutedResponse(response=response, attempts=tuple(attempts))
         raise AIRoutingExecutionError(tuple(attempts))
@@ -341,6 +358,23 @@ class AIRouter:
     def _reject_conflicting_model(request: AIRequest, stage: AIStageConfig) -> None:
         if request.model is not None and request.model != stage.providers[0].model:
             raise AIRoutingPolicyError("request model conflicts with stage-owned configuration")
+
+    @staticmethod
+    def _attempt_request(
+        request: AIRequest,
+        stage: AIStageConfig,
+        selection: AIStageProviderSelection,
+    ) -> AIRequest:
+        return request.model_copy(
+            update={
+                "model": selection.model,
+                "reasoning_effort": (
+                    request.reasoning_effort
+                    if request.reasoning_effort is not None
+                    else stage.request_defaults.reasoning_effort
+                ),
+            }
+        )
 
     def _mode_allows(self, locality: ProviderLocality) -> bool:
         if self.policy.mode is AIRoutingMode.HYBRID:

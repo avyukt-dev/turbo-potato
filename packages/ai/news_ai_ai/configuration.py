@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from typing import Literal
+from typing import Annotated, Literal
 
 from news_ai_common.config import ConfigDomain, ConfigLoader
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .groq import GroqProvider, GroqProviderConfig
 from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig
 from .provider import AIProvider
 from .registry import AIProviderRegistry
@@ -21,11 +22,23 @@ class ConfiguredLlamaCppProvider(LlamaCppProviderConfig):
     adapter_type: Literal["llama_cpp"]
 
 
+class ConfiguredGroqProvider(GroqProviderConfig):
+    """Closed provider-factory input for the Groq adapter."""
+
+    adapter_type: Literal["groq"]
+
+
+ConfiguredAIProvider = Annotated[
+    ConfiguredLlamaCppProvider | ConfiguredGroqProvider,
+    Field(discriminator="adapter_type"),
+]
+
+
 class AIProvidersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: int = Field(default=1, ge=1, le=1)
-    providers: tuple[ConfiguredLlamaCppProvider, ...]
+    providers: tuple[ConfiguredAIProvider, ...]
 
     @model_validator(mode="after")
     def require_unique_providers(self) -> AIProvidersConfig:
@@ -63,14 +76,21 @@ def build_ai_router(
         built: list[AIProvider] = []
         for item in configured.providers:
             secret = os.getenv(item.api_key_env) if item.api_key_env else None
-            built.append(
-                LlamaCppProvider(
-                    LlamaCppProviderConfig.model_validate(
-                        item.model_dump(exclude={"adapter_type"})
-                    ),
-                    api_key=secret,
+            values = item.model_dump(exclude={"adapter_type"})
+            if isinstance(item, ConfiguredLlamaCppProvider):
+                built.append(
+                    LlamaCppProvider(
+                        LlamaCppProviderConfig.model_validate(values),
+                        api_key=secret,
+                    )
                 )
-            )
+            else:
+                built.append(
+                    GroqProvider(
+                        GroqProviderConfig.model_validate(values),
+                        api_key=secret,
+                    )
+                )
         providers = built
     registry = AIProviderRegistry(providers)
     return AIRouter(

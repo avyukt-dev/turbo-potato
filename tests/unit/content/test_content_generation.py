@@ -59,16 +59,20 @@ class ContentAI:
     error: Exception | None = None
     calls: int = 0
     requests: list[AIRequest] = field(default_factory=list)
-    provider_id: str = "local-llama"
+    provider_id: str = "groq"
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             provider_id=self.provider_id,
-            locality=ProviderLocality.LOCAL,
+            locality=ProviderLocality.CLOUD
+            if self.provider_id == "groq"
+            else ProviderLocality.LOCAL,
             task_types=frozenset({AITaskType.CONTENT_GENERATION}),
             response_formats=frozenset({AIResponseFormat.STRUCTURED}),
-            models=frozenset({"local-news-ai"}),
+            models=frozenset(
+                {"openai/gpt-oss-120b" if self.provider_id == "groq" else "local-news-ai"}
+            ),
         )
 
     async def execute(self, request: AIRequest) -> AIResponse:
@@ -248,7 +252,10 @@ def _service(ai: ContentAI) -> ContentGenerationService:
     loader = ConfigLoader("config")
     editorial = EditorialConfigLoader(loader)
     return ContentGenerationService(
-        build_ai_router(loader, providers=(ai,)),
+        build_ai_router(
+            loader,
+            providers=(ai, ContentAI(provider_id="local-llama", error=ai.error, mutate=ai.mutate)),
+        ),
         ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v1.txt"),
         ContentStyleConfigLoader(loader).load(),
         editorial.load_publishing_policy(),

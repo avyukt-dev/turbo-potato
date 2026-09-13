@@ -12,6 +12,7 @@ from news_ai_ai import (
     AIProviderRateLimitError,
     AIProviderTimeoutError,
     AIProviderUnavailableError,
+    AIReasoningEffort,
     AIRequest,
     AIResponseFormat,
     AITaskType,
@@ -105,6 +106,7 @@ def test_text_request_maps_to_chat_completion_and_normalizes_response() -> None:
             assert payload["model"] == "tiny-model"
             assert payload["stream"] is False
             assert payload["max_tokens"] == 128
+            assert "reasoning_effort" not in payload
             assert "response_format" not in payload
             assert payload["messages"][0] == {
                 "role": "system",
@@ -128,7 +130,8 @@ def test_text_request_maps_to_chat_completion_and_normalizes_response() -> None:
             )
 
         async with _client(httpx.MockTransport(handler)) as client:
-            response = await LlamaCppProvider(_config(), client=client).execute(_request())
+            request = _request().model_copy(update={"reasoning_effort": AIReasoningEffort.HIGH})
+            response = await LlamaCppProvider(_config(), client=client).execute(request)
             assert response.text == "One claim."
             assert response.structured is None
             assert response.provider == "local-llama"

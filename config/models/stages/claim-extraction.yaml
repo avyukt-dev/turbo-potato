@@ -6,6 +6,10 @@ prompt:
   version: v1
   path: prompts/claim-extraction/v1.txt
 providers:
+  - provider_id: groq
+    model: openai/gpt-oss-120b
   - provider_id: local-llama
     model: local-news-ai
-fallback_on: [INVALID_RESPONSE]
+fallback_on: [INVALID_RESPONSE, TIMEOUT, RATE_LIMIT, UNAVAILABLE]
+request_defaults:
+  reasoning_effort: medium

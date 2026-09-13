@@ -100,5 +100,11 @@ def test_ai_router_readiness_requires_quality_checking_route(tmp_path: Path) -> 
     assert _check_ai_router(AppSettings(config_dir=tmp_path)) is False
 
 
-def test_canonical_ai_router_readiness_resolves_all_stage22_tasks() -> None:
+def test_canonical_ai_router_readiness_resolves_all_stage22_tasks(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "test-placeholder")
     assert _check_ai_router(AppSettings(config_dir=Path("config"))) is True
+
+
+def test_canonical_ai_router_readiness_fails_closed_without_groq_key(monkeypatch) -> None:
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    assert _check_ai_router(AppSettings(config_dir=Path("config"))) is False
