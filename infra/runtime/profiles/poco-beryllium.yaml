@@ -12,6 +12,7 @@ hints:
     - sysv
   battery_available: true
   thermal_monitoring_required: true
+  tailscale_expected: true
 rules:
   capability_detection_is_authoritative: true
   profile_must_not_force_unavailable_utility: true

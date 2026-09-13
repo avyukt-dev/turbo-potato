@@ -655,6 +655,25 @@ review may continue
 new external publication calls stop
 ```
 
+The production control is a PostgreSQL `runtime_controls` row updated through
+`newsctl publish pause|resume`. Its value is combined with the
+`NEWS_AI_PUBLISHING_PAUSED=true` deployment hard pause; a database resume cannot
+override that environment pause. Scheduler and publisher re-read the shared
+control, and inability to read it denies external publishing.
+
+`newsctl runtime detect`, service operations, and health reporting use the typed
+service registry and `RuntimeController`. Native commands remain inside runtime
+adapters, and runtime profiles are ordering hints rather than capability proof;
+omitted native managers remain detection candidates and manual mode is only a
+fallback unless explicitly selected by an operator. The production registry marks
+the runnable API, scheduler, and publisher processes as expected. API unavailability
+is critical; scheduler or publisher unavailability degrades health while durable
+publication work remains recoverable.
+
+Prometheus-compatible `/metrics` is read-only aggregate telemetry. Metric labels
+exclude durable IDs, account identifiers, content, URLs, credentials, and raw
+provider errors.
+
 ---
 
 # 33. Security Boundaries

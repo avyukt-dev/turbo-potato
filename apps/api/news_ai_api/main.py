@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from news_ai_common.config import AppSettings
 from news_ai_publishing import PublicationError, PublicationService
 from news_ai_review import (
@@ -17,6 +17,7 @@ from news_ai_review import (
     ReviewError,
     ReviewService,
 )
+from news_ai_runtime.metrics import collect_metrics
 from news_ai_social.config import load_instagram_config
 
 from .auth import ReviewerTokenAuthenticator
@@ -33,6 +34,7 @@ def create_app(
     review_service: ReviewService | None = None,
     reviewer_authenticator: ReviewerTokenAuthenticator | None = None,
     publication_service: PublicationService | None = None,
+    metrics_probe=collect_metrics,
 ) -> FastAPI:
     resolved_settings = settings or AppSettings()
     application = FastAPI(title="News AI Social Media Manager", version="0.1.0")
@@ -126,6 +128,13 @@ def create_app(
             "ai_router": ai_router,
         }
         return JSONResponse(status_code=200 if ready_state else 503, content=payload)
+
+    @application.get("/metrics", response_model=None)
+    async def metrics() -> Response:
+        return Response(
+            await metrics_probe(resolved_settings),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     resolved_review_service = review_service
     review_auth_configured = (

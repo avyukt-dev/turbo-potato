@@ -1,7 +1,6 @@
 """Production scheduler composition (no publisher/adapter dependencies)."""
 
 import logging
-import os
 from dataclasses import dataclass
 from time import sleep
 
@@ -11,6 +10,7 @@ from news_ai_editorial import EditorialConfigLoader
 from news_ai_publishing import PublicationScheduler, PublicationService, SchedulerConfig
 from news_ai_publishing.contracts import system_clock
 from news_ai_review import ApprovalEligibilityService
+from news_ai_runtime import DatabasePublishingControl
 from news_ai_social.config import load_instagram_config
 
 
@@ -28,11 +28,6 @@ def build_production_scheduler_stack(
     loader = ConfigLoader(settings.config_dir)
     policy = EditorialConfigLoader(loader).load_publishing_policy()
     config = loader.load_domain_file(ConfigDomain.PLATFORMS, "publishing.yaml", SchedulerConfig)
-    pause = os.getenv("NEWS_AI_PUBLISHING_PAUSED")
-    if pause is not None:
-        if pause.casefold() not in {"true", "false"}:
-            raise ValueError("invalid publishing pause configuration")
-        config = config.model_copy(update={"publishing_paused": pause.casefold() == "true"})
     factory = session_factory or create_session_factory(
         create_database_engine(settings.database_url)
     )
@@ -42,7 +37,10 @@ def build_production_scheduler_stack(
         clock=clock,
         platform_config=load_instagram_config(settings.config_dir),
     )
-    return ProductionSchedulerStack(service, PublicationScheduler(service, config))
+    control = DatabasePublishingControl(factory, clock=clock)
+    return ProductionSchedulerStack(
+        service, PublicationScheduler(service, config, paused=control.paused)
+    )
 
 
 def run(stack: ProductionSchedulerStack, *, should_stop=lambda: False, wait=sleep):

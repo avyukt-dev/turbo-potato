@@ -66,6 +66,19 @@ class CountingAdapter(MockInstagramAdapter):
 
 def setup_execution(factory=None, *, config=None):
     factory = factory or _factory()
+    # Production starts paused; tests explicitly grant isolated control permission.
+    from news_ai_database import RuntimeControl
+
+    with factory() as session, session.begin():
+        if session.scalar(select(RuntimeControl)) is None:
+            session.add(
+                RuntimeControl(
+                    control_key="PUBLISHING_PAUSED",
+                    boolean_value=False,
+                    revision=1,
+                    reason="Isolated execution test permission",
+                )
+            )
     clock = Clock()
     variant, account, actor = seed_candidate(factory)
     service, scheduler = stack(factory, clock)

@@ -42,9 +42,11 @@ from .publication_models import (
     SocialAccountStatus,
 )
 from .registry_models import SourceFeedRegistryEntry, SourceRegistryEntry
+from .runtime_models import RuntimeControl
 from .session import create_database_engine, create_session_factory
 
 __all__ = [
+    "RuntimeControl",
     "MediaAsset",
     "Publication",
     "PublicationAttempt",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import socket
 from dataclasses import dataclass
 from uuid import uuid4
@@ -14,6 +13,7 @@ from news_ai_events import RedisStreamConsumer
 from news_ai_publishing import PublicationExecutionService, PublicationService, SchedulerConfig
 from news_ai_publishing.contracts import system_clock
 from news_ai_review import ApprovalEligibilityService
+from news_ai_runtime import DatabasePublishingControl
 from news_ai_social import (
     HttpxInstagramGraphTransport,
     InstagramAdapter,
@@ -64,13 +64,7 @@ def build_production_publisher_stack(
         social_settings, config_root=str(settings.config_dir), transport=transport
     )
 
-    def paused():
-        value = os.getenv("NEWS_AI_PUBLISHING_PAUSED")
-        if value is None:
-            return config.publishing_paused
-        if value.casefold() not in {"true", "false"}:
-            raise ValueError("invalid publishing pause configuration")
-        return value.casefold() == "true"
+    control = DatabasePublishingControl(factory, clock=clock)
 
     service = PublicationService(
         factory,
@@ -87,7 +81,7 @@ def build_production_publisher_stack(
         service,
         adapter,
         config.publisher,
-        paused=paused,
+        paused=control.paused,
         live_account_id=(
             social_settings.instagram_account_id
             if social_settings.social_mode == SocialMode.LIVE

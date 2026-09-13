@@ -4,6 +4,7 @@ This is the only layer allowed to know native utility command syntax. Applicatio
 must depend on ServiceManager instead.
 """
 
+import re
 import shutil
 from pathlib import Path
 
@@ -17,13 +18,13 @@ from .base import (
 
 
 def _state_from_text(text: str, returncode: int) -> ServiceState:
-    normalized = text.lower()
-    if returncode == 0 and any(word in normalized for word in ("started", "running", "active")):
-        return ServiceState.ACTIVE
-    if any(word in normalized for word in ("stopped", "inactive", "not running", "not started")):
+    normalized = text.strip().lower()
+    if re.search(r"\b(stopped|inactive|not running|not started|not active)\b", normalized):
         return ServiceState.INACTIVE
-    if any(word in normalized for word in ("failed", "crashed")):
+    if re.search(r"\b(failed|crashed)\b", normalized):
         return ServiceState.FAILED
+    if returncode == 0 and re.search(r"\b(started|running|active)\b", normalized):
+        return ServiceState.ACTIVE
     return ServiceState.UNKNOWN
 
 
@@ -31,9 +32,21 @@ def _result_from_process(result: object, text: str) -> ServiceResult:
     return ServiceResult(
         _state_from_text(text, result.returncode),
         result.returncode,
-        result.stdout,
-        result.stderr,
+        error_code=_error_from_process(result),
     )
+
+
+def _error_from_process(result):
+    if not result.returncode:
+        return None
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    if any(
+        term in output for term in ("permission denied", "access denied", "authentication required")
+    ):
+        return "PERMISSION_DENIED"
+    if any(term in output for term in ("not found", "does not exist", "unrecognized service")):
+        return "SERVICE_UNKNOWN"
+    return None
 
 
 class OpenRCServiceManager(ServiceManager):
@@ -65,14 +78,13 @@ class OpenRCServiceManager(ServiceManager):
 
     def _boot_registration(self, service: str, action: str) -> ServiceResult:
         if not shutil.which("rc-update"):
-            raise UnsupportedOperation("OpenRC boot registration requires rc-update")
+            raise FileNotFoundError("native boot registration utility missing")
         name = validate_service_name(service)
         result = self.runner.run(["rc-update", action, name, "default"])
         return ServiceResult(
             ServiceState.UNKNOWN,
             result.returncode,
-            result.stdout,
-            result.stderr,
+            error_code=_error_from_process(result),
         )
 
     def enable(self, service: str) -> ServiceResult:
@@ -94,18 +106,18 @@ class SystemdServiceManager(ServiceManager):
 
     def _call(self, service: str, action: str) -> ServiceResult:
         name = validate_service_name(service)
-        result = self.runner.run(["systemctl", action, name])
-        text = f"{result.stdout}\n{result.stderr}"
-        state = _state_from_text(text, result.returncode)
         if action == "status":
             active = self.runner.run(["systemctl", "is-active", name])
-            if active.stdout.strip() == "active":
-                state = ServiceState.ACTIVE
-            elif active.stdout.strip() == "inactive":
-                state = ServiceState.INACTIVE
-            elif active.stdout.strip() == "failed":
-                state = ServiceState.FAILED
-        return ServiceResult(state, result.returncode, result.stdout, result.stderr)
+            state = {
+                "active": ServiceState.ACTIVE,
+                "inactive": ServiceState.INACTIVE,
+                "failed": ServiceState.FAILED,
+            }.get(active.stdout.strip(), ServiceState.UNKNOWN)
+            return ServiceResult(state, active.returncode, error_code=_error_from_process(active))
+        result = self.runner.run(["systemctl", action, name])
+        return ServiceResult(
+            ServiceState.UNKNOWN, result.returncode, error_code=_error_from_process(result)
+        )
 
     def status(self, service: str) -> ServiceResult:
         return self._call(service, "status")

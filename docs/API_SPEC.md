@@ -662,6 +662,11 @@ Secrets are excluded.
 
 ## GET /metrics
 
+Returns Prometheus-compatible, read-only aggregate telemetry. A dependency outage
+does not turn this endpoint into service control or an external-provider call.
+Labels use bounded operational categories and never durable entity identifiers,
+content, URLs, account identifiers, or raw error messages.
+
 Possible metrics:
 
 ```text
