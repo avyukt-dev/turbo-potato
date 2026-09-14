@@ -52,6 +52,29 @@ class ClaimSemanticEscalation(BaseModel):
     reason_code: ClaimSemanticEscalationCode
 
 
+class ValueEscalationCode(StrEnum):
+    PROSE_VALUE_MISMATCH = "PROSE_VALUE_MISMATCH"
+    MAGNITUDE_MISMATCH = "MAGNITUDE_MISMATCH"
+    PERCENTAGE_POINT_CONFUSION = "PERCENTAGE_POINT_CONFUSION"
+    RANGE_OR_BOUND_LOST = "RANGE_OR_BOUND_LOST"
+    APPROXIMATION_LOST = "APPROXIMATION_LOST"
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+    DATE_TIME_MISMATCH = "DATE_TIME_MISMATCH"
+    UNIT_MISMATCH = "UNIT_MISMATCH"
+    UNDECLARED_VALUE = "UNDECLARED_VALUE"
+    DERIVED_VALUE_NOT_SUPPORTED = "DERIVED_VALUE_NOT_SUPPORTED"
+
+
+class ValueEscalation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    claim_id: UUID
+    anchor_id: UUID | None
+    artifact_path: str = Field(
+        max_length=100, pattern=r"^(title|caption|slides\[[0-9]{1,2}\]\.(heading|body))$"
+    )
+    reason_code: ValueEscalationCode
+
+
 class QualityAssessmentOutput(BaseModel):
     """Untrusted AI output; workflow decisions are deliberately absent."""
 
@@ -60,6 +83,7 @@ class QualityAssessmentOutput(BaseModel):
     content_variant_id: UUID
     certainty_escalations: tuple[CertaintyEscalation, ...] = Field(max_length=50)
     claim_semantic_escalations: tuple[ClaimSemanticEscalation, ...] = Field(max_length=50)
+    value_escalations: tuple[ValueEscalation, ...] = Field(max_length=50)
     factual_accuracy_passed: bool
     source_alignment_passed: bool
     citation_alignment_passed: bool
@@ -108,6 +132,13 @@ class QualityAssessmentOutput(BaseModel):
             raise ValueError("claim semantic escalations must be unique")
         return tuple(sorted(value, key=lambda item: item.model_dump_json()))
 
+    @field_validator("value_escalations")
+    @classmethod
+    def unique_value_escalations(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("value escalations must be unique")
+        return tuple(sorted(value, key=lambda item: item.model_dump_json()))
+
 
 class QualityDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -115,6 +146,7 @@ class QualityDecision(BaseModel):
     content_variant_id: UUID
     certainty_escalations: tuple[CertaintyEscalation, ...]
     claim_semantic_escalations: tuple[ClaimSemanticEscalation, ...]
+    value_escalations: tuple[ValueEscalation, ...]
     factual_accuracy_passed: bool
     source_alignment_passed: bool
     citation_alignment_passed: bool
@@ -157,6 +189,7 @@ def decide_quality(
             semantic_report.passed,
             not output.certainty_escalations,
             not output.claim_semantic_escalations,
+            not output.value_escalations,
         )
     )
     return QualityDecision(

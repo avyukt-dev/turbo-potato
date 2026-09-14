@@ -10,12 +10,13 @@ from uuid import UUID
 from news_ai_content import ContentGenerationOutput, EditorialBrief
 from news_ai_content.certainty import presentation_violations
 from news_ai_content.claim_semantics import semantic_presentation_violations
+from news_ai_content.values import presentation_errors
 from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION
 from news_ai_evidence import FactSheetArtifact
 from news_ai_evidence.engine import EvidenceRelation
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SEMANTIC_METHODOLOGY_VERSION = "semantic-validator-v3"
+SEMANTIC_METHODOLOGY_VERSION = "semantic-validator-v4"
 _QUOTES = re.compile(r'"([^"]+)"|“([^”]+)”|«([^»]+)»|„([^“]+)“')
 
 
@@ -34,6 +35,7 @@ class SemanticFindingCategory(StrEnum):
     CATEGORICAL_ASSERTION = "CATEGORICAL_ASSERTION"
     CERTAINTY = "CERTAINTY"
     CLAIM_SEMANTICS = "CLAIM_SEMANTICS"
+    VALUE_INTEGRITY = "VALUE_INTEGRITY"
 
 
 class SemanticFindingCode(StrEnum):
@@ -62,6 +64,22 @@ class SemanticFindingCode(StrEnum):
     CLAIM_SEMANTICS_TYPE_MISMATCH = "CLAIM_SEMANTICS_TYPE_MISMATCH"
     CLAIM_SEMANTICS_STATE_MISMATCH = "CLAIM_SEMANTICS_STATE_MISMATCH"
     CLAIM_SEMANTICS_POLICY_MISMATCH = "CLAIM_SEMANTICS_POLICY_MISMATCH"
+    VALUE_POLICY_MISMATCH = "VALUE_POLICY_MISMATCH"
+    VALUE_PRESENTATION_MISSING = "VALUE_PRESENTATION_MISSING"
+    VALUE_DUPLICATE_PRESENTATION = "VALUE_DUPLICATE_PRESENTATION"
+    VALUE_UNKNOWN_ANCHOR = "VALUE_UNKNOWN_ANCHOR"
+    VALUE_WRONG_ANCHOR_OWNER = "VALUE_WRONG_ANCHOR_OWNER"
+    VALUE_KIND_MISMATCH = "VALUE_KIND_MISMATCH"
+    VALUE_RELATION_MISMATCH = "VALUE_RELATION_MISMATCH"
+    VALUE_MAGNITUDE_MISMATCH = "VALUE_MAGNITUDE_MISMATCH"
+    VALUE_CURRENCY_MISMATCH = "VALUE_CURRENCY_MISMATCH"
+    VALUE_UNIT_MISMATCH = "VALUE_UNIT_MISMATCH"
+    VALUE_CONVERSION_NOT_ALLOWED = "VALUE_CONVERSION_NOT_ALLOWED"
+    VALUE_TEMPORAL_MISMATCH = "VALUE_TEMPORAL_MISMATCH"
+    VALUE_TEMPORAL_PRECISION_MISMATCH = "VALUE_TEMPORAL_PRECISION_MISMATCH"
+    VALUE_RENDERED_TEXT_MISMATCH = "VALUE_RENDERED_TEXT_MISMATCH"
+    VALUE_RENDERED_TEXT_MISSING = "VALUE_RENDERED_TEXT_MISSING"
+    VALUE_OCCURRENCE_SCOPE_MISMATCH = "VALUE_OCCURRENCE_SCOPE_MISMATCH"
 
 
 class SemanticFinding(BaseModel):
@@ -505,6 +523,15 @@ class SemanticValidator:
                     claim=claim.claim_id,
                 )
 
+        for code, path, claim_id in presentation_errors(
+            content, {identity: claim.values for identity, claim in claims.items()}
+        ):
+            add(
+                SemanticFindingCode[f"VALUE_{code}"],
+                SemanticFindingCategory.VALUE_INTEGRITY,
+                path,
+                claim=claim_id,
+            )
         if editorial_brief is not None:
             index(editorial_brief.claims, "claim_id", "editorial_brief.claims")
             for i, brief_claim in enumerate(editorial_brief.claims):
@@ -519,6 +546,13 @@ class SemanticValidator:
                 )
                 check = fact_checks.get(brief_claim.fact_check_id)
                 claim = claims.get(brief_claim.claim_id)
+                if claim is not None and brief_claim.values != claim.values:
+                    add(
+                        SemanticFindingCode.VALUE_POLICY_MISMATCH,
+                        SemanticFindingCategory.VALUE_INTEGRITY,
+                        path,
+                        claim=claim.claim_id,
+                    )
                 if claim is not None and (
                     claim.semantics is None
                     or claim.semantics.policy_version != CLAIM_SEMANTICS_POLICY_VERSION

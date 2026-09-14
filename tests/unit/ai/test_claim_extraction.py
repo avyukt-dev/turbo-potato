@@ -212,6 +212,7 @@ def _claim(text: str = "The government announced a new policy.") -> dict[str, ob
         "claim_text": text,
         "semantic_type": "POLICY_COMMITMENT",
         "semantic_state": "ANNOUNCED",
+        "value_candidates": [],
         "importance_score": 0.8,
         "risk_level": "LOW",
         "sensitive_topics": [],

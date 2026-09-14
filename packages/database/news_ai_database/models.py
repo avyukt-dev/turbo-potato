@@ -254,6 +254,15 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         CheckConstraint("research_generation >= 0", name="ck_claims_research_generation"),
         CheckConstraint(
+            "(value_anchors IS NULL AND value_policy_version IS NULL AND value_ai_run_id IS NULL) "
+            "OR (value_anchors IS NOT NULL AND value_policy_version IS NOT NULL "
+            "AND value_ai_run_id IS NOT NULL)",
+            name="ck_claims_values_complete",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(value_anchors) = 'array'", name="ck_claims_values_array"
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
             "semantic_type IN ('GENERAL_FACT', 'EVENT', 'QUANTITATIVE', 'ATTRIBUTION', "
             "'LEGAL_PROCEDURAL', 'CAUSAL', 'PREDICTION_FORECAST', 'POLICY_COMMITMENT')",
             name="ck_claims_semantic_type",
@@ -283,6 +292,11 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     semantic_policy_version: Mapped[str | None] = mapped_column(String(64))
     semantic_ai_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ai_runs.id"), index=True)
+    value_anchors: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"), nullable=True
+    )
+    value_policy_version: Mapped[str | None] = mapped_column(String(64))
+    value_ai_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ai_runs.id"), index=True)
     status: Mapped[ClaimVerificationStatus] = mapped_column(
         SAEnum(
             ClaimVerificationStatus,
@@ -586,6 +600,9 @@ class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         JSON_TYPE, nullable=True
     )
     factual_accuracy_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    value_escalations: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"), nullable=True
+    )
     source_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     citation_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     style_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)

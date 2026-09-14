@@ -281,13 +281,14 @@ Source independence is often heuristic. The system must not claim statistical in
 
 # 8. Claim Extraction Requirements
 
-Claim extraction prompt v2 / `claim-extraction-methodology-v2` classifies each atomic
+Claim extraction prompt v3 / `claim-extraction-methodology-v3` classifies each atomic
 proposition with closed ClaimSemanticType and ClaimSemanticState (see canonical
 contracts), never verification status or a verdict. Extraction operation identity
 binds exact source/story context, methodology, prompt ID/version/checksum and
-`claim-semantics-policy-v1`. Historical v1 completion cannot satisfy v2.
+`claim-semantics-policy-v1` and `value-integrity-policy-v1`. Historical v1/v2 completion
+cannot satisfy current v3 extraction.
 New classification retains the extraction AIRun. Reused unclassified claims may
-receive semantics only from actual v2 output; current-policy matching classifications
+receive semantics only from actual current extraction output; matching classifications
 are reused, and conflicts fail closed (`CLAIM_SEMANTICS_CONFLICT`). Verification
 status and historical legacy claim_type are not rewritten. Fact Sheet generation
 copies current durable classification, including policy and AIRun provenance;
@@ -1077,3 +1078,21 @@ Breaking news gets higher priority, not lower standards.
 Historical questions preserve separate evidence domains.
 Research exhaustion must not manufacture certainty.
 ```
+
+---
+
+## Current value annotation boundary
+
+Claim extraction prompt v3 / claim-extraction-methodology-v3 requires value_candidates
+on every atomic claim ([] is an evaluated empty set; missing is invalid).
+Each bounded source_text must occur mechanically in claim_text and canonical annotations
+must agree with the supported exact expression grammar. Unsupported expressions require
+EXACT_COPY_ONLY, never guessed semantics. AI annotates propositions, not truth/evidence.
+The application assigns deterministic UUID anchors from Claim identity and ordered material.
+Extraction identity binds exact source context, both semantic/value policies, methodology,
+and prompt ID/version/checksum. A PR3-only v2 result cannot complete current extraction.
+Actual v3 extraction may attach values to unclassified reused Claims, preserving existing
+verification and PR3 provenance. Equivalent canonical value multisets reuse existing anchors;
+conflicting current values fail closed without overwrite.
+Current Fact Sheet generation copies complete evaluated values and AIRun provenance,
+including []; it neither classifies, calculates nor changes historical snapshots.

@@ -14,10 +14,12 @@ from news_ai_domain import (
     ReviewState,
     RiskLevel,
 )
+from news_ai_domain.values import ClaimValues
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .certainty import ClaimPresentation
 from .claim_semantics import ClaimSemanticPresentation
+from .values import ClaimValuePresentation
 
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
@@ -53,6 +55,7 @@ class BriefClaim(BaseModel):
     fact_check_id: UUID
     label: FactCheckLabel
     semantics: ClaimSemantics | None = None
+    values: ClaimValues | None = None
     confidence_score: float | None = Field(default=None, ge=0, le=1)
     evidence_ids: tuple[UUID, ...] = ()
     evidence_excerpts: tuple[str, ...] = ()
@@ -118,6 +121,7 @@ class ContentGenerationOutput(BaseModel):
 
     claim_presentations: tuple[ClaimPresentation, ...] = Field(min_length=1)
     claim_semantic_presentations: tuple[ClaimSemanticPresentation, ...] = Field(min_length=1)
+    claim_value_presentations: tuple[ClaimValuePresentation, ...] = Field(max_length=1000)
 
     @field_validator("language")
     @classmethod
@@ -162,6 +166,9 @@ class ContentGenerationOutput(BaseModel):
             ],
             "claim_semantic_presentations": [
                 item.model_dump(mode="json") for item in self.claim_semantic_presentations
+            ],
+            "claim_value_presentations": [
+                item.model_dump(mode="json") for item in self.claim_value_presentations
             ],
         }
 
@@ -214,6 +221,7 @@ class ContentVariantArtifact(BaseModel):
     source_ids_used: tuple[UUID, ...]
     claim_presentations: tuple[ClaimPresentation, ...] | None = None
     claim_semantic_presentations: tuple[ClaimSemanticPresentation, ...] | None = None
+    claim_value_presentations: tuple[ClaimValuePresentation, ...] | None = None
     risk_level: RiskLevel
     sensitive_topics: tuple[str, ...]
     review_state: ReviewState

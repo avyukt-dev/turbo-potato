@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ClaimVerificationStatus
+from news_ai_domain.values import VALUE_INTEGRITY_POLICY_VERSION
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_evidence import FactSheetArtifact
 
@@ -28,6 +29,8 @@ def build_editorial_brief(
         ):
             raise ValueError("CLAIM_SEMANTICS_MISSING")
         check = checks.get(claim.claim_id)
+        if claim.values is None or claim.values.policy_version != VALUE_INTEGRITY_POLICY_VERSION:
+            raise ValueError("CLAIM_VALUES_MISSING")
         if check is None:
             raise ValueError("Fact Sheet claim is missing its FactCheck snapshot")
         excerpts = tuple(
@@ -43,6 +46,7 @@ def build_editorial_brief(
                 fact_check_id=check.fact_check_id,
                 label=check.label,
                 semantics=claim.semantics,
+                values=claim.values,
                 confidence_score=check.confidence_score,
                 evidence_ids=claim.evidence_ids,
                 evidence_excerpts=excerpts,

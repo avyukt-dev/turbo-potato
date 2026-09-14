@@ -28,6 +28,7 @@ from news_ai_domain import (
     ReviewState,
     RiskLevel,
 )
+from news_ai_domain.values import VALUE_INTEGRITY_POLICY_VERSION, ClaimValues
 from news_ai_events import (
     EventEnvelope,
     EventType,
@@ -60,6 +61,7 @@ class FactSheetClaimSnapshot(BaseModel):
     claim_text: str
     claim_type: str
     semantics: ClaimSemantics | None = None
+    values: ClaimValues | None = None
     status: ClaimVerificationStatus
     confidence_score: float | None = None
     importance_score: float | None = None
@@ -470,6 +472,12 @@ class FactSheetGenerator:
                 or claim.semantic_ai_run_id is None
             ):
                 raise PermanentEventError("CLAIM_SEMANTICS_MISSING")
+            if (
+                claim.value_anchors is None
+                or claim.value_policy_version != VALUE_INTEGRITY_POLICY_VERSION
+                or claim.value_ai_run_id is None
+            ):
+                raise PermanentEventError("CLAIM_VALUES_MISSING")
             claim_links = links_by_claim.get(claim.id, [])
             all_evidence = tuple(link.evidence_id for link in claim_links)
             contradictory = tuple(
@@ -490,6 +498,11 @@ class FactSheetGenerator:
                         ai_run_id=claim.semantic_ai_run_id,
                     ),
                     status=claim.status,
+                    values=ClaimValues(
+                        policy_version=claim.value_policy_version,
+                        anchors=claim.value_anchors,
+                        ai_run_id=claim.value_ai_run_id,
+                    ),
                     confidence_score=_decimal_float(claim.confidence_score),
                     importance_score=_decimal_float(claim.importance_score),
                     risk_level=claim.risk_level,

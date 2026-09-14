@@ -574,11 +574,11 @@ Each variant may change length and presentation, but not factual status.
 
 # 27. Quality Gate
 
-Current content methodology v3/prompt v3 carries exact immutable claim semantics
+Current content methodology v4/prompt v4 carries exact immutable claim semantics
 through BriefClaim and a separate ClaimSemanticPresentation per used claim.
 `claim-semantics-policy-v1` forbids type/state reinterpretation: a supported
 POLICY_COMMITMENT/ANNOUNCED is confidently an announcement, not an implemented EVENT.
-Quality methodology v6/prompt v3 and semantic-validator-v3 revalidate metadata and
+Quality methodology v7/prompt v4 and semantic-validator-v4 revalidate metadata and
 record separate prose claim_semantic_escalations. Any deterministic ERROR or valid
 AI escalation fails quality. No deterministic prose-state understanding is claimed.
 Historical snapshots remain readable; absent current semantics require regeneration
@@ -601,14 +601,14 @@ sensitive-topic errors
 
 Quality pass does not equal publication approval in the MVP.
 
-The quality-domain `semantic-validator-v3` checks explicit reference ownership,
+The quality-domain `semantic-validator-v4` checks explicit reference ownership,
 relation roles, duplicate references, claim temporal bounds, and quoted spans.
 EditorialBrief claim/FactCheck references and copied factual status/label/text must
 agree with the exact Fact Sheet; this is structured-copy integrity, not analysis of
 prose certainty or stronger/weaker wording. It also revalidates typed claim
 presentations against the exact Fact Sheet using `certainty-policy-v1`.
 
-Content generation methodology v3 uses content prompt v3 and requires one typed
+Content generation methodology v4 uses content prompt v4 and requires one typed
 presentation per used claim. Accepted status/label pairs and ceilings are:
 
 | Status | Label | Maximum strength | Frames |
@@ -623,8 +623,8 @@ All other pairs, including every UNASSESSED pair, fail closed under `certainty-p
 Canonical enum values not emitted by the current deterministic FactCheckEngine receive no
 downstream certainty semantics until an explicitly versioned producer/policy change.
 Enum membership is not authorization to upgrade status. No prose classifier or new claim
-taxonomy is inferred by the certainty firewall. Quality methodology v6 independently
-checks these immutable inputs and uses quality prompt v3 for typed prose `certainty_escalations`.
+taxonomy is inferred by the certainty firewall. Quality methodology v7 independently
+checks these immutable inputs and uses quality prompt v4 for typed prose `certainty_escalations`.
 Any escalation or deterministic ERROR fails quality; AI cannot override it.
 Historical artifacts remain unchanged; missing presentation metadata requires
 regeneration before a new current quality assessment can proceed.
@@ -634,7 +634,7 @@ evidence excerpts can supply a quote (evidence provenance is preferred). Headlin
 summary, unrelated claims, and unrelated evidence cannot launder a quotation.
 Case and punctuation remain significant; paraphrases in quotation marks fail.
 
-Quality methodology v6 includes this report alongside the existing AIRouter
+Quality methodology v7 includes this report alongside the existing AIRouter
 assessment. Semantic ERROR findings cannot be overridden by AI and leave content
 NOT_READY. Findings, source-span matches, and check counts are durable and typed.
 The report does not infer prose stance, independent sources, dependencies, or
@@ -751,3 +751,23 @@ This document owns editorial behavior, prioritization, content policy, risk rout
 `SOCIAL_PUBLISHING.md` owns platform execution.
 
 No document should redefine another document's owned concepts with alternate semantics.
+
+---
+
+## Exact factual value preservation
+
+Content methodology v4/prompt v4 preserves exact supplied anchors under
+value-integrity-policy-v1. No new totals, differences, averages, rates or FX facts.
+Scale formatting uses exact normalized absolute amounts (thousand, million, billion,
+trillion, lakh, crore). Units convert only through application registry:
+seconds/minutes/hours/days/weeks; mm/cm/m/km; mg/g/kg/metric tonnes.
+Months/years are not fixed days. No dimension laundering, tolerance or unsupported factors.
+Temporal precision, known/unknown timezone, approximation and bounds remain unchanged.
+EXACT_COPY_ONLY values cannot acquire specificity or formatting/conversion semantics.
+
+Quality methodology v7/prompt v4 and semantic-validator-v4 independently revalidate
+exact persisted declarations. VALUE_INTEGRITY ERRORs fail quality; warnings alone do not.
+AI still runs for diagnosis and reports separate value_escalations over prose;
+any validated escalation also fails quality. Neither layer changes factual truth or approves.
+Historical artifacts remain immutable; missing current values require re-extraction/regeneration.
+Human review exposes exact anchors, presentations and deterministic/AI findings without recomputation.

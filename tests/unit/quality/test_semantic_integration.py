@@ -36,7 +36,7 @@ def check_semantic_error(factory):
     with factory() as session:
         check = session.scalar(select(ContentQualityCheck))
         assert check.semantic_validation_passed is False
-        assert check.semantic_methodology_version == "semantic-validator-v3"
+        assert check.semantic_methodology_version == "semantic-validator-v4"
         assert SemanticValidationReport.model_validate(check.semantic_findings) == report
         assert check.factual_accuracy_passed is True  # AI cannot override semantic failure.
         assert session.get(ContentVariant, variant_id).review_state == ReviewState.NOT_READY
@@ -78,7 +78,7 @@ def test_semantic_methodology_version_invalidates_existing_result():
     event, _, _ = _seed(factory)
     service = _service(QualityAI())
     before, first = _run(factory, service, event)
-    service.semantic_validator.methodology_version = "semantic-validator-v4"
+    service.semantic_validator.methodology_version = "semantic-validator-v5"
     after, second = _run(factory, service, event)
     assert first.created and second.created
     assert before.event_semantic_key != after.event_semantic_key

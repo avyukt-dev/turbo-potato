@@ -206,7 +206,7 @@ vocabulary), and optional ai_run_id. Absent means historical/unclassified, not a
 default state. Current Fact Sheets and briefs require current-policy semantics.
 BriefClaim copies this exact immutable block without classification.
 
-Content-generation v3 adds required frozen `ClaimSemanticPresentation` entries:
+Content-generation v4 adds required frozen `ClaimSemanticPresentation` entries:
 claim_id, source_semantic_type, source_semantic_state, presented_semantic_type,
 presented_semantic_state. Exactly one per used claim; the claim union still equals
 slides and PR2 claim_presentations. Policy v1 requires both source copies and both
@@ -214,7 +214,7 @@ presented values to match the exact immutable block. These declarations live ins
 structured_payload and the reviewed content hash. Historical artifacts may omit them
 for reading, but cannot receive a fabricated current quality pass.
 
-Quality prompt v3 additionally requires bounded `claim_semantic_escalations`,
+Quality prompt v4 additionally requires bounded `claim_semantic_escalations`,
 separate from certainty_escalations: claim_id, artifact_path (title/caption/zero-based
 slide heading/body), closed reason_code: ANNOUNCEMENT_AS_COMPLETED, PLAN_AS_COMPLETED,
 EXPECTATION_AS_OBSERVED, PREDICTION_AS_OUTCOME, ATTRIBUTION_DROPPED, SEMANTIC_TYPE_RECAST.
@@ -431,9 +431,10 @@ class ContentVariant(BaseModel):
     claim_ids_used: list[UUID] = Field(default_factory=list)
     source_ids_used: list[UUID] = Field(default_factory=list)
 
-    # Required on new content-generation v3 output; stored in structured_payload.
+    # Required on new content-generation v4 output; stored in structured_payload.
     claim_presentations: list[ClaimPresentation]
     claim_semantic_presentations: list[ClaimSemanticPresentation]
+    claim_value_presentations: list[ClaimValuePresentation]
 
     risk_level: RiskLevel
     sensitive_topics: list[str] = Field(default_factory=list)
@@ -597,6 +598,7 @@ class QualityCheck(BaseModel):
     review_required: bool
     notes: list[str] = Field(default_factory=list)
     certainty_escalations: list[CertaintyEscalation] | None = None
+    value_escalations: list[ValueEscalation] | None = None
 ```
 
 For the MVP, `review_required` remains true for any content intended for external publication. A quality pass does not authorize publication.
@@ -606,7 +608,7 @@ Application-owned deterministic quality uses frozen `SemanticFinding` and
 closed code/category/severity enums, bounded diagnostic locations and canonical
 claim/evidence/source IDs; arbitrary provider metadata is not accepted. Categories
 are QUOTE_INTEGRITY, REFERENCE_INTEGRITY, STANCE_CONSISTENCY, CHRONOLOGY, DEPENDENCY,
-DUPLICATE, CATEGORICAL_ASSERTION, and CERTAINTY. ERROR findings fail semantic validation;
+DUPLICATE, CATEGORICAL_ASSERTION, CERTAINTY, CLAIM_SEMANTICS, and VALUE_INTEGRITY. ERROR findings fail semantic validation;
 warnings are auditable without independently failing otherwise-valid quality.
 Stable ordering and deduplication make report serialization deterministic.
 
@@ -614,7 +616,7 @@ Quote matches record generated offsets and mechanically normalized source offset
 with claim/evidence/source identity, without copying source text into diagnostics.
 Dependency checks remain empty until a canonical explicit dependency input exists.
 
-Content-generation v3 requires frozen `ClaimPresentation` records, exactly one per
+Content-generation v4 requires frozen `ClaimPresentation` records, exactly one per
 `claim_ids_used`: claim_id, source_status, source_fact_check_label,
 assertion_strength (HIGH/MEDIUM/LOW/NONE), frame
 (DIRECT/QUALIFIED/DISPUTED/UNCERTAIN/REFUTATION). They are stored inside the immutable
@@ -778,3 +780,33 @@ Quality pass != publication approval.
 All external MVP publication requires explicit human approval.
 Schemas remain OS/platform/service-manager independent.
 ```
+
+---
+
+## Value contracts and presentations
+
+Frozen extra-forbid domain contracts use a discriminated CanonicalValue union:
+numeric quantities (NUMBER/PERCENT/PERCENTAGE_POINT), currency, duration, measurement,
+date, time, aware datetime, or EXACT_COPY_ONLY retaining value_kind.
+Quantity has relation, exact Decimal amount and optional upper only for increasing ranges.
+ClaimValueCandidate has bounded source_text/value; ClaimValueAnchor adds application-owned UUID.
+ClaimValues contains policy_version, unique anchors and optional snapshot AIRun reference.
+Current FactSheetClaimSnapshot and BriefClaim copy this exact values block; historical absence
+is readable but cannot satisfy current generation or quality.
+
+Content prompt v4 requires claim_value_presentations, possibly empty. Each frozen
+ClaimValuePresentation has claim_id, anchor_id, occurrences. Exactly one record covers
+every anchor of every used claim, including omitted anchors (occurrences=[]).
+ClaimValueOccurrence has artifact_path, bounded nonblank rendered_text, presented_value,
+and EXACT/FORMAT_EQUIVALENT/EXACT_UNIT_CONVERSION/TIMEZONE_EQUIVALENT transformation.
+Paths title/caption/zero-based slide heading/body must exist, rendered text must occur
+mechanically there, and slide claim ownership must match. All declarations live inside
+ContentVariant structured_payload and therefore the exact reviewed artifact hash.
+Current quality independently validates against both immutable Fact Sheet and Brief.
+
+Required value_escalations are bounded unique typed AI findings: claim_id, anchor_id,
+artifact_path, reason_code. Only UNDECLARED_VALUE may omit the anchor; otherwise it must
+resolve to the used claim. Codes: PROSE_VALUE_MISMATCH, MAGNITUDE_MISMATCH,
+PERCENTAGE_POINT_CONFUSION, RANGE_OR_BOUND_LOST, APPROXIMATION_LOST, CURRENCY_MISMATCH,
+DATE_TIME_MISMATCH, UNIT_MISMATCH, UNDECLARED_VALUE, DERIVED_VALUE_NOT_SUPPORTED.
+They augment, never reinterpret, incorrect_numbers/incorrect_dates.

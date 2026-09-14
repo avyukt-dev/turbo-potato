@@ -3,8 +3,8 @@ stage_id: claim-extraction
 task_type: CLAIM_EXTRACTION
 prompt:
   prompt_id: claim-extraction
-  version: v2
-  path: prompts/claim-extraction/v2.txt
+  version: v3
+  path: prompts/claim-extraction/v3.txt
 providers:
   - provider_id: groq
     model: openai/gpt-oss-120b

@@ -530,7 +530,7 @@ def test_reconciled_content_request_leaves_semantic_identity_to_normal_worker():
     # A changed methodology is a legitimate distinct operation, owned exclusively
     # by the content service, even though the referenced Fact Sheet is identical.
     content_service.style = content_service.style.model_copy(
-        update={"methodology_version": "content-generation-methodology-v4"}
+        update={"methodology_version": "content-generation-methodology-v5"}
     )
     reconciler, publisher, _ = service(db)
     report = run(
