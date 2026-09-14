@@ -34,6 +34,46 @@ def test_values_required_and_span_bound():
         ClaimExtractionOutput.model_validate({"claims": [item("The convoy travelled 15 km.", "5")]})
 
 
+def test_numeric_percent_uses_kind_discriminator():
+    claim = _claim("Annual retail inflation rose to 4.82% in August 2026.")
+    claim["value_candidates"] = [
+        {
+            "source_text": "4.82%",
+            "value": {
+                "kind": "PERCENT",
+                "quantity": {"relation": "EXACT", "amount": "4.82", "upper": None},
+            },
+        }
+    ]
+
+    output = ClaimExtractionOutput.model_validate({"claims": [claim]})
+    candidate = output.claims[0].value_candidates[0]
+
+    assert candidate.model_dump(mode="json") == {
+        "source_text": "4.82%",
+        "value": {
+            "kind": "PERCENT",
+            "quantity": {"relation": "EXACT", "amount": "4.82", "upper": None},
+        },
+    }
+
+
+def test_numeric_value_kind_cannot_replace_kind_discriminator():
+    claim = _claim("Annual retail inflation rose to 4.82% in August 2026.")
+    claim["value_candidates"] = [
+        {
+            "source_text": "4.82%",
+            "value": {
+                "value_kind": "PERCENT",
+                "quantity": {"relation": "EXACT", "amount": "4.82", "upper": None},
+            },
+        }
+    ]
+
+    with pytest.raises(ValidationError):
+        ClaimExtractionOutput.model_validate({"claims": [claim]})
+
+
 def test_exact_copy_only_uses_kind_discriminator():
     claim = _claim("The project cost $5 million.")
     claim["value_candidates"] = [
