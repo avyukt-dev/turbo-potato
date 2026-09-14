@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from typing import Any
 
 import pytest
 from news_ai_ai import (
@@ -13,12 +14,12 @@ from news_ai_ai import (
 )
 
 
-def _payload(claim_count: int = 6) -> dict[str, object]:
-    claims: list[dict[str, object]] = []
-    brief_claims: list[dict[str, object]] = []
-    checks: list[dict[str, object]] = []
-    evidence: list[dict[str, object]] = []
-    sources: list[dict[str, object]] = []
+def _payload(claim_count: int = 6) -> dict[str, Any]:
+    claims: list[dict[str, Any]] = []
+    brief_claims: list[dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
 
     for index in range(claim_count):
         claim_id = f"claim-{index}"
@@ -26,6 +27,7 @@ def _payload(claim_count: int = 6) -> dict[str, object]:
         contradicting_id = f"evidence-{index}-contradict"
         support_source = f"source-{index}-support"
         contradict_source = f"source-{index}-contradict"
+        amount = f"{index + 4}.82"
         semantics = {
             "policy_version": "claim-semantics-policy-v1",
             "semantic_type": "QUANTITATIVE",
@@ -36,12 +38,12 @@ def _payload(claim_count: int = 6) -> dict[str, object]:
             "anchors": [
                 {
                     "anchor_id": f"anchor-{index}",
-                    "source_text": f"{4.82 + index}%",
+                    "source_text": f"{amount}%",
                     "value": {
                         "kind": "PERCENT",
                         "quantity": {
                             "relation": "EXACT",
-                            "amount": str(4.82 + index),
+                            "amount": amount,
                             "upper": None,
                         },
                     },
@@ -241,52 +243,53 @@ def _payload(claim_count: int = 6) -> dict[str, object]:
     }
 
 
-def _quality_payload() -> dict[str, object]:
+def _quality_payload(*, include_media_provenance: bool = False) -> dict[str, Any]:
     payload = _payload()
     selected_claim_ids = {"claim-1", "claim-4"}
-    evidence = payload["immutable_fact_sheet"]["evidence"]  # type: ignore[index]
+    evidence = payload["immutable_fact_sheet"]["evidence"]
     source_ids = [
-        item["source_id"]
-        for item in evidence  # type: ignore[union-attr]
-        if item["claim_id"] in selected_claim_ids
+        item["source_id"] for item in evidence if item["claim_id"] in selected_claim_ids
     ]
+    artifact = {
+        "content_variant_id": "variant-1",
+        "content_variant_version": 2,
+        "platform": "INSTAGRAM",
+        "format": "CAROUSEL",
+        "language": "en",
+        "title": "What the data shows",
+        "body": "Derived body retained for exact quality review " + "b" * 4000,
+        "caption": "The figures rose, with uncertainty preserved.",
+        "structured_payload": {
+            "slides": [
+                {
+                    "position": 1,
+                    "heading": "Measured change",
+                    "body": "The reported percentage rose.",
+                    "claim_ids": sorted(selected_claim_ids),
+                },
+                {
+                    "position": 2,
+                    "heading": "Context",
+                    "body": "The policy consequence remains uncertain.",
+                    "claim_ids": sorted(selected_claim_ids),
+                },
+            ],
+            "hashtags": [],
+            "claim_ids_used": sorted(selected_claim_ids),
+            "claim_presentations": [],
+            "claim_semantic_presentations": [],
+            "claim_value_presentations": [],
+        },
+        "claim_ids_used": sorted(selected_claim_ids),
+        "source_ids_used": source_ids,
+        "media_asset_ids": ["media-1", "media-2"],
+    }
+    if include_media_provenance:
+        artifact["media_provenance"] = [{"id": "media-1", "opaque": "m" * 4000}]
+
     payload.update(
         {
-            "content_artifact": {
-                "content_variant_id": "variant-1",
-                "content_variant_version": 2,
-                "platform": "INSTAGRAM",
-                "format": "CAROUSEL",
-                "language": "en",
-                "title": "What the data shows",
-                "body": "Duplicated derived body " + "b" * 4000,
-                "caption": "The figures rose, with uncertainty preserved.",
-                "structured_payload": {
-                    "slides": [
-                        {
-                            "position": 1,
-                            "heading": "Measured change",
-                            "body": "The reported percentage rose.",
-                            "claim_ids": sorted(selected_claim_ids),
-                        },
-                        {
-                            "position": 2,
-                            "heading": "Context",
-                            "body": "The policy consequence remains uncertain.",
-                            "claim_ids": sorted(selected_claim_ids),
-                        },
-                    ],
-                    "hashtags": [],
-                    "claim_ids_used": sorted(selected_claim_ids),
-                    "claim_presentations": [],
-                    "claim_semantic_presentations": [],
-                    "claim_value_presentations": [],
-                },
-                "claim_ids_used": sorted(selected_claim_ids),
-                "source_ids_used": source_ids,
-                "media_asset_ids": ["media-1", "media-2"],
-                "media_provenance": [{"id": "media-1", "opaque": "m" * 4000}],
-            },
+            "content_artifact": artifact,
             "risk_level": "LOW",
             "sensitive_topics": [],
             "content_style": {"tone": "measured"},
@@ -318,19 +321,24 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
     assert [item["claim_id"] for item in brief["claims"]] == [
         f"claim-{index}" for index in range(6)
     ]
-    assert fact_sheet["claims"][0]["semantics"] == snapshot["immutable_fact_sheet"]["claims"][0][
-        "semantics"
+    assert fact_sheet["claims"][0]["semantics"] == snapshot["immutable_fact_sheet"][
+        "claims"
+    ][0]["semantics"]
+    assert fact_sheet["claims"][0]["values"] == snapshot["immutable_fact_sheet"][
+        "claims"
+    ][0]["values"]
+    assert fact_sheet["claims"][0]["contradictory_evidence_ids"] == [
+        "evidence-0-contradict"
     ]
-    assert fact_sheet["claims"][0]["values"] == snapshot["immutable_fact_sheet"]["claims"][0][
-        "values"
-    ]
-    assert fact_sheet["claims"][0]["contradictory_evidence_ids"] == ["evidence-0-contradict"]
     assert {item["relation"] for item in fact_sheet["evidence"]} == {
         "DIRECT_SUPPORT",
         "CONTRADICTS",
     }
+    assert fact_sheet["locations"] == ["India"]
+    assert fact_sheet["context"] == ["Monthly inflation release"]
     assert "text" not in brief["claims"][0]
     assert "evidence_excerpts" not in brief["claims"][0]
+    assert "human_review_required" not in brief
     assert "url" not in fact_sheet["evidence"][0]
     assert "content_hash" not in fact_sheet["evidence"][0]
     assert "graph_relations" not in fact_sheet["evidence"][0]
@@ -350,24 +358,38 @@ def test_quality_projection_scopes_fact_boundary_to_exact_used_claims_and_source
     assert {item["claim_id"] for item in fact_sheet["fact_checks"]} == {"claim-1", "claim-4"}
     assert {item["claim_id"] for item in fact_sheet["evidence"]} == {"claim-1", "claim-4"}
     assert {item["source_id"] for item in fact_sheet["sources"]} == set(
-        original["content_artifact"]["source_ids_used"]  # type: ignore[index]
+        original["content_artifact"]["source_ids_used"]
     )
-    assert "body" not in artifact
-    assert "media_asset_ids" not in artifact
-    assert "media_provenance" not in artifact
-    assert artifact["structured_payload"] == original["content_artifact"]["structured_payload"]  # type: ignore[index]
+    assert artifact == original["content_artifact"]
     assert fact_sheet["locations"] == ["India"]
     assert fact_sheet["context"] == ["Monthly inflation release"]
 
 
-def test_projection_fails_closed_for_identity_and_source_provenance_mismatches() -> None:
+def test_quality_projection_defensively_removes_media_provenance_only() -> None:
+    original = _quality_payload(include_media_provenance=True)
+    original_artifact = deepcopy(original["content_artifact"])
+
+    projected = project_ai_input(AITaskType.QUALITY_CHECKING.value, original)
+
+    artifact = projected["content_artifact"]
+    assert "media_provenance" not in artifact
+    original_artifact.pop("media_provenance")
+    assert artifact == original_artifact
+
+
+def test_projection_fails_closed_for_identity_claim_and_source_mismatches() -> None:
     content = _payload()
-    content["editorial_brief"]["fact_sheet_version"] = 99  # type: ignore[index]
+    content["editorial_brief"]["fact_sheet_version"] = 99
     with pytest.raises(AIInputProjectionError, match="identity do not match"):
         project_ai_input(AITaskType.CONTENT_GENERATION.value, content)
 
     quality = _quality_payload()
-    quality["content_artifact"]["source_ids_used"] = ["source-not-owned"]  # type: ignore[index]
+    quality["content_artifact"]["claim_ids_used"] = ["claim-not-known"]
+    with pytest.raises(AIInputProjectionError, match="unknown claim"):
+        project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
+
+    quality = _quality_payload()
+    quality["content_artifact"]["source_ids_used"] = ["source-not-owned"]
     with pytest.raises(AIInputProjectionError, match="source provenance"):
         project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
 
@@ -380,11 +402,11 @@ def test_projection_is_deterministic_and_materially_smaller_for_e2e_shaped_input
     assert json.dumps(first, sort_keys=True, default=str) == json.dumps(
         second, sort_keys=True, default=str
     )
-    assert _encoded_size(first) < _encoded_size(content) * 0.55
+    assert _encoded_size(first) < _encoded_size(content) * 0.65
 
     quality = _quality_payload()
     compact_quality = project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
-    assert _encoded_size(compact_quality) < _encoded_size(quality) * 0.45
+    assert _encoded_size(compact_quality) < _encoded_size(quality) * 0.60
 
 
 def test_ai_request_applies_projection_without_changing_canonical_input_hash() -> None:
@@ -398,8 +420,13 @@ def test_ai_request_applies_projection_without_changing_canonical_input_hash() -
 
     assert request.input_hash == "canonical-full-context-hash"
     assert request.metadata["input_projection_version"] == AI_INPUT_PROJECTION_VERSION
-    assert _encoded_size(request.input) < _encoded_size(payload) * 0.55
+    assert _encoded_size(request.input) < _encoded_size(payload) * 0.65
     assert "url" not in request.input["immutable_fact_sheet"]["evidence"][0]
+
+    reconstructed = AIRequest.model_validate(request.model_dump(mode="python"))
+    assert reconstructed.input == request.input
+    assert reconstructed.input_hash == request.input_hash
+    assert reconstructed.metadata == request.metadata
 
 
 def test_generic_requests_for_content_stages_remain_unchanged() -> None:
