@@ -94,9 +94,7 @@ def _project_quality_checking(payload: dict[str, Any]) -> dict[str, Any]:
     expected_source_ids = frozenset(
         str(item["source_id"])
         for raw in evidence
-        if str(
-            _required((item := _mapping(raw, "Fact Sheet evidence item")), "claim_id")
-        )
+        if str(_required((item := _mapping(raw, "Fact Sheet evidence item")), "claim_id"))
         in selected_claim_ids
         and item.get("source_id") is not None
     )
@@ -194,9 +192,7 @@ def _project_fact_sheet(
     )
 
 
-def _project_brief(
-    brief: dict[str, Any], *, selected_claim_ids: frozenset[str]
-) -> dict[str, Any]:
+def _project_brief(brief: dict[str, Any], *, selected_claim_ids: frozenset[str]) -> dict[str, Any]:
     claims = [
         _pick(
             item,
@@ -316,10 +312,8 @@ def _project_content_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 def _require_same_identity(fact_sheet: dict[str, Any], brief: dict[str, Any]) -> None:
     if (
         str(_required(fact_sheet, "story_id")) != str(_required(brief, "story_id"))
-        or str(_required(fact_sheet, "fact_sheet_id"))
-        != str(_required(brief, "fact_sheet_id"))
-        or int(_required(fact_sheet, "version"))
-        != int(_required(brief, "fact_sheet_version"))
+        or str(_required(fact_sheet, "fact_sheet_id")) != str(_required(brief, "fact_sheet_id"))
+        or int(_required(fact_sheet, "version")) != int(_required(brief, "fact_sheet_version"))
     ):
         raise AIInputProjectionError("Fact Sheet and Editorial Brief identity do not match")
 
