@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIFailureReason,
     AIInvalidResponseError,
     AIRequest,
@@ -20,11 +21,13 @@ from news_ai_ai import (
     AIRoutingExecutionError,
     AITaskType,
     PromptReference,
+    escalate_reasoning_for_validation,
 )
 from news_ai_content import ContentGenerationOutput, EditorialBrief, content_artifact_hash
 from news_ai_content.certainty import CERTAINTY_POLICY_VERSION
 from news_ai_content.integrity import quality_artifact
 from news_ai_content.media import MediaNotAttachedError, MediaValidationError
+from news_ai_content.reasoning import editorial_reasoning_decision
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -354,6 +357,7 @@ class QualityAssessmentService:
                 "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "semantic_inputs": fact_sheet,
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -410,6 +414,7 @@ class QualityAssessmentService:
         self, context: QualityContext, event: EventEnvelope
     ) -> tuple[QualityExecution, ...]:
         results: list[QualityExecution] = []
+        brief = EditorialBrief.model_validate(context.editorial_brief)
         for variant in context.variants:
             parsed: QualityAssessmentOutput | None = None
 
@@ -465,6 +470,13 @@ class QualityAssessmentService:
                     ) from exc
                 parsed = output
 
+            reasoning = editorial_reasoning_decision(
+                brief,
+                claim_ids=tuple(UUID(str(item)) for item in variant.artifact["claim_ids_used"]),
+            )
+            if not variant.semantic_report.passed:
+                reasoning = escalate_reasoning_for_validation(reasoning)
+
             request = AIRequest(
                 task_type=AITaskType.QUALITY_CHECKING,
                 system_prompt=self.prompt.system_prompt,
@@ -489,6 +501,9 @@ class QualityAssessmentService:
                     version=self.prompt.version,
                     checksum=self.prompt.checksum,
                 ),
+                reasoning_effort=reasoning.effort,
+                reasoning_policy_version=reasoning.policy_version,
+                reasoning_reasons=reasoning.reasons,
                 response_format=AIResponseFormat.STRUCTURED,
                 correlation_id=event.correlation_id,
                 language=variant.artifact["language"],

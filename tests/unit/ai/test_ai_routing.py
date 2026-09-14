@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIFailureReason,
     AIInvalidResponseError,
     AIPolicyConfig,
@@ -17,6 +18,7 @@ from news_ai_ai import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
     AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -367,7 +369,15 @@ def test_safe_groq_failures_fallback_to_llama_with_model_and_reasoning_provenanc
     reason: AIFailureReason,
 ) -> None:
     router, groq, local = _groq_router(failure)
-    result = asyncio.run(router.execute(_request(reasoning_effort=AIReasoningEffort.HIGH)))
+    result = asyncio.run(
+        router.execute(
+            _request(
+                reasoning_effort=AIReasoningEffort.HIGH,
+                reasoning_policy_version=REASONING_ROUTING_POLICY_VERSION,
+                reasoning_reasons=(AIReasoningReason.HIGH_RISK,),
+            )
+        )
+    )
     assert groq.requests[0].reasoning_effort is AIReasoningEffort.HIGH
     assert local.requests[0].model == "local-news-ai"
     assert local.requests[0].reasoning_effort is AIReasoningEffort.HIGH

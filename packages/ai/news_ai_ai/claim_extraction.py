@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 
 from .contracts import AIRequest, AIResponse, AIResponseFormat, AITaskType, PromptReference
 from .provider import AIInvalidResponseError
+from .reasoning import REASONING_ROUTING_POLICY_VERSION, select_reasoning_effort
 from .routing import AIRoutedResponse, AIRouter
 
 CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v3"
@@ -234,6 +235,7 @@ class ClaimExtractionService:
             "methodology_version": CLAIM_EXTRACTION_METHODOLOGY_VERSION,
             "semantic_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
             "value_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
+            "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
             "prompt_id": self.prompt.prompt_id,
             "prompt_version": self.prompt.version,
             "prompt_checksum": self.prompt.checksum,
@@ -380,6 +382,7 @@ class ClaimExtractionService:
                     "claim extraction output failed schema validation"
                 ) from exc
 
+        reasoning = select_reasoning_effort()
         request = AIRequest(
             task_type=AITaskType.CLAIM_EXTRACTION,
             system_prompt=self.prompt.system_prompt,
@@ -389,6 +392,9 @@ class ClaimExtractionService:
                 version=self.prompt.version,
                 checksum=self.prompt.checksum,
             ),
+            reasoning_effort=reasoning.effort,
+            reasoning_policy_version=reasoning.policy_version,
+            reasoning_reasons=reasoning.reasons,
             response_format=AIResponseFormat.STRUCTURED,
             correlation_id=triggering_event.correlation_id,
             language=context.language,

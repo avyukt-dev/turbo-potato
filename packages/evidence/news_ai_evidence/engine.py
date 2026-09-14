@@ -12,6 +12,11 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
+    ReasoningDecision,
+    select_reasoning_effort,
+)
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -24,7 +29,7 @@ from news_ai_database import (
     ResearchRunClaim,
     Story,
 )
-from news_ai_domain import ClaimVerificationStatus
+from news_ai_domain import ClaimSemanticType, ClaimVerificationStatus, RiskLevel
 from news_ai_events import ClaimsExtractedV1, EventEnvelope, EventType, parse_event_payload
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -120,6 +125,7 @@ class ResearchCandidate(BaseModel):
     provider_id: str
     retrieved_at: datetime
     result: SearchResult
+    reasoning: ReasoningDecision = Field(default_factory=select_reasoning_effort, exclude=True)
 
 
 class EvidenceAssessmentAIProvenance(BaseModel):
@@ -222,6 +228,7 @@ class ResearchCollection(BaseModel):
 class ResearchCollectionTask:
     plan: ResearchPlan
     claim_texts: dict[UUID, str]
+    reasoning_by_claim: dict[UUID, ReasoningDecision]
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,12 +338,17 @@ class EvidenceEngine:
             triggering_event.payload,
             ClaimsExtractedV1,
         )
+        reasoning_by_claim = {
+            claim.id: _research_reasoning_decision(story, claim) for claim in claims
+        }
         operation_key = semantic_key(
             "research",
             {
                 "methodology_version": self.methodology_version,
                 "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "story_id": story.id,
+                "story_risk_level": story.risk_level.value,
                 "claim_ids": sorted(payload.claim_ids, key=str),
                 "ai_run_id": payload.ai_run_id,
                 "model_id": payload.model_id,
@@ -348,6 +360,11 @@ class EvidenceEngine:
                         "id": claim.id,
                         "text": claim.claim_text,
                         "normalized": claim.normalized_claim,
+                        "risk_level": claim.risk_level.value,
+                        "semantic_type": (
+                            claim.semantic_type.value if claim.semantic_type is not None else None
+                        ),
+                        "reasoning": reasoning_by_claim[claim.id].model_dump(mode="json"),
                         "extraction_context_hash": (claim.claim_metadata or {}).get(
                             "extraction_context_hash"
                         ),
@@ -376,6 +393,11 @@ class EvidenceEngine:
                 "plan": plan.model_dump(mode="json"),
                 "methodology_version": self.methodology_version,
                 "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
+                "reasoning_by_claim": {
+                    str(claim_id): decision.model_dump(mode="json")
+                    for claim_id, decision in reasoning_by_claim.items()
+                },
                 "triggering_event_id": str(triggering_event.event_id),
             },
             semantic_key=operation_key,
@@ -481,6 +503,8 @@ class EvidenceEngine:
             raise ValueError(f"research run is not collectible from status {job.status!r}")
         if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
             raise ValueError("research run requires replanning under current evidence semantics")
+        if job.payload.get("reasoning_policy_version") != REASONING_ROUTING_POLICY_VERSION:
+            raise ValueError("research run requires replanning under current reasoning policy")
         raw_plan = job.payload.get("plan")
         if raw_plan is None:
             raise ValueError("research job is missing persisted plan")
@@ -489,9 +513,27 @@ class EvidenceEngine:
             raise ValueError("research plan id does not match job id")
         self._validate_event_against_plan(event, plan)
         claims = self._load_claims(session, plan.story_id, plan.claim_ids)
+        raw_reasoning = job.payload.get("reasoning_by_claim")
+        if not isinstance(raw_reasoning, dict):
+            raise ValueError("research job is missing claim reasoning provenance")
+        try:
+            reasoning_by_claim = {
+                UUID(str(claim_id)): ReasoningDecision.model_validate(value)
+                for claim_id, value in raw_reasoning.items()
+            }
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise ValueError("research job contains invalid claim reasoning provenance") from exc
+        if set(reasoning_by_claim) != set(plan.claim_ids):
+            raise ValueError("research job reasoning does not cover planned claims")
+        if any(
+            decision.policy_version != REASONING_ROUTING_POLICY_VERSION
+            for decision in reasoning_by_claim.values()
+        ):
+            raise ValueError("research run requires replanning under current reasoning policy")
         return ResearchCollectionTask(
             plan=plan,
             claim_texts={claim.id: claim.claim_text for claim in claims},
+            reasoning_by_claim=reasoning_by_claim,
         )
 
     def collection_currency(
@@ -673,6 +715,7 @@ class EvidenceEngine:
                     provider_id=response.provider_id,
                     retrieved_at=response.retrieved_at,
                     result=result,
+                    reasoning=task.reasoning_by_claim[query.claim_id],
                 )
                 candidates.append(candidate)
                 assessment = await self.assessor.assess(
@@ -713,6 +756,8 @@ class EvidenceEngine:
             raise ValueError(f"research run cannot complete from status {job.status!r}")
         if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
             raise ValueError("research run requires replanning under current evidence semantics")
+        if job.payload.get("reasoning_policy_version") != REASONING_ROUTING_POLICY_VERSION:
+            raise ValueError("research run requires replanning under current reasoning policy")
         self._validate_event_against_plan(event, task.plan)
         currency = self.collection_currency(session, task, lock=True)
         current_claim_ids = currency.current_claim_ids
@@ -915,6 +960,7 @@ class EvidenceEngine:
         job.status = "COMPLETED"
         job.result = {
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+            "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
             "evidence_ids": [str(item) for item in evidence_ids],
             "claim_evidence_count": relation_count,
             "candidate_count": len(collection.candidates),
@@ -1215,6 +1261,21 @@ class EvidenceEngine:
         session.add(run)
         session.flush()
         return run.id
+
+
+def _research_reasoning_decision(story: Story, claim: Claim) -> ReasoningDecision:
+    """Select research effort from durable pre-research risk and claim semantics."""
+
+    high_risk = story.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL} or claim.risk_level in {
+        RiskLevel.HIGH,
+        RiskLevel.CRITICAL,
+    }
+    return select_reasoning_effort(
+        high_risk=high_risk,
+        attribution_or_intent=claim.semantic_type
+        in {ClaimSemanticType.ATTRIBUTION, ClaimSemanticType.POLICY_COMMITMENT},
+        causal_reasoning=claim.semantic_type is ClaimSemanticType.CAUSAL,
+    )
 
 
 def _bounded_query(value: str) -> str:

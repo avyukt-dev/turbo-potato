@@ -213,10 +213,14 @@ latency
 token/usage data where available
 validation status
 failure/fallback state
+reasoning effort
+reasoning policy version
+reasoning escalation reasons where any
 timestamp
 ```
 
-This allows the system to reconstruct which model/prompt produced a Fact Sheet, content variant, or quality assessment.
+This allows the system to reconstruct which model/prompt/reasoning policy produced a Fact Sheet,
+content variant, or quality assessment.
 
 ---
 
@@ -255,20 +259,48 @@ Groq uses one bounded HTTP chat-completions request without SDK dependencies or 
 Only INVALID_RESPONSE, TIMEOUT, RATE_LIMIT, and UNAVAILABLE authorize local fallback;
 policy rejection, unknown failures, and context overflow do not.
 
-`AIRequest.reasoning_effort` is a provider-neutral LOW/MEDIUM/HIGH preference. The current
-stage default is MEDIUM; an explicit request preference overrides it. Groq consumes it,
-while llama.cpp intentionally ignores it without losing fallback eligibility. Attempts retain
-the selected model and effective preference through existing routing-attempt JSON provenance.
-Groq requests `include_reasoning: false`; returned private reasoning fields are not normalized,
-logged, or persisted. Request mapping follows the official
-[Groq reasoning contract](https://console.groq.com/docs/reasoning) and
+`AIRequest.reasoning_effort` is a provider-neutral LOW/MEDIUM/HIGH preference. Current factual
+production stages normally execute at MEDIUM under `reasoning-routing-policy-v1`. LOW remains
+available for explicitly owned routine/constrained tasks. HIGH is never an unexplained stage
+default or model self-assessment: current execution requires deterministic policy provenance.
+The closed HIGH escalation reasons are:
+
+```text
+HIGH_RISK
+ATTRIBUTION_OR_INTENT
+CAUSAL_REASONING
+CREDIBLE_SOURCE_CONFLICT
+VALIDATION_FAILURE
+```
+
+Application-owned durable facts select these reasons. AI output does not authorize source
+authority, independence, claim verification state, evidence truth, or publication. A reasoning
+policy change participates in durable semantic identities where AI output can otherwise be
+reused, and stale in-flight research work fails closed rather than completing under an old
+reasoning policy.
+
+Groq consumes LOW/MEDIUM/HIGH reasoning effort. llama.cpp currently remains reasoning-agnostic
+without losing otherwise-authorized fallback eligibility. Provider capability controls only
+whether a same-provider HIGH retry is useful; it does not control whether the route itself is
+escalated. Every current attempt records effective reasoning effort, policy version, and any
+escalation reasons in routing-attempt provenance. Groq requests `include_reasoning: false`;
+returned private reasoning fields are not normalized, logged, or persisted. Request mapping
+follows the official [Groq reasoning contract](https://console.groq.com/docs/reasoning) and
 [chat-completions API](https://console.groq.com/docs/api-reference).
+
+A MEDIUM response rejected as `INVALID_RESPONSE` by structural/domain validation promotes the
+route exactly once to HIGH with `VALIDATION_FAILURE`. If the current provider honors reasoning
+effort, it receives one same-provider HIGH retry. If it does not, that useless retry is skipped
+and the next policy-authorized fallback receives the already-escalated HIGH request. A HIGH
+response cannot trigger another reasoning escalation. Deterministic validators remain
+operator/application authority regardless of model effort.
 
 Groq receives only existing pipeline context. Built-in browsing, retrieval, and tools are not
 enabled; the Research Engine remains the evidence authority. Prompts and semantic validators
 are shared across providers. The configured credential reference is `GROQ_API_KEY`, never a
-committed key value; missing credentials fail startup/readiness. Adaptive retries/backoff are
-reserved for a later resilience layer.
+committed key value; missing credentials fail startup/readiness. General adaptive retries,
+backoff, and resilience loops remain reserved for a later resilience layer; the single bounded
+MEDIUM-to-HIGH validation escalation above is reasoning-policy behavior, not general retry logic.
 
 Model/provider configuration belongs under:
 
@@ -423,19 +455,28 @@ Raw AI output is untrusted input.
 
 # 15. Structured-Output Failure
 
-Preferred handling:
+Current reasoning-policy handling is bounded and deterministic:
 
 ```text
-invalid output
+MEDIUM output rejected as INVALID_RESPONSE
   ↓
-constrained repair/retry
+route becomes HIGH + VALIDATION_FAILURE
   ↓
-allowed fallback model if necessary
+provider honors reasoning effort? ── yes → one same-provider HIGH retry
+             │
+             no
+             ↓
+       allowed fallback receives HIGH
   ↓
-job failure / human escalation
+success OR normal policy-authorized fallback/failure
+  ↓
+STOP — no HIGH→HIGH reasoning escalation loop
 ```
 
-Malformed output must never enter the next pipeline stage merely because it “looks close enough.”
+Other provider failures continue to use their existing task-specific fallback policy; PR6 does
+not introduce general adaptive retry/backoff. Malformed output must never enter the next pipeline
+stage merely because it “looks close enough,” and HIGH reasoning cannot override deterministic
+validation errors.
 
 ---
 
@@ -935,6 +976,7 @@ Use safe Pydantic defaults in examples.
 Do not assume local hardware acceleration.
 AI service control is runtime-adapter based, not OS-specific.
 Quality pass does not replace human approval in the MVP.
+Reasoning escalation is deterministic, versioned, bounded, and never factual authority.
 ```
 
 ---

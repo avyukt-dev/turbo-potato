@@ -20,6 +20,7 @@ from .configuration import (
 )
 from .contracts import (
     AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -44,6 +45,12 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
     require_provider_compatibility,
+)
+from .reasoning import (
+    REASONING_ROUTING_POLICY_VERSION,
+    ReasoningDecision,
+    escalate_reasoning_for_validation,
+    select_reasoning_effort,
 )
 from .registry import AIProviderNotRegisteredError, AIProviderRegistry
 from .routing import (
@@ -88,6 +95,7 @@ __all__ = [
     "ConfiguredLlamaCppProvider",
     "AIRequest",
     "AIReasoningEffort",
+    "AIReasoningReason",
     "AIResponse",
     "AIResponseFormat",
     "AIRouteAttempt",
@@ -118,11 +126,15 @@ __all__ = [
     "PromptReference",
     "ProviderCapabilities",
     "ProviderLocality",
+    "REASONING_ROUTING_POLICY_VERSION",
+    "ReasoningDecision",
     "StaleStoryContextError",
     "StoryArticleInput",
     "StoryClaimContext",
     "TokenUsage",
+    "escalate_reasoning_for_validation",
     "metadata_contains_secret_key",
     "build_ai_router",
     "require_provider_compatibility",
+    "select_reasoning_effort",
 ]

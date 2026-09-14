@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIContextTooLargeError,
     AIInvalidResponseError,
     AIProviderError,
@@ -14,6 +15,7 @@ from news_ai_ai import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
     AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponseFormat,
     AITaskType,
@@ -37,14 +39,22 @@ def _config() -> GroqProviderConfig:
     return GroqProviderConfig(task_types=ACTIVE_TASKS)
 
 
-def _request(*, structured: bool = True, max_tokens: int | None = None) -> AIRequest:
+def _request(
+    *,
+    structured: bool = True,
+    max_tokens: int | None = None,
+    reasoning_effort: AIReasoningEffort = AIReasoningEffort.MEDIUM,
+    reasoning_reasons: tuple[AIReasoningReason, ...] = (),
+) -> AIRequest:
     return AIRequest(
         task_type=AITaskType.CLAIM_EXTRACTION,
         system_prompt="Extract atomic claims.",
         input={"headline": "Example"},
         response_format=(AIResponseFormat.STRUCTURED if structured else AIResponseFormat.TEXT),
         max_tokens=max_tokens,
-        reasoning_effort=AIReasoningEffort.MEDIUM,
+        reasoning_effort=reasoning_effort,
+        reasoning_policy_version=REASONING_ROUTING_POLICY_VERSION,
+        reasoning_reasons=reasoning_reasons,
     )
 
 
@@ -145,8 +155,11 @@ def test_text_request_uses_explicit_high_and_max_tokens_without_json_format() ->
             assert "response_format" not in payload
             return httpx.Response(200, json=_completion("One claim."))
 
-        request = _request(structured=False, max_tokens=123).model_copy(
-            update={"reasoning_effort": AIReasoningEffort.HIGH}
+        request = _request(
+            structured=False,
+            max_tokens=123,
+            reasoning_effort=AIReasoningEffort.HIGH,
+            reasoning_reasons=(AIReasoningReason.HIGH_RISK,),
         )
         async with _client(handler) as client:
             response = await GroqProvider(_config(), api_key="test-secret", client=client).execute(

@@ -8,9 +8,12 @@ from uuid import uuid4
 
 import pytest
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIFailureReason,
     AIPolicyConfig,
     AIProviderRegistry,
+    AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -24,6 +27,7 @@ from news_ai_ai import (
     AITaskType,
     ProviderCapabilities,
     ProviderLocality,
+    select_reasoning_effort,
 )
 from news_ai_evidence import (
     AIRouterEvidenceAssessor,
@@ -146,6 +150,43 @@ def test_ai_assessor_validates_output_and_preserves_ai_provenance(tmp_path: Path
     assert result.ai_provenance is not None
     assert result.ai_provenance.model_name == "assessment-model-v1"
     assert result.ai_provenance.input_artifact_ids[0] == f"claim:{candidate.claim_id}"
+    request = provider.requests[0]
+    assert request.reasoning_effort is AIReasoningEffort.MEDIUM
+    assert request.reasoning_policy_version == REASONING_ROUTING_POLICY_VERSION
+    assert request.reasoning_reasons == ()
+    assert request.input["reasoning_policy_version"] == REASONING_ROUTING_POLICY_VERSION
+    assert (
+        result.ai_provenance.routing_attempts[0]["reasoning_policy_version"]
+        == REASONING_ROUTING_POLICY_VERSION
+    )
+
+
+def test_ai_assessor_uses_candidate_high_reasoning_decision(tmp_path: Path) -> None:
+    candidate = _candidate().model_copy(
+        update={
+            "reasoning": select_reasoning_effort(
+                high_risk=True,
+                causal_reasoning=True,
+            )
+        }
+    )
+    provider = RecordingProvider(_valid_output(candidate))
+
+    result = asyncio.run(_assessor(tmp_path, provider).assess(candidate, "Level was two metres"))
+
+    assert result is not None and result.ai_provenance is not None
+    request = provider.requests[0]
+    assert request.reasoning_effort is AIReasoningEffort.HIGH
+    assert request.reasoning_policy_version == REASONING_ROUTING_POLICY_VERSION
+    assert request.reasoning_reasons == (
+        AIReasoningReason.HIGH_RISK,
+        AIReasoningReason.CAUSAL_REASONING,
+    )
+    assert result.ai_provenance.routing_attempts[0]["reasoning_effort"] == "high"
+    assert result.ai_provenance.routing_attempts[0]["reasoning_reasons"] == [
+        "HIGH_RISK",
+        "CAUSAL_REASONING",
+    ]
 
 
 @pytest.mark.parametrize(

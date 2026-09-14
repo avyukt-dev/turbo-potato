@@ -96,8 +96,10 @@ class AIRouterEvidenceAssessor:
     async def assess(
         self, candidate: ResearchCandidate, claim_text: str
     ) -> EvidenceAssessment | None:
+        reasoning = candidate.reasoning
         material = {
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+            "reasoning_policy_version": reasoning.policy_version,
             "claim_id": str(candidate.claim_id),
             "claim_text": claim_text,
             "candidate_url": candidate.result.url,
@@ -105,8 +107,12 @@ class AIRouterEvidenceAssessor:
             "candidate_snippet": candidate.result.snippet,
             "candidate_metadata": candidate.result.metadata,
         }
+        input_hash_material = {
+            "input": material,
+            "reasoning": reasoning.model_dump(mode="json"),
+        }
         input_hash = hashlib.sha256(
-            json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(input_hash_material, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         parsed: EvidenceAssessmentOutput | None = None
 
@@ -141,6 +147,9 @@ class AIRouterEvidenceAssessor:
                 version=self.prompt.version,
                 checksum=self.prompt.checksum,
             ),
+            reasoning_effort=reasoning.effort,
+            reasoning_policy_version=reasoning.policy_version,
+            reasoning_reasons=reasoning.reasons,
             response_format=AIResponseFormat.STRUCTURED,
             language=candidate.result.language,
             input_artifact_ids=artifacts,
