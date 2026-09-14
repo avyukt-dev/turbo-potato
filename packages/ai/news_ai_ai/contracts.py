@@ -149,7 +149,10 @@ class AIRequest(BaseModel):
             raise ValueError("reasoning escalation reasons require HIGH effort")
         if self.reasoning_effort is AIReasoningEffort.HIGH and not self.reasoning_reasons:
             raise ValueError("HIGH reasoning requires at least one escalation reason")
-        if self.reasoning_effort is AIReasoningEffort.HIGH and self.reasoning_policy_version is None:
+        if (
+            self.reasoning_effort is AIReasoningEffort.HIGH
+            and self.reasoning_policy_version is None
+        ):
             raise ValueError("HIGH reasoning requires a policy version")
         return self
 
