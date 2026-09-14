@@ -317,9 +317,7 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
         f"claim-{index}" for index in range(6)
     ]
     assert brief["claims"][0]["text"] == snapshot["editorial_brief"]["claims"][0]["text"]
-    assert brief["claims"][0]["semantics"] == snapshot["editorial_brief"]["claims"][0][
-        "semantics"
-    ]
+    assert brief["claims"][0]["semantics"] == snapshot["editorial_brief"]["claims"][0]["semantics"]
     assert brief["claims"][0]["values"] == snapshot["editorial_brief"]["claims"][0]["values"]
     assert brief["claims"][0]["status"] == "SUPPORTED"
     assert brief["claims"][0]["label"] == "TRUE"
