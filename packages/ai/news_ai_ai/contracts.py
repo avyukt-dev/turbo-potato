@@ -47,6 +47,16 @@ class AIReasoningEffort(StrEnum):
     HIGH = "high"
 
 
+class AIReasoningReason(StrEnum):
+    """Deterministic reasons that may escalate factual AI work to HIGH reasoning."""
+
+    HIGH_RISK = "HIGH_RISK"
+    ATTRIBUTION_OR_INTENT = "ATTRIBUTION_OR_INTENT"
+    CAUSAL_REASONING = "CAUSAL_REASONING"
+    CREDIBLE_SOURCE_CONFLICT = "CREDIBLE_SOURCE_CONFLICT"
+    VALIDATION_FAILURE = "VALIDATION_FAILURE"
+
+
 class ProviderLocality(StrEnum):
     LOCAL = "LOCAL"
     CLOUD = "CLOUD"
@@ -79,6 +89,8 @@ class AIRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
     reasoning_effort: AIReasoningEffort | None = None
+    reasoning_policy_version: str | None = Field(default=None, min_length=1, max_length=64)
+    reasoning_reasons: tuple[AIReasoningReason, ...] = ()
     response_format: AIResponseFormat = AIResponseFormat.TEXT
     timeout_seconds: float | None = Field(default=None, gt=0.0, le=600.0)
     priority: int = Field(default=3, ge=1, le=5)
@@ -119,6 +131,23 @@ class AIRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("allowed_providers must be unique")
         return value
+
+    @field_validator("reasoning_reasons")
+    @classmethod
+    def require_unique_reasoning_reasons(
+        cls, value: tuple[AIReasoningReason, ...]
+    ) -> tuple[AIReasoningReason, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("reasoning_reasons must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reasoning_provenance(self) -> AIRequest:
+        if self.reasoning_reasons and self.reasoning_policy_version is None:
+            raise ValueError("reasoning escalation reasons require a policy version")
+        if self.reasoning_reasons and self.reasoning_effort is not AIReasoningEffort.HIGH:
+            raise ValueError("reasoning escalation reasons require HIGH effort")
+        return self
 
 
 class TokenUsage(BaseModel):
@@ -162,6 +191,7 @@ class ProviderCapabilities(BaseModel):
     models: frozenset[ModelId] = frozenset()
     supports_vision: bool = False
     supports_tools: bool = False
+    honors_reasoning_effort: bool = False
     max_context_tokens: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
