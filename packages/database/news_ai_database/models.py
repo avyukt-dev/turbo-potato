@@ -548,6 +548,9 @@ class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     semantic_validation_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     semantic_methodology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     semantic_findings: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE, nullable=True)
+    certainty_escalations: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON_TYPE, nullable=True
+    )
     factual_accuracy_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     source_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     citation_alignment_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)

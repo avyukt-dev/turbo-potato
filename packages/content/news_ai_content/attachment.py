@@ -118,6 +118,7 @@ class ContentMediaAttachmentService:
                     "slides",
                     "hashtags",
                     "claim_ids_used",
+                    "claim_presentations",
                 }:
                     raise MediaValidationError()
                 ContentGenerationOutput.model_validate(
@@ -133,6 +134,7 @@ class ContentMediaAttachmentService:
                         "caption": variant.caption,
                         "hashtags": payload["hashtags"],
                         "claim_ids_used": payload["claim_ids_used"],
+                        "claim_presentations": payload["claim_presentations"],
                     }
                 )
             except (ValidationError, KeyError, TypeError):

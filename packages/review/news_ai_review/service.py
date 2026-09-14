@@ -655,6 +655,7 @@ class ReviewService:
             "semantic_validation_passed": check.semantic_validation_passed,
             "semantic_methodology_version": check.semantic_methodology_version,
             "semantic_findings": check.semantic_findings,
+            "certainty_escalations": check.certainty_escalations,
             "content_artifact_hash": check.content_artifact_hash,
             "passed": check.passed,
             "review_required": check.review_required,

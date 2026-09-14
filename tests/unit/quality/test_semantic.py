@@ -78,6 +78,15 @@ def artifacts():
             "title": "Register",
             "caption": "Preliminary",
             "claim_ids_used": [claim],
+            "claim_presentations": [
+                {
+                    "claim_id": claim,
+                    "source_status": "PARTIALLY_SUPPORTED",
+                    "source_fact_check_label": "PARTIALLY_TRUE",
+                    "assertion_strength": "MEDIUM",
+                    "frame": "QUALIFIED",
+                }
+            ],
             "slides": [
                 {
                     "position": 1,

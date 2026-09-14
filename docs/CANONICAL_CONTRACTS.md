@@ -239,8 +239,19 @@ Passing automated quality checks does not authorize publication.
 Quality includes application-owned deterministic semantic validation over exact
 persisted content and Fact Sheet artifacts. AI cannot override a deterministic
 ERROR finding. WARNING findings alone do not fail quality. This validation never
-changes factual status, grants AI evidence authority, or implements certainty
-escalation. Unknown or unrepresented semantics are not guessed.
+changes factual status or grants AI evidence authority. Unknown or unrepresented
+semantics are not guessed.
+
+Downstream certainty must never exceed upstream supported certainty. Versioned
+`certainty-policy-v1` derives typed claim-presentation ceilings from the immutable
+Fact Sheet status and FactCheck label. Content must copy those inputs exactly.
+UNVERIFIED is not FALSE or REFUTED; DISPUTED remains disputed; REFUTED claims
+cannot be affirmatively presented. Deterministic metadata validation and AI prose
+certainty assessment are separate: neither can raise certainty or change truth.
+Only current deterministic FactCheckEngine pairs are authorized: SUPPORTED/TRUE,
+PARTIALLY_SUPPORTED/PARTIALLY_TRUE, DISPUTED/UNVERIFIED, UNVERIFIED/UNVERIFIED,
+REFUTED/FALSE. Every other pair fails closed under `certainty-policy-v1`; additional
+canonical enum values require an explicit future versioned producer/policy change.
 
 ## 8.2 Future low-risk automation
 

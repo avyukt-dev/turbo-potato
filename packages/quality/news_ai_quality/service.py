@@ -22,6 +22,7 @@ from news_ai_ai import (
     PromptReference,
 )
 from news_ai_content import ContentGenerationOutput, EditorialBrief, content_artifact_hash
+from news_ai_content.certainty import CERTAINTY_POLICY_VERSION
 from news_ai_content.integrity import quality_artifact
 from news_ai_content.media import MediaNotAttachedError, MediaValidationError
 from news_ai_database import (
@@ -56,8 +57,8 @@ from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
 from .semantic import SemanticValidationReport, SemanticValidator, fabricated_quotes
 
-# v4 adds semantic validation; historical checks remain immutable.
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v4"
+# v5 adds structured/prose certainty validation; historical checks remain immutable.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v5"
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
     AIFailureReason.UNAVAILABLE,
@@ -272,7 +273,7 @@ class QualityAssessmentService:
             )
         try:
             structured = dict(variant.structured_payload)
-            if set(structured) != {"slides", "hashtags", "claim_ids_used"}:
+            if set(structured) != {"slides", "hashtags", "claim_ids_used", "claim_presentations"}:
                 raise ValueError("carousel structured payload has unexpected fields")
             carousel = ContentGenerationOutput.model_validate(
                 {
@@ -287,6 +288,7 @@ class QualityAssessmentService:
                     "caption": variant.caption,
                     "hashtags": structured["hashtags"],
                     "claim_ids_used": structured["claim_ids_used"],
+                    "claim_presentations": structured["claim_presentations"],
                 }
             )
         except (KeyError, TypeError, ValidationError, ValueError) as exc:
@@ -320,6 +322,7 @@ class QualityAssessmentService:
                 "style": self.style.model_dump(mode="json"),
                 "methodology_version": QUALITY_METHODOLOGY_VERSION,
                 "semantic_methodology_version": semantic_report.methodology_version,
+                "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 "semantic_inputs": fact_sheet,
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -385,6 +388,29 @@ class QualityAssessmentService:
                     output = QualityAssessmentOutput.model_validate(response.structured)
                     if output.content_variant_id != expected.variant_id:
                         raise ValueError("quality output references the wrong variant")
+                    used_claims = set(expected.artifact["claim_ids_used"])
+                    slides = expected.artifact["structured_payload"]["slides"]
+                    allowed_paths = {"title", "caption"} | {
+                        f"slides[{i}].{field}"
+                        for i in range(len(slides))
+                        for field in ("heading", "body")
+                    }
+                    for escalation in output.certainty_escalations:
+                        if (
+                            str(escalation.claim_id) not in used_claims
+                            or escalation.artifact_path not in allowed_paths
+                        ):
+                            raise ValueError(
+                                "certainty escalation references an unknown content location"
+                            )
+                        if escalation.artifact_path.startswith("slides["):
+                            slide_index = int(
+                                escalation.artifact_path.split("[", 1)[1].split("]", 1)[0]
+                            )
+                            if str(escalation.claim_id) not in slides[slide_index]["claim_ids"]:
+                                raise ValueError(
+                                    "certainty escalation refers to an unrelated slide claim"
+                                )
                 except (ValidationError, ValueError) as exc:
                     raise AIInvalidResponseError(
                         "quality output failed contract validation"
@@ -406,6 +432,7 @@ class QualityAssessmentService:
                     "sensitive_topics": context.sensitive_topics,
                     "content_style": context.style,
                     "quality_methodology_version": QUALITY_METHODOLOGY_VERSION,
+                    "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 },
                 prompt=PromptReference(
                     prompt_id=self.prompt.prompt_id,
@@ -519,7 +546,7 @@ class QualityAssessmentService:
                 semantic_validation_passed=execution.variant.semantic_report.passed,
                 semantic_methodology_version=execution.variant.semantic_report.methodology_version,
                 semantic_findings=execution.variant.semantic_report.model_dump(mode="json"),
-                **decision.model_dump(exclude={"content_variant_id"}),
+                **decision.model_dump(mode="json", exclude={"content_variant_id"}),
             )
             session.add(check)
             checks.append(check)
@@ -542,6 +569,7 @@ class QualityAssessmentService:
                     item.incorrect_dates,
                     item.incorrect_numbers,
                     item.missing_context,
+                    item.certainty_escalations,
                 )
             )
             and not item.defamation_risk

@@ -141,6 +141,15 @@ class DeterministicResearchAI:
         elif request.task_type is AITaskType.CONTENT_GENERATION:
             brief = request.input["editorial_brief"]
             claim = brief["claims"][0]
+            ceiling = request.input["certainty_ceilings"][claim["claim_id"]]
+            frame = ceiling["allowed_frames"][0]
+            prefix = {
+                "DIRECT": "",
+                "QUALIFIED": "The available evidence supports this only with qualifications: ",
+                "DISPUTED": "There is disagreement about the following claim: ",
+                "UNCERTAIN": "The following claim remains uncertain: ",
+                "REFUTATION": "The following claim was refuted: ",
+            }[frame]
             structured = {
                 "story_id": brief["story_id"],
                 "fact_sheet_id": brief["fact_sheet_id"],
@@ -153,7 +162,7 @@ class DeterministicResearchAI:
                     {
                         "position": 1,
                         "heading": "The measured claim",
-                        "body": claim["text"],
+                        "body": prefix + claim["text"],
                         "claim_ids": [claim["claim_id"]],
                     },
                     {
@@ -170,12 +179,26 @@ class DeterministicResearchAI:
                 ),
                 "hashtags": ["#EvidenceFirst"],
                 "claim_ids_used": [claim["claim_id"]],
+                "claim_presentations": [
+                    {
+                        "claim_id": claim["claim_id"],
+                        "source_status": claim["status"],
+                        "source_fact_check_label": claim["label"],
+                        "assertion_strength": request.input["certainty_ceilings"][
+                            claim["claim_id"]
+                        ]["maximum_strength"],
+                        "frame": request.input["certainty_ceilings"][claim["claim_id"]][
+                            "allowed_frames"
+                        ][0],
+                    }
+                ],
             }
         elif request.task_type is AITaskType.QUALITY_CHECKING:
             variant = request.input["content_artifact"]
             defect = "final and confirmed" in variant["caption"]
             structured = {
                 "content_variant_id": variant["content_variant_id"],
+                "certainty_escalations": [],
                 "factual_accuracy_passed": not defect,
                 "source_alignment_passed": True,
                 "citation_alignment_passed": True,
@@ -598,7 +621,7 @@ async def _run_pipeline(
             assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
             assert content_run.task_type == AITaskType.CONTENT_GENERATION.value
             assert content_run.prompt_id == "content-generation"
-            assert content_run.prompt_version == "v1"
+            assert content_run.prompt_version == "v2"
             assert content_run.prompt_checksum
             assert len(quality_checks) == 1
             quality_check = quality_checks[0]
@@ -608,14 +631,15 @@ async def _run_pipeline(
             assert quality_check.content_variant_version == variants[0].version
             assert quality_check.fact_sheet_id == sheet.id
             assert quality_check.fact_sheet_version == sheet.version
-            assert quality_check.methodology_version == "quality-gate-methodology-v4"
-            assert quality_check.semantic_methodology_version == "semantic-validator-v1"
+            assert quality_check.methodology_version == "quality-gate-methodology-v5"
+            assert quality_check.semantic_methodology_version == "semantic-validator-v2"
+            assert quality_check.certainty_escalations == []
             assert quality_check.semantic_validation_passed is True
             assert SemanticValidationReport.model_validate(quality_check.semantic_findings).passed
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"
-            assert quality_run.prompt_version == "v1"
+            assert quality_run.prompt_version == "v2"
             assert quality_run.prompt_checksum
             assert quality_event.aggregate_type == "content_draft"
             assert quality_event.aggregate_id == draft.id

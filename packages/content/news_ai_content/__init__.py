@@ -6,6 +6,15 @@ from .attachment import (
     MediaAttachmentRequest,
 )
 from .brief import build_editorial_brief
+from .certainty import (
+    CERTAINTY_POLICY_VERSION,
+    CertaintyCeiling,
+    ClaimAssertionStrength,
+    ClaimPresentation,
+    ClaimPresentationFrame,
+    certainty_ceiling,
+    presentation_violations,
+)
 from .configuration import (
     ContentStyleConfig,
     ContentStyleConfigLoader,
@@ -33,6 +42,13 @@ from .generation import (
 from .integrity import content_artifact_hash
 
 __all__ = [
+    "CERTAINTY_POLICY_VERSION",
+    "ClaimAssertionStrength",
+    "ClaimPresentation",
+    "ClaimPresentationFrame",
+    "CertaintyCeiling",
+    "certainty_ceiling",
+    "presentation_violations",
     "ContentMediaAttachmentService",
     "MediaAttachmentConflict",
     "MediaAttachmentRequest",

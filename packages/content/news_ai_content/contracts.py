@@ -10,6 +10,8 @@ from uuid import UUID
 from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .certainty import ClaimPresentation
+
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
 
@@ -106,6 +108,8 @@ class ContentGenerationOutput(BaseModel):
     hashtags: tuple[str, ...] = Field(default=(), max_length=30)
     claim_ids_used: tuple[UUID, ...] = Field(min_length=1)
 
+    claim_presentations: tuple[ClaimPresentation, ...] = Field(min_length=1)
+
     @field_validator("language")
     @classmethod
     def normalize_language(cls, value: str) -> str:
@@ -129,6 +133,9 @@ class ContentGenerationOutput(BaseModel):
         slide_claims = {claim_id for slide in self.slides for claim_id in slide.claim_ids}
         if slide_claims != set(self.claim_ids_used):
             raise ValueError("claim_ids_used must exactly match the claims cited by slides")
+        presented = tuple(item.claim_id for item in self.claim_presentations)
+        if len(presented) != len(set(presented)) or set(presented) != set(self.claim_ids_used):
+            raise ValueError("claim_presentations must exactly cover used claims once")
         return self
 
     def structured_payload(self) -> dict[str, Any]:
@@ -136,6 +143,9 @@ class ContentGenerationOutput(BaseModel):
             "slides": [slide.model_dump(mode="json") for slide in self.slides],
             "hashtags": list(self.hashtags),
             "claim_ids_used": [str(item) for item in self.claim_ids_used],
+            "claim_presentations": [
+                item.model_dump(mode="json") for item in self.claim_presentations
+            ],
         }
 
 
@@ -185,6 +195,7 @@ class ContentVariantArtifact(BaseModel):
     media_asset_ids: tuple[UUID, ...]
     claim_ids_used: tuple[UUID, ...]
     source_ids_used: tuple[UUID, ...]
+    claim_presentations: tuple[ClaimPresentation, ...] | None = None
     risk_level: RiskLevel
     sensitive_topics: tuple[str, ...]
     review_state: ReviewState

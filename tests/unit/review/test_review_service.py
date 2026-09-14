@@ -189,6 +189,15 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
                     ],
                     "hashtags": ["#records"],
                     "claim_ids_used": [str(claim_id)],
+                    "claim_presentations": [
+                        {
+                            "claim_id": str(claim_id),
+                            "source_status": "SUPPORTED",
+                            "source_fact_check_label": "TRUE",
+                            "assertion_strength": "HIGH",
+                            "frame": "DIRECT",
+                        }
+                    ],
                 },
                 claim_ids_used=[str(claim_id)],
                 source_ids_used=[],

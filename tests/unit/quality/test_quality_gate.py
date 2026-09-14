@@ -80,6 +80,7 @@ class QualityAI:
             raise self.failure
         output = {
             "content_variant_id": request.input["content_artifact"]["content_variant_id"],
+            "certainty_escalations": [],
             "factual_accuracy_passed": True,
             "source_alignment_passed": True,
             "citation_alignment_passed": True,
@@ -299,6 +300,15 @@ def _seed(factory: sessionmaker[Session], *, media: bool = True):
                 ],
                 "hashtags": [],
                 "claim_ids_used": [str(claim_id)],
+                "claim_presentations": [
+                    {
+                        "claim_id": str(claim_id),
+                        "source_status": "PARTIALLY_SUPPORTED",
+                        "source_fact_check_label": "PARTIALLY_TRUE",
+                        "assertion_strength": "MEDIUM",
+                        "frame": "QUALIFIED",
+                    }
+                ],
             },
             claim_ids_used=[str(claim_id)],
             source_ids_used=[str(source_id)],
@@ -342,7 +352,7 @@ def _service(ai: QualityAI) -> QualityAssessmentService:
                 ),
             ),
         ),
-        QualityPrompt.load(loader.root / "prompts" / "quality" / "v1.txt"),
+        QualityPrompt.load(loader.root / "prompts" / "quality" / "v2.txt", version="v2"),
         EditorialConfigLoader(loader).load_content_style(),
         EditorialConfigLoader(loader).load_publishing_policy(),
     )
@@ -625,6 +635,7 @@ def test_prompt_injection_is_bounded_untrusted_input_only() -> None:
         "sensitive_topics",
         "content_style",
         "quality_methodology_version",
+        "certainty_policy_version",
     }
 
 

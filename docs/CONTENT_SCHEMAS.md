@@ -410,6 +410,9 @@ class ContentVariant(BaseModel):
     claim_ids_used: list[UUID] = Field(default_factory=list)
     source_ids_used: list[UUID] = Field(default_factory=list)
 
+    # Required on new content-generation v2 output; stored in structured_payload.
+    claim_presentations: list[ClaimPresentation]
+
     risk_level: RiskLevel
     sensitive_topics: list[str] = Field(default_factory=list)
     review_state: ReviewState
@@ -571,6 +574,7 @@ class QualityCheck(BaseModel):
     passed: bool
     review_required: bool
     notes: list[str] = Field(default_factory=list)
+    certainty_escalations: list[CertaintyEscalation] | None = None
 ```
 
 For the MVP, `review_required` remains true for any content intended for external publication. A quality pass does not authorize publication.
@@ -580,13 +584,29 @@ Application-owned deterministic quality uses frozen `SemanticFinding` and
 closed code/category/severity enums, bounded diagnostic locations and canonical
 claim/evidence/source IDs; arbitrary provider metadata is not accepted. Categories
 are QUOTE_INTEGRITY, REFERENCE_INTEGRITY, STANCE_CONSISTENCY, CHRONOLOGY, DEPENDENCY,
-DUPLICATE, and CATEGORICAL_ASSERTION. ERROR findings fail semantic validation;
+DUPLICATE, CATEGORICAL_ASSERTION, and CERTAINTY. ERROR findings fail semantic validation;
 warnings are auditable without independently failing otherwise-valid quality.
 Stable ordering and deduplication make report serialization deterministic.
 
 Quote matches record generated offsets and mechanically normalized source offsets
 with claim/evidence/source identity, without copying source text into diagnostics.
 Dependency checks remain empty until a canonical explicit dependency input exists.
+
+Content-generation v2 requires frozen `ClaimPresentation` records, exactly one per
+`claim_ids_used`: claim_id, source_status, source_fact_check_label,
+assertion_strength (HIGH/MEDIUM/LOW/NONE), frame
+(DIRECT/QUALIFIED/DISPUTED/UNCERTAIN/REFUTATION). They are stored inside the immutable
+ContentVariant structured_payload and therefore the reviewed artifact hash.
+The application validates exact source copies and `certainty-policy-v1` ceilings.
+The only authorized pairs are SUPPORTED/TRUE, PARTIALLY_SUPPORTED/PARTIALLY_TRUE,
+DISPUTED/UNVERIFIED, UNVERIFIED/UNVERIFIED, REFUTED/FALSE. All other pairs fail closed;
+enum membership alone does not authorize downstream certainty semantics.
+Quality revalidates these records independently. Its CERTAINTY findings have closed
+status/label/ceiling/frame/missing/invalid-source-combination codes.
+Quality AI output requires `certainty_escalations`, bounded frozen entries with
+claim_id, artifact_path (title/caption/zero-based slide heading or body), and closed
+reason_code. They flag prose mismatch, never change factual status. The application
+rejects unknown claim/location references and fails quality on any escalation.
 
 ---
 

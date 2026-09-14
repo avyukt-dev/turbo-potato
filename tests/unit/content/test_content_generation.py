@@ -107,6 +107,15 @@ class ContentAI:
             "caption": "Evidence first; uncertainty stays visible.",
             "hashtags": ["#EvidenceFirst"],
             "claim_ids_used": [claim_id],
+            "claim_presentations": [
+                {
+                    "claim_id": claim_id,
+                    "source_status": brief["claims"][0]["status"],
+                    "source_fact_check_label": brief["claims"][0]["label"],
+                    "assertion_strength": "MEDIUM",
+                    "frame": "QUALIFIED",
+                }
+            ],
         }
         output.update(self.mutate)
         return AIResponse(
@@ -256,7 +265,7 @@ def _service(ai: ContentAI) -> ContentGenerationService:
             loader,
             providers=(ai, ContentAI(provider_id="local-llama", error=ai.error, mutate=ai.mutate)),
         ),
-        ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v1.txt"),
+        ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v2.txt", version="v2"),
         ContentStyleConfigLoader(loader).load(),
         editorial.load_publishing_policy(),
     )
@@ -289,8 +298,18 @@ def test_exact_fact_sheet_generates_not_ready_draft_variant_and_canonical_event(
     assert draft_artifact.variant_ids == (variant.id,)
     assert variant_artifacts[0].fact_sheet_id == fact_sheet_id
     assert variant_artifacts[0].claim_ids_used
-    assert run.prompt_version == "v1" and run.validation_status == "VALIDATED"
+    assert run.prompt_version == "v2" and run.validation_status == "VALIDATED"
     assert run.input_hash == context.semantic_key
+    assert (
+        variant.structured_payload["claim_presentations"]
+        == execution.output.model_dump(mode="json")["claim_presentations"]
+    )
+    assert (
+        ai.requests[0].input["certainty_ceilings"][str(context.brief.claims[0].claim_id)][
+            "maximum_strength"
+        ]
+        == "MEDIUM"
+    )
     assert generated.aggregate_id == draft.id
     assert generated.causation_id == event.event_id
     assert generated.correlation_id == event.correlation_id
@@ -500,7 +519,7 @@ def test_methodology_version_change_creates_legitimate_new_draft() -> None:
 
     second_service = _service(ai)
     second_service.style = second_service.style.model_copy(
-        update={"methodology_version": "content-generation-methodology-v2"}
+        update={"methodology_version": "content-generation-methodology-v3"}
     )
     changed_event = event.model_copy(update={"event_id": uuid4(), "idempotency_key": str(uuid4())})
     with factory() as session:

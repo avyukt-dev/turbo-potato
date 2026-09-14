@@ -122,8 +122,8 @@ def test_production_content_stack_uses_official_router_and_worker_boundaries() -
     )
     assert stack.service.router is stack.ai_router
     assert stack.service.prompt.prompt_id == "content-generation"
-    assert stack.service.prompt.version == "v1"
-    assert stack.service.prompt.checksum == _prompt_checksum("prompts/content/v1.txt")
+    assert stack.service.prompt.version == "v2"
+    assert stack.service.prompt.checksum == _prompt_checksum("prompts/content/v2.txt")
     assert stack.worker.service is stack.service
     assert stack.worker.consumer.group == "content-worker"
 
@@ -151,8 +151,8 @@ def test_production_quality_stack_uses_official_router_and_worker_boundaries() -
     )
     assert stack.service.router is stack.ai_router
     assert stack.service.prompt.prompt_id == "content-quality"
-    assert stack.service.prompt.version == "v1"
-    assert stack.service.prompt.checksum == _prompt_checksum("prompts/quality/v1.txt")
+    assert stack.service.prompt.version == "v2"
+    assert stack.service.prompt.checksum == _prompt_checksum("prompts/quality/v2.txt")
     assert stack.worker.service is stack.service
     assert stack.worker.consumer.group == "quality-worker"
 
