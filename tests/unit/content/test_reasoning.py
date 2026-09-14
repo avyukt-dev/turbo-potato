@@ -13,8 +13,8 @@ from news_ai_content.contracts import (
 from news_ai_content.reasoning import editorial_reasoning_decision
 from news_ai_domain import (
     CLAIM_SEMANTICS_POLICY_VERSION,
-    ClaimSemanticState,
     ClaimSemantics,
+    ClaimSemanticState,
     ClaimSemanticType,
     ClaimVerificationStatus,
     FactCheckLabel,
