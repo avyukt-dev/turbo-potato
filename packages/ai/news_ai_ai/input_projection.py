@@ -223,6 +223,7 @@ def _project_brief(brief: dict[str, Any], *, selected_claim_ids: frozenset[str])
             "exclusions",
             "tone",
             "audience_relevance",
+            "unresolved_questions",
             "priority_topics",
             "style_rules",
             "target",
