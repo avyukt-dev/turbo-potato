@@ -4,6 +4,7 @@ import pytest
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
     AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponseFormat,
     AIRouter,
@@ -76,7 +77,17 @@ def test_explicit_reasoning_effort_requires_policy_provenance() -> None:
     stage, selection = _stage()
     request = _request(reasoning_effort=AIReasoningEffort.MEDIUM)
 
-    with pytest.raises(
-        AIRoutingPolicyError, match="reasoning effort requires deterministic policy provenance"
-    ):
+    with pytest.raises(AIRoutingPolicyError, match="AI request violates execution contract"):
+        AIRouter._attempt_request(request, stage, selection)
+
+
+def test_router_revalidates_copied_reasoning_reason_contract() -> None:
+    stage, selection = _stage()
+    request = _request(
+        reasoning_effort=AIReasoningEffort.MEDIUM,
+        reasoning_policy_version=REASONING_ROUTING_POLICY_VERSION,
+        reasoning_reasons=(AIReasoningReason.HIGH_RISK,),
+    )
+
+    with pytest.raises(AIRoutingPolicyError, match="AI request violates execution contract"):
         AIRouter._attempt_request(request, stage, selection)

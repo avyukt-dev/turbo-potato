@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from news_ai_common.config import ConfigError, ConfigLoader
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .contracts import (
     AIReasoningEffort,
@@ -254,6 +254,13 @@ class AIRoutingExecutionError(AIRoutingError):
         super().__init__(f"AI routing execution failed: {reason}")
 
 
+def _validated_request_update(request: AIRequest, **updates: object) -> AIRequest:
+    try:
+        return AIRequest.model_validate({**request.model_dump(mode="python"), **updates})
+    except ValidationError as exc:
+        raise AIRoutingPolicyError("AI request violates execution contract") from exc
+
+
 class AIRouter:
     """Select a provider/model from the stage and apply global authorization policy."""
 
@@ -375,12 +382,11 @@ class AIRouter:
         reasons = tuple(
             dict.fromkeys((*request.reasoning_reasons, AIReasoningReason.VALIDATION_FAILURE))
         )
-        return request.model_copy(
-            update={
-                "reasoning_effort": AIReasoningEffort.HIGH,
-                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
-                "reasoning_reasons": reasons,
-            }
+        return _validated_request_update(
+            request,
+            reasoning_effort=AIReasoningEffort.HIGH,
+            reasoning_policy_version=REASONING_ROUTING_POLICY_VERSION,
+            reasoning_reasons=reasons,
         )
 
     def _validate_configuration(self) -> None:
@@ -428,34 +434,25 @@ class AIRouter:
         uses_stage_reasoning_default = (
             request.reasoning_effort is None and stage.request_defaults.reasoning_effort is not None
         )
-        attempt = request.model_copy(
-            update={
-                "model": selection.model,
-                "reasoning_effort": (
-                    request.reasoning_effort
-                    if request.reasoning_effort is not None
-                    else stage.request_defaults.reasoning_effort
-                ),
-                "reasoning_policy_version": (
-                    REASONING_ROUTING_POLICY_VERSION
-                    if uses_stage_reasoning_default and request.reasoning_policy_version is None
-                    else request.reasoning_policy_version
-                ),
-            }
+        attempt = _validated_request_update(
+            request,
+            model=selection.model,
+            reasoning_effort=(
+                request.reasoning_effort
+                if request.reasoning_effort is not None
+                else stage.request_defaults.reasoning_effort
+            ),
+            reasoning_policy_version=(
+                REASONING_ROUTING_POLICY_VERSION
+                if uses_stage_reasoning_default and request.reasoning_policy_version is None
+                else request.reasoning_policy_version
+            ),
         )
         if (
             attempt.reasoning_policy_version is not None
             and attempt.reasoning_policy_version != REASONING_ROUTING_POLICY_VERSION
         ):
             raise AIRoutingPolicyError("reasoning policy version is not current")
-        if attempt.reasoning_effort is AIReasoningEffort.HIGH and (
-            not attempt.reasoning_reasons or attempt.reasoning_policy_version is None
-        ):
-            raise AIRoutingPolicyError(
-                "HIGH reasoning requires deterministic escalation provenance"
-            )
-        if attempt.reasoning_effort is not None and attempt.reasoning_policy_version is None:
-            raise AIRoutingPolicyError("reasoning effort requires deterministic policy provenance")
         return attempt
 
     def _mode_allows(self, locality: ProviderLocality) -> bool:
