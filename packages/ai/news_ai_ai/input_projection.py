@@ -94,8 +94,10 @@ def _project_quality_checking(payload: dict[str, Any]) -> dict[str, Any]:
     expected_source_ids = frozenset(
         str(item["source_id"])
         for raw in evidence
-        if (item := _mapping(raw, "Fact Sheet evidence item"))
-        and str(_required(item, "claim_id")) in selected_claim_ids
+        if str(
+            _required((item := _mapping(raw, "Fact Sheet evidence item")), "claim_id")
+        )
+        in selected_claim_ids
         and item.get("source_id") is not None
     )
     if selected_source_ids != expected_source_ids:
@@ -306,21 +308,9 @@ def _project_source(source: dict[str, Any]) -> dict[str, Any]:
 
 
 def _project_content_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
-    return _pick(
-        artifact,
-        (
-            "content_variant_id",
-            "content_variant_version",
-            "platform",
-            "format",
-            "language",
-            "title",
-            "caption",
-            "structured_payload",
-            "claim_ids_used",
-            "source_ids_used",
-        ),
-    )
+    projected = deepcopy(artifact)
+    projected.pop("media_provenance", None)
+    return projected
 
 
 def _require_same_identity(fact_sheet: dict[str, Any], brief: dict[str, Any]) -> None:
