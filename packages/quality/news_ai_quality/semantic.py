@@ -8,11 +8,12 @@ from enum import StrEnum
 from uuid import UUID
 
 from news_ai_content import ContentGenerationOutput, EditorialBrief
+from news_ai_content.certainty import presentation_violations
 from news_ai_evidence import FactSheetArtifact
 from news_ai_evidence.engine import EvidenceRelation
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SEMANTIC_METHODOLOGY_VERSION = "semantic-validator-v1"
+SEMANTIC_METHODOLOGY_VERSION = "semantic-validator-v2"
 _QUOTES = re.compile(r'"([^"]+)"|“([^”]+)”|«([^»]+)»|„([^“]+)“')
 
 
@@ -29,6 +30,7 @@ class SemanticFindingCategory(StrEnum):
     DEPENDENCY = "DEPENDENCY"
     DUPLICATE = "DUPLICATE"
     CATEGORICAL_ASSERTION = "CATEGORICAL_ASSERTION"
+    CERTAINTY = "CERTAINTY"
 
 
 class SemanticFindingCode(StrEnum):
@@ -45,6 +47,12 @@ class SemanticFindingCode(StrEnum):
     EVIDENCE_IDENTITY_CONFLICT = "EVIDENCE_IDENTITY_CONFLICT"
     BRIEF_FACTUAL_METADATA_MISMATCH = "BRIEF_FACTUAL_METADATA_MISMATCH"
     SOURCE_IDENTITY_CONFLICT = "SOURCE_IDENTITY_CONFLICT"
+    CERTAINTY_STATUS_MISMATCH = "CERTAINTY_STATUS_MISMATCH"
+    CERTAINTY_LABEL_MISMATCH = "CERTAINTY_LABEL_MISMATCH"
+    CERTAINTY_CEILING_EXCEEDED = "CERTAINTY_CEILING_EXCEEDED"
+    CERTAINTY_FRAME_MISMATCH = "CERTAINTY_FRAME_MISMATCH"
+    CERTAINTY_SOURCE_COMBINATION_INVALID = "CERTAINTY_SOURCE_COMBINATION_INVALID"
+    CERTAINTY_PRESENTATION_MISSING = "CERTAINTY_PRESENTATION_MISSING"
 
 
 class SemanticFinding(BaseModel):
@@ -430,6 +438,29 @@ class SemanticValidator:
                 role={EvidenceRelation.CONTRADICTS.value},
             )
 
+        exact_claims = {claim.claim_id: claim for claim in sheet.claims}
+        exact_checks = {check.claim_id: check for check in sheet.fact_checks}
+        presentations = {item.claim_id: item for item in content.claim_presentations}
+        for claim_id in content.claim_ids_used:
+            presentation = presentations.get(claim_id)
+            path = f"content.claim_presentations[{claim_id}]"
+            if presentation is None:
+                add(
+                    SemanticFindingCode.CERTAINTY_PRESENTATION_MISSING,
+                    SemanticFindingCategory.CERTAINTY,
+                    path,
+                    claim=claim_id,
+                )
+            elif claim_id in exact_claims and claim_id in exact_checks:
+                for violation in presentation_violations(
+                    presentation, exact_claims[claim_id].status, exact_checks[claim_id].label
+                ):
+                    add(
+                        SemanticFindingCode[f"CERTAINTY_{violation.value}"],
+                        SemanticFindingCategory.CERTAINTY,
+                        path,
+                        claim=claim_id,
+                    )
         if editorial_brief is not None:
             index(editorial_brief.claims, "claim_id", "editorial_brief.claims")
             for i, brief_claim in enumerate(editorial_brief.claims):

@@ -1,6 +1,12 @@
 """Stage-22 production quality gate."""
 
-from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
+from .contracts import (
+    CertaintyEscalation,
+    CertaintyEscalationCode,
+    QualityAssessmentOutput,
+    QualityDecision,
+    decide_quality,
+)
 from .prompt import QualityPrompt
 from .semantic import (
     SEMANTIC_METHODOLOGY_VERSION,
@@ -20,6 +26,8 @@ from .service import (
 )
 
 __all__ = [
+    "CertaintyEscalation",
+    "CertaintyEscalationCode",
     "SEMANTIC_METHODOLOGY_VERSION",
     "SemanticFinding",
     "SemanticFindingCategory",

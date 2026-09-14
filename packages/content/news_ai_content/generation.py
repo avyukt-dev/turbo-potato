@@ -49,6 +49,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .brief import build_editorial_brief
+from .certainty import (
+    CERTAINTY_POLICY_VERSION,
+    ClaimPresentation,
+    certainty_ceiling,
+    presentation_violations,
+)
 from .configuration import ContentStyleConfig
 from .contracts import (
     CarouselSlide,
@@ -177,6 +183,11 @@ class ContentGenerationService:
         )
         if brief.target != target:
             raise PermanentEventError("requested target does not match configured Stage-21 target")
+        for claim in brief.claims:
+            try:
+                certainty_ceiling(claim.status, claim.label)
+            except ValueError as exc:
+                raise PermanentEventError("content claim certainty source is invalid") from exc
         operation_key = _semantic_key(
             {
                 "fact_sheet_id": row.id,
@@ -185,6 +196,7 @@ class ContentGenerationService:
                 "generation_language": generation_language,
                 "target": target.model_dump(mode="json"),
                 "methodology_version": self.style.methodology_version,
+                "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 "style": self.style.model_dump(mode="json"),
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -233,6 +245,12 @@ class ContentGenerationService:
                 media_asset_ids=tuple(UUID(item) for item in variant.media_asset_ids),
                 claim_ids_used=tuple(UUID(item) for item in variant.claim_ids_used),
                 source_ids_used=tuple(UUID(item) for item in variant.source_ids_used),
+                claim_presentations=tuple(
+                    ClaimPresentation.model_validate(item)
+                    for item in variant.structured_payload["claim_presentations"]
+                )
+                if "claim_presentations" in variant.structured_payload
+                else None,
                 risk_level=draft.risk_level,
                 sensitive_topics=tuple(draft.sensitive_topics),
                 review_state=variant.review_state,
@@ -276,6 +294,12 @@ class ContentGenerationService:
                 "immutable_fact_sheet": context.fact_sheet.model_dump(mode="json"),
                 "editorial_brief": context.brief.model_dump(mode="json"),
                 "generation_language": context.generation_language,
+                "certainty_ceilings": {
+                    str(claim.claim_id): certainty_ceiling(claim.status, claim.label).model_dump(
+                        mode="json"
+                    )
+                    for claim in context.brief.claims
+                },
             },
             prompt=PromptReference(
                 prompt_id=self.prompt.prompt_id,
@@ -501,6 +525,11 @@ def _validate_output(
     referenced = {claim_id for slide in output.slides for claim_id in slide.claim_ids}
     if not referenced <= known_claims:
         raise ValueError("content output references an unknown claim")
+    claims = {claim.claim_id: claim for claim in context.brief.claims}
+    for presentation in output.claim_presentations:
+        claim = claims[presentation.claim_id]
+        if presentation_violations(presentation, claim.status, claim.label):
+            raise ValueError("content presentation violates immutable certainty ceiling")
     allowed_quote_material = "\n".join(
         [
             context.brief.headline,

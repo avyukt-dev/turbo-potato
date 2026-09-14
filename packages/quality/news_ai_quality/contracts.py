@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
@@ -12,12 +13,32 @@ from .semantic import SemanticValidationReport
 Finding = Annotated[str, Field(min_length=1, max_length=1000)]
 
 
+class CertaintyEscalationCode(StrEnum):
+    AFFIRMATION_OF_UNCERTAIN_CLAIM = "AFFIRMATION_OF_UNCERTAIN_CLAIM"
+    QUALIFICATION_OMITTED = "QUALIFICATION_OMITTED"
+    DISPUTE_OMITTED = "DISPUTE_OMITTED"
+    REFUTED_CLAIM_AFFIRMED = "REFUTED_CLAIM_AFFIRMED"
+    PROSE_FRAME_MISMATCH = "PROSE_FRAME_MISMATCH"
+
+
+class CertaintyEscalation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    claim_id: UUID
+    artifact_path: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^(title|caption|slides\[[0-9]{1,2}\]\.(heading|body))$",
+    )
+    reason_code: CertaintyEscalationCode
+
+
 class QualityAssessmentOutput(BaseModel):
     """Untrusted AI output; workflow decisions are deliberately absent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     content_variant_id: UUID
+    certainty_escalations: tuple[CertaintyEscalation, ...] = Field(max_length=50)
     factual_accuracy_passed: bool
     source_alignment_passed: bool
     citation_alignment_passed: bool
@@ -48,11 +69,21 @@ class QualityAssessmentOutput(BaseModel):
             raise ValueError("quality findings must be unique")
         return normalized
 
+    @field_validator("certainty_escalations")
+    @classmethod
+    def unique_escalations(
+        cls, value: tuple[CertaintyEscalation, ...]
+    ) -> tuple[CertaintyEscalation, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("certainty escalations must be unique")
+        return tuple(sorted(value, key=lambda item: item.model_dump_json()))
+
 
 class QualityDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     content_variant_id: UUID
+    certainty_escalations: tuple[CertaintyEscalation, ...]
     factual_accuracy_passed: bool
     source_alignment_passed: bool
     citation_alignment_passed: bool
@@ -93,6 +124,7 @@ def decide_quality(
             not output.defamation_risk,
             not output.sensitive_topic_error,
             semantic_report.passed,
+            not output.certainty_escalations,
         )
     )
     return QualityDecision(

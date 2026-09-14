@@ -3,8 +3,8 @@ stage_id: quality-checking
 task_type: QUALITY_CHECKING
 prompt:
   prompt_id: content-quality
-  version: v1
-  path: prompts/quality/v1.txt
+  version: v2
+  path: prompts/quality/v2.txt
 providers:
   - provider_id: groq
     model: openai/gpt-oss-120b

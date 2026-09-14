@@ -1,5 +1,13 @@
 # News AI Social Media Manager
 
+Certainty regressions cover the closed status/label ceiling matrix, exact source
+copies, per-claim coverage, multi-claim isolation, generation invalid-response
+fallback, persisted quality revalidation, deterministic ERROR overriding AI pass,
+typed AI prose escalation persistence/review visibility, and methodology/policy
+identity invalidation. Historical artifacts are not retroactively validated:
+missing presentations require regeneration, and legacy prose-check NULL remains
+NULL. PostgreSQL verifies `0014 -> 0013 -> 0014` exact schema and honest backfill.
+
 Deterministic quality semantic regressions cover scoped quotes and mechanical
 normalization, reference ownership, duplicate IDs, relation-role consistency,
 explicit temporal ranges, warning-only reports, and unknown optional metadata.

@@ -3,8 +3,8 @@ stage_id: content-generation
 task_type: CONTENT_GENERATION
 prompt:
   prompt_id: content-generation
-  version: v1
-  path: prompts/content/v1.txt
+  version: v2
+  path: prompts/content/v2.txt
 providers:
   - provider_id: groq
     model: openai/gpt-oss-120b

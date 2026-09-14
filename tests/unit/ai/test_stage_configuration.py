@@ -35,12 +35,12 @@ EXPECTED = {
     AIStageId.CONTENT_GENERATION: (
         AITaskType.CONTENT_GENERATION,
         "content-generation",
-        "prompts/content/v1.txt",
+        "prompts/content/v2.txt",
     ),
     AIStageId.QUALITY_CHECKING: (
         AITaskType.QUALITY_CHECKING,
         "content-quality",
-        "prompts/quality/v1.txt",
+        "prompts/quality/v2.txt",
     ),
 }
 
@@ -81,7 +81,11 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
         assert stage.stage_id is stage_id
         assert stage.task_type is task
         assert stage.prompt.prompt_id == prompt_id
-        assert stage.prompt.version == "v1"
+        assert stage.prompt.version == (
+            "v2"
+            if stage.stage_id in (AIStageId.CONTENT_GENERATION, AIStageId.QUALITY_CHECKING)
+            else "v1"
+        )
         assert stage.prompt.path == prompt_path
         assert [(item.provider_id, item.model) for item in stage.providers] == [
             ("groq", "openai/gpt-oss-120b"),

@@ -1,5 +1,11 @@
 # News AI Social Media Manager — AI Platform
 
+Content prompt v2 requires application-validated claim presentations under
+`certainty-policy-v1`. Quality prompt v2 checks prose against those declarations
+and the immutable Fact Sheet and returns typed certainty_escalations. AI cannot
+change claim status/label or override deterministic certainty errors. This is not
+reasoning escalation, a new AI stage, or deterministic natural-language inference.
+
 ## 1. Purpose
 
 This document defines the canonical AI architecture for the News AI Social Media Manager.
