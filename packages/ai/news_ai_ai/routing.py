@@ -431,8 +431,7 @@ class AIRouter:
         selection: AIStageProviderSelection,
     ) -> AIRequest:
         uses_stage_reasoning_default = (
-            request.reasoning_effort is None
-            and stage.request_defaults.reasoning_effort is not None
+            request.reasoning_effort is None and stage.request_defaults.reasoning_effort is not None
         )
         attempt = request.model_copy(
             update={
@@ -461,9 +460,7 @@ class AIRouter:
                 "HIGH reasoning requires deterministic escalation provenance"
             )
         if attempt.reasoning_effort is not None and attempt.reasoning_policy_version is None:
-            raise AIRoutingPolicyError(
-                "reasoning effort requires deterministic policy provenance"
-            )
+            raise AIRoutingPolicyError("reasoning effort requires deterministic policy provenance")
         return attempt
 
     def _mode_allows(self, locality: ProviderLocality) -> bool:
