@@ -35,12 +35,12 @@ EXPECTED = {
     AIStageId.CONTENT_GENERATION: (
         AITaskType.CONTENT_GENERATION,
         "content-generation",
-        "prompts/content/v4.txt",
+        "prompts/content/v5.txt",
     ),
     AIStageId.QUALITY_CHECKING: (
         AITaskType.QUALITY_CHECKING,
         "content-quality",
-        "prompts/quality/v4.txt",
+        "prompts/quality/v5.txt",
     ),
 }
 
@@ -82,13 +82,10 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
         assert stage.task_type is task
         assert stage.prompt.prompt_id == prompt_id
         assert stage.prompt.version == (
-            "v4"
-            if stage.stage_id
-            in (
-                AIStageId.CLAIM_EXTRACTION,
-                AIStageId.CONTENT_GENERATION,
-                AIStageId.QUALITY_CHECKING,
-            )
+            "v5"
+            if stage.stage_id in (AIStageId.CONTENT_GENERATION, AIStageId.QUALITY_CHECKING)
+            else "v4"
+            if stage.stage_id is AIStageId.CLAIM_EXTRACTION
             else "v2"
             if stage.stage_id is AIStageId.EVIDENCE_ASSESSMENT
             else "v1"
@@ -143,6 +140,36 @@ def test_claim_v4_prompt_matches_output_contract() -> None:
         '{"source_text":"$5 million","value":{"kind":"EXACT_COPY_ONLY","value_kind":"CURRENCY"}}'
         in prompt
     )
+
+
+def test_current_groq_structured_stage_prompts_explicitly_request_json() -> None:
+    loader = ConfigLoader("config")
+    stage_loader = AIStageConfigLoader(loader)
+
+    for stage in stage_loader.load_all().values():
+        assert stage.providers[0].provider_id == "groq"
+        prompt = stage_loader.resolve_prompt(stage).read_text(encoding="utf-8")
+        assert any(
+            line.strip().lower().startswith("return") and "json" in line.lower()
+            for line in prompt.splitlines()
+        ), f"{stage.stage_id.value} Groq structured prompt must explicitly request JSON"
+
+
+def test_content_and_quality_v5_prompts_require_single_json_object() -> None:
+    loader = ConfigLoader("config")
+    stage_loader = AIStageConfigLoader(loader)
+
+    expected = {
+        AIStageId.CONTENT_GENERATION: ("v5", "prompts/content/v5.txt"),
+        AIStageId.QUALITY_CHECKING: ("v5", "prompts/quality/v5.txt"),
+    }
+    for stage_id, (version, path) in expected.items():
+        stage = stage_loader.load(stage_id)
+        prompt = stage_loader.resolve_prompt(stage).read_text(encoding="utf-8")
+        assert stage.prompt.version == version
+        assert stage.prompt.path == path
+        assert "Return exactly one valid JSON object only." in prompt
+        assert "Do not wrap it in markdown, code fences or prose." in prompt
 
 
 def test_provider_configuration_is_closed_and_secret_is_only_an_environment_reference() -> None:
