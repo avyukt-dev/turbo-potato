@@ -430,6 +430,10 @@ class AIRouter:
         stage: AIStageConfig,
         selection: AIStageProviderSelection,
     ) -> AIRequest:
+        uses_stage_reasoning_default = (
+            request.reasoning_effort is None
+            and stage.request_defaults.reasoning_effort is not None
+        )
         attempt = request.model_copy(
             update={
                 "model": selection.model,
@@ -437,6 +441,11 @@ class AIRouter:
                     request.reasoning_effort
                     if request.reasoning_effort is not None
                     else stage.request_defaults.reasoning_effort
+                ),
+                "reasoning_policy_version": (
+                    REASONING_ROUTING_POLICY_VERSION
+                    if uses_stage_reasoning_default and request.reasoning_policy_version is None
+                    else request.reasoning_policy_version
                 ),
             }
         )
@@ -450,6 +459,10 @@ class AIRouter:
         ):
             raise AIRoutingPolicyError(
                 "HIGH reasoning requires deterministic escalation provenance"
+            )
+        if attempt.reasoning_effort is not None and attempt.reasoning_policy_version is None:
+            raise AIRoutingPolicyError(
+                "reasoning effort requires deterministic policy provenance"
             )
         return attempt
 
