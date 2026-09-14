@@ -31,5 +31,8 @@ assertion_strength is HIGH, MEDIUM, LOW or NONE; frame is DIRECT, QUALIFIED, DIS
 UNCERTAIN or REFUTATION. Obey the application-supplied certainty_ceilings maximum_strength and
 allowed_frames for each claim; NEVER increase certainty. Prose must match the declared frame.
 Qualification, uncertainty, disagreement and refutation must remain visible to the reader.
+certainty-policy-v1 authorizes only SUPPORTED/TRUE, PARTIALLY_SUPPORTED/PARTIALLY_TRUE,
+DISPUTED/UNVERIFIED, UNVERIFIED/UNVERIFIED, and REFUTED/FALSE. All other pairs are unsupported;
+enum membership does not authorize presentation. Never invent semantics for an unsupported pair.
 Do not output risk, review, workflow, source-authority, independence, source-ID, media-ID,
 approval or publication fields. No translation or new facts.

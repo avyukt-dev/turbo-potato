@@ -248,6 +248,10 @@ Fact Sheet status and FactCheck label. Content must copy those inputs exactly.
 UNVERIFIED is not FALSE or REFUTED; DISPUTED remains disputed; REFUTED claims
 cannot be affirmatively presented. Deterministic metadata validation and AI prose
 certainty assessment are separate: neither can raise certainty or change truth.
+Only current deterministic FactCheckEngine pairs are authorized: SUPPORTED/TRUE,
+PARTIALLY_SUPPORTED/PARTIALLY_TRUE, DISPUTED/UNVERIFIED, UNVERIFIED/UNVERIFIED,
+REFUTED/FALSE. Every other pair fails closed under `certainty-policy-v1`; additional
+canonical enum values require an explicit future versioned producer/policy change.
 
 ## 8.2 Future low-risk automation
 

@@ -5,6 +5,10 @@ Content prompt v2 requires application-validated claim presentations under
 and the immutable Fact Sheet and returns typed certainty_escalations. AI cannot
 change claim status/label or override deterministic certainty errors. This is not
 reasoning escalation, a new AI stage, or deterministic natural-language inference.
+`certainty-policy-v1` authorizes only the current deterministic producer pairs:
+SUPPORTED/TRUE, PARTIALLY_SUPPORTED/PARTIALLY_TRUE, DISPUTED/UNVERIFIED,
+UNVERIFIED/UNVERIFIED, REFUTED/FALSE. All other pairs fail closed, including unused
+canonical labels; future semantics require an explicitly versioned producer/policy change.
 
 ## 1. Purpose
 

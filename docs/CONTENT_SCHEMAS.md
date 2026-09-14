@@ -598,6 +598,9 @@ assertion_strength (HIGH/MEDIUM/LOW/NONE), frame
 (DIRECT/QUALIFIED/DISPUTED/UNCERTAIN/REFUTATION). They are stored inside the immutable
 ContentVariant structured_payload and therefore the reviewed artifact hash.
 The application validates exact source copies and `certainty-policy-v1` ceilings.
+The only authorized pairs are SUPPORTED/TRUE, PARTIALLY_SUPPORTED/PARTIALLY_TRUE,
+DISPUTED/UNVERIFIED, UNVERIFIED/UNVERIFIED, REFUTED/FALSE. All other pairs fail closed;
+enum membership alone does not authorize downstream certainty semantics.
 Quality revalidates these records independently. Its CERTAINTY findings have closed
 status/label/ceiling/frame/missing/invalid-source-combination codes.
 Quality AI output requires `certainty_escalations`, bounded frozen entries with

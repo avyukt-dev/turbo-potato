@@ -603,15 +603,15 @@ presentation per used claim. Accepted status/label pairs and ceilings are:
 | Status | Label | Maximum strength | Frames |
 | --- | --- | --- | --- |
 | SUPPORTED | TRUE | HIGH | DIRECT, QUALIFIED, UNCERTAIN |
-| SUPPORTED | MOSTLY_TRUE | MEDIUM | QUALIFIED, UNCERTAIN |
-| PARTIALLY_SUPPORTED | MOSTLY_TRUE, PARTIALLY_TRUE, MISLEADING, OUT_OF_CONTEXT | MEDIUM | QUALIFIED, UNCERTAIN |
+| PARTIALLY_SUPPORTED | PARTIALLY_TRUE | MEDIUM | QUALIFIED, UNCERTAIN |
 | DISPUTED | UNVERIFIED | LOW | DISPUTED |
 | UNVERIFIED | UNVERIFIED | LOW | UNCERTAIN |
-| UNVERIFIED | SATIRE | NONE | UNCERTAIN |
-| REFUTED | FALSE, FABRICATED | NONE | REFUTATION |
+| REFUTED | FALSE | NONE | REFUTATION |
 
-All other pairs, including UNASSESSED, fail closed. Labels provide additional
-ceilings, not permission to upgrade status. No prose classifier or new claim
+All other pairs, including every UNASSESSED pair, fail closed under `certainty-policy-v1`.
+Canonical enum values not emitted by the current deterministic FactCheckEngine receive no
+downstream certainty semantics until an explicitly versioned producer/policy change.
+Enum membership is not authorization to upgrade status. No prose classifier or new claim
 taxonomy is implied. Quality methodology v5 independently checks these immutable
 inputs and uses quality prompt v2 to report typed prose `certainty_escalations`.
 Any escalation or deterministic ERROR fails quality; AI cannot override it.

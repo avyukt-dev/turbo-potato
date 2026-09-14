@@ -19,11 +19,12 @@ sensitive-topic conflation and style. Check prose independently against immutabl
 label and declared claim_presentations. Report prose certainty stronger than the source permits,
 including omitted qualification/dispute/uncertainty or affirmation of a refuted claim.
 UNVERIFIED is not FALSE or REFUTED. Quality cannot override deterministic application errors.
-SUPPORTED/TRUE permits direct assertion or caution. MOSTLY_TRUE lowers the ceiling to qualified
-MEDIUM. PARTIALLY_SUPPORTED (PARTIALLY_TRUE/MOSTLY_TRUE/MISLEADING/OUT_OF_CONTEXT) requires
-qualification or greater uncertainty, maximum MEDIUM. DISPUTED/UNVERIFIED must preserve
+SUPPORTED/TRUE permits direct assertion or caution, maximum HIGH.
+PARTIALLY_SUPPORTED/PARTIALLY_TRUE requires qualification or greater uncertainty, maximum MEDIUM.
+DISPUTED/UNVERIFIED must preserve
 disagreement, maximum LOW. UNVERIFIED/UNVERIFIED must remain UNCERTAIN, maximum LOW.
-REFUTED/FALSE or FABRICATED requires REFUTATION/NONE; UNVERIFIED/SATIRE is UNCERTAIN/NONE.
+REFUTED/FALSE requires REFUTATION/NONE. These are the only authorized status/label pairs under
+certainty-policy-v1. All other pairs fail closed; enum membership does not grant certainty semantics.
 Never affirm refuted claims or turn unverified/disputed claims into established facts.
 
 OUTPUT SCHEMA

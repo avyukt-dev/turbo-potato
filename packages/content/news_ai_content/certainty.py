@@ -1,6 +1,7 @@
 """Application-owned certainty ceilings; no prose inference or factual mutation."""
 
 from enum import StrEnum
+from types import MappingProxyType
 from uuid import UUID
 
 from news_ai_domain import ClaimVerificationStatus as Status
@@ -15,6 +16,16 @@ class ClaimAssertionStrength(StrEnum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
     NONE = "NONE"
+
+
+_STRENGTH_RANK = MappingProxyType(
+    {
+        ClaimAssertionStrength.NONE: 0,
+        ClaimAssertionStrength.LOW: 1,
+        ClaimAssertionStrength.MEDIUM: 2,
+        ClaimAssertionStrength.HIGH: 3,
+    }
+)
 
 
 class ClaimPresentationFrame(StrEnum):
@@ -49,28 +60,24 @@ class CertaintyViolation(StrEnum):
 
 
 def certainty_ceiling(status: Status, label: Label) -> CertaintyCeiling:
-    """Explicit accepted pairs, including conservative staged canonical labels."""
+    """Only pairs emitted by the current deterministic FactCheckEngine are authorized."""
     S, F = ClaimAssertionStrength, ClaimPresentationFrame
     if status == Status.SUPPORTED and label == Label.TRUE:
         return CertaintyCeiling(
             maximum_strength=S.HIGH, allowed_frames=(F.DIRECT, F.QUALIFIED, F.UNCERTAIN)
         )
-    if (status == Status.SUPPORTED and label == Label.MOSTLY_TRUE) or (
-        status == Status.PARTIALLY_SUPPORTED
-        and label
-        in (Label.MOSTLY_TRUE, Label.PARTIALLY_TRUE, Label.MISLEADING, Label.OUT_OF_CONTEXT)
-    ):
+    if status == Status.PARTIALLY_SUPPORTED and label == Label.PARTIALLY_TRUE:
         return CertaintyCeiling(
             maximum_strength=S.MEDIUM, allowed_frames=(F.QUALIFIED, F.UNCERTAIN)
         )
     if status == Status.DISPUTED and label == Label.UNVERIFIED:
         return CertaintyCeiling(maximum_strength=S.LOW, allowed_frames=(F.DISPUTED,))
-    if status == Status.UNVERIFIED and label in (Label.UNVERIFIED, Label.SATIRE):
+    if status == Status.UNVERIFIED and label == Label.UNVERIFIED:
         return CertaintyCeiling(
-            maximum_strength=S.NONE if label == Label.SATIRE else S.LOW,
+            maximum_strength=S.LOW,
             allowed_frames=(F.UNCERTAIN,),
         )
-    if status == Status.REFUTED and label in (Label.FALSE, Label.FABRICATED):
+    if status == Status.REFUTED and label == Label.FALSE:
         return CertaintyCeiling(maximum_strength=S.NONE, allowed_frames=(F.REFUTATION,))
     raise ValueError("unsupported immutable claim status/label combination")
 
@@ -87,10 +94,7 @@ def presentation_violations(
         ceiling = certainty_ceiling(status, label)
     except ValueError:
         return (*violations, CertaintyViolation.SOURCE_COMBINATION_INVALID)
-    ranks = {
-        strength: rank for rank, strength in enumerate(reversed(tuple(ClaimAssertionStrength)))
-    }
-    if ranks[presentation.assertion_strength] > ranks[ceiling.maximum_strength]:
+    if _STRENGTH_RANK[presentation.assertion_strength] > _STRENGTH_RANK[ceiling.maximum_strength]:
         violations.append(CertaintyViolation.CEILING_EXCEEDED)
     if presentation.frame not in ceiling.allowed_frames:
         violations.append(CertaintyViolation.FRAME_MISMATCH)
