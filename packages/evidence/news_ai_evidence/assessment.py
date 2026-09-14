@@ -16,7 +16,6 @@ from news_ai_ai import (
     AIRouter,
     AITaskType,
     PromptReference,
-    select_reasoning_effort,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -97,7 +96,7 @@ class AIRouterEvidenceAssessor:
     async def assess(
         self, candidate: ResearchCandidate, claim_text: str
     ) -> EvidenceAssessment | None:
-        reasoning = select_reasoning_effort()
+        reasoning = candidate.reasoning
         material = {
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
             "reasoning_policy_version": reasoning.policy_version,
@@ -108,8 +107,12 @@ class AIRouterEvidenceAssessor:
             "candidate_snippet": candidate.result.snippet,
             "candidate_metadata": candidate.result.metadata,
         }
+        input_hash_material = {
+            "input": material,
+            "reasoning": reasoning.model_dump(mode="json"),
+        }
         input_hash = hashlib.sha256(
-            json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(input_hash_material, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         parsed: EvidenceAssessmentOutput | None = None
 
