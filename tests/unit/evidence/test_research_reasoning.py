@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import news_ai_evidence.engine as engine_module
 import pytest
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
@@ -37,8 +38,6 @@ from news_ai_evidence import (
 )
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
-
-import news_ai_evidence.engine as engine_module
 
 
 @dataclass
