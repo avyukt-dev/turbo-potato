@@ -493,6 +493,20 @@ notes
 created_at
 ```
 
+Current `claim_evidence` additionally stores nullable `directness`, `origin_role`,
+`provenance_state`, `temporal_role`, `semantics_policy_version`, using the closed
+`evidence-graph-policy-v1` vocabulary in `SOURCE_AND_RESEARCH.md`. These fields
+are all present for current assessments or all NULL for unevaluated history.
+No guessed historical backfill is permitted.
+
+`evidence_graph_relations` stores UUID identity, source evidence FK, exactly one
+target evidence FK or bounded external reference, closed relation type, basis,
+policy version, research Job FK, positive Claim research generation and timestamps.
+Self-edges and duplicate source/type/endpoint/policy edges are rejected. Current
+research persistence permits resolved targets only in the same Claim's current
+collection; Fact Sheet generation rechecks endpoint currency and run/generation.
+No edge mutates factual verification state.
+
 Canonical relation vocabulary may include:
 
 ```text

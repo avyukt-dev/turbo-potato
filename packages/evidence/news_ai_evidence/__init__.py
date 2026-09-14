@@ -50,11 +50,21 @@ from .fact_check import (
 from .fact_sheet import (
     FactSheetArtifact,
     FactSheetClaimSnapshot,
+    FactSheetEvidenceGraphRelationSnapshot,
     FactSheetEvidenceSnapshot,
     FactSheetFactCheckSnapshot,
     FactSheetGenerationResult,
     FactSheetGenerator,
     FactSheetSourceSnapshot,
+)
+from .graph import (
+    EVIDENCE_GRAPH_POLICY_VERSION,
+    EvidenceDirectness,
+    EvidenceGraphRelationSpec,
+    EvidenceGraphRelationType,
+    EvidenceOriginRole,
+    EvidenceProvenanceState,
+    EvidenceTemporalRole,
 )
 from .policy import (
     SearchBudgets,
@@ -100,6 +110,13 @@ __all__ = [
     "EvidenceAssessor",
     "EvidenceCollectionResult",
     "EvidenceEngine",
+    "EVIDENCE_GRAPH_POLICY_VERSION",
+    "EvidenceDirectness",
+    "EvidenceGraphRelationSpec",
+    "EvidenceGraphRelationType",
+    "EvidenceOriginRole",
+    "EvidenceProvenanceState",
+    "EvidenceTemporalRole",
     "EvidenceRelation",
     "FACT_CHECK_METHODOLOGY_VERSION",
     "FactCheckBatchResult",
@@ -111,6 +128,7 @@ __all__ = [
     "FactSheetArtifact",
     "FactSheetClaimSnapshot",
     "FactSheetEvidenceSnapshot",
+    "FactSheetEvidenceGraphRelationSnapshot",
     "FactSheetFactCheckSnapshot",
     "FactSheetGenerationResult",
     "FactSheetGenerator",

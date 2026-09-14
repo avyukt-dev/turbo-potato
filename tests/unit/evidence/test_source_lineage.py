@@ -138,6 +138,7 @@ def test_wire_republication_and_exact_duplicates_form_one_group() -> None:
     resolutions = tuple(result.values())
     assert {item.lineage.status for item in resolutions} == {LineageStatus.KNOWN_SHARED}
     assert len({item.lineage.independence_group for item in resolutions}) == 1
+    assert all(item.graph_relations[0].relation_type == "DERIVED_FROM" for item in resolutions)
 
 
 def test_shared_police_statement_and_research_paper_are_not_multiple_confirmations() -> None:
@@ -326,6 +327,7 @@ def test_near_duplicate_similarity_threshold_is_inclusive() -> None:
     assert {item.lineage.status for item in at_threshold.values()} == {
         LineageStatus.INFERRED_SHARED
     }
+    assert all(not item.graph_relations for item in at_threshold.values())
     assert {item.lineage.status for item in below_threshold.values()} == {LineageStatus.UNRESOLVED}
 
 

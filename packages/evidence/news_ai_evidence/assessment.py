@@ -25,6 +25,13 @@ from .engine import (
     EvidenceRelation,
     ResearchCandidate,
 )
+from .graph import (
+    EVIDENCE_GRAPH_POLICY_VERSION,
+    EvidenceDirectness,
+    EvidenceOriginRole,
+    EvidenceProvenanceState,
+    EvidenceTemporalRole,
+)
 
 
 class EvidenceAssessmentOutput(BaseModel):
@@ -33,6 +40,8 @@ class EvidenceAssessmentOutput(BaseModel):
     claim_id: UUID
     candidate_url: str = Field(min_length=1, max_length=4096)
     relation: EvidenceRelation
+    directness: EvidenceDirectness
+    temporal_role: EvidenceTemporalRole
     strength_score: float = Field(ge=0, le=1)
     relevant_excerpt: str | None = Field(default=None, max_length=4000)
     notes: str | None = Field(default=None, max_length=4000)
@@ -44,6 +53,16 @@ class EvidenceAssessmentOutput(BaseModel):
             EvidenceRelation.SECONDARY_EVIDENCE,
         }:
             raise ValueError("AI evidence output cannot classify source authority")
+        if (
+            self.relation == EvidenceRelation.DIRECT_SUPPORT
+            and self.directness != EvidenceDirectness.DIRECT
+        ):
+            raise ValueError("direct support requires direct evidence")
+        if (
+            self.relation == EvidenceRelation.INDIRECT_SUPPORT
+            and self.directness != EvidenceDirectness.INDIRECT
+        ):
+            raise ValueError("indirect support requires indirect evidence")
         return self
 
 
@@ -55,7 +74,7 @@ class EvidenceAssessmentPrompt:
     system_prompt: str
 
     @classmethod
-    def load(cls, path: Path, *, version: str = "v1") -> EvidenceAssessmentPrompt:
+    def load(cls, path: Path, *, version: str = "v2") -> EvidenceAssessmentPrompt:
         text = path.read_text(encoding="utf-8").strip()
         if not text:
             raise ValueError("evidence-assessment prompt must not be blank")
@@ -78,6 +97,7 @@ class AIRouterEvidenceAssessor:
         self, candidate: ResearchCandidate, claim_text: str
     ) -> EvidenceAssessment | None:
         material = {
+            "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
             "claim_id": str(candidate.claim_id),
             "claim_text": claim_text,
             "candidate_url": candidate.result.url,
@@ -135,6 +155,11 @@ class AIRouterEvidenceAssessor:
             claim_id=parsed.claim_id,
             candidate_url=parsed.candidate_url,
             relation=parsed.relation,
+            directness=parsed.directness,
+            # Only the durable source resolver may establish provenance.
+            origin_role=EvidenceOriginRole.UNKNOWN,
+            provenance_state=EvidenceProvenanceState.UNKNOWN,
+            temporal_role=parsed.temporal_role,
             strength_score=parsed.strength_score,
             relevant_excerpt=parsed.relevant_excerpt,
             notes=parsed.notes,

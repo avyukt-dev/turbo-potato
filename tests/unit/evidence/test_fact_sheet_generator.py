@@ -12,6 +12,7 @@ from news_ai_database import (
     Claim,
     ClaimEvidence,
     EventOutbox,
+    EvidenceGraphRelation,
     EvidenceItem,
     FactCheck,
     FactSheet,
@@ -161,6 +162,7 @@ def _seed_verified_story(
             excerpt="Supporting excerpt",
             evidence_metadata={
                 "research_run_id": str(research_run_id),
+                "research_generation": 1,
                 "relationship_assessments": [
                     {
                         "claim_id": str(claims[0].id),
@@ -180,6 +182,17 @@ def _seed_verified_story(
         )
         session.add_all([support, contradiction])
         session.flush()
+        session.add(
+            EvidenceGraphRelation(
+                source_evidence_id=support.id,
+                external_reference="document:source-1",
+                relation_type="REFERENCES",
+                basis="explicit-primary_document_id",
+                policy_version="evidence-graph-policy-v1",
+                research_run_id=research_run_id,
+                research_generation=1,
+            )
+        )
         session.add_all(
             [
                 ClaimEvidence(
@@ -187,12 +200,22 @@ def _seed_verified_story(
                     evidence_id=support.id,
                     relation=EvidenceRelation.DIRECT_SUPPORT.value,
                     strength_score=Decimal("0.90"),
+                    directness="DIRECT",
+                    origin_role="UNKNOWN",
+                    provenance_state="UNKNOWN",
+                    temporal_role="UNKNOWN",
+                    semantics_policy_version="evidence-graph-policy-v1",
                 ),
                 ClaimEvidence(
                     claim_id=claims[-1].id,
                     evidence_id=contradiction.id,
                     relation=EvidenceRelation.CONTRADICTS.value,
                     strength_score=Decimal("0.95"),
+                    directness="UNKNOWN",
+                    origin_role="UNKNOWN",
+                    provenance_state="UNKNOWN",
+                    temporal_role="UNKNOWN",
+                    semantics_policy_version="evidence-graph-policy-v1",
                 ),
             ]
         )
@@ -258,6 +281,12 @@ def test_generator_preserves_complete_verified_snapshot_and_emits_content_reques
     claims_by_id = {item.claim_id: item for item in artifact.claims}
     assert claims_by_id[claim_ids[0]].evidence_ids
     assert claims_by_id[claim_ids[-1]].contradictory_evidence_ids
+    support = next(item for item in artifact.evidence if item.relation == "DIRECT_SUPPORT")
+    assert support.directness == "DIRECT"
+    assert support.semantics_policy_version == "evidence-graph-policy-v1"
+    assert support.graph_relations[0].relation_type == "REFERENCES"
+    assert support.graph_relations[0].external_reference == "document:source-1"
+    assert any(item.relation == "CONTRADICTS" for item in artifact.evidence)
     assert {item.url for item in artifact.sources} >= {
         "https://example.com/story",
         "https://example.com/support",
@@ -376,3 +405,81 @@ def test_generator_rejects_fact_check_claim_mismatch() -> None:
         pytest.raises(ValueError, match="missing fact checks"),
     ):
         FactSheetGenerator().generate(session, bad_event)
+
+
+def test_historical_fact_sheet_without_graph_semantics_remains_readable() -> None:
+    factory = _factory()
+    event, _, _, _ = _seed_verified_story(factory)
+    generator = FactSheetGenerator()
+    with factory() as session, session.begin():
+        result = generator.generate(session, event)
+        row = session.get(FactSheet, result.fact_sheet_id)
+        legacy_fields = {
+            "directness",
+            "origin_role",
+            "provenance_state",
+            "temporal_role",
+            "semantics_policy_version",
+            "graph_relations",
+        }
+        row.evidence_snapshot = [
+            {key: value for key, value in item.items() if key not in legacy_fields}
+            for item in row.evidence_snapshot
+        ]
+        before = row.evidence_snapshot
+        artifact = generator.artifact_from_row(row)
+        assert all(item.semantics_policy_version is None for item in artifact.evidence)
+        assert all(item.graph_relations is None for item in artifact.evidence)
+        assert row.evidence_snapshot == before
+
+
+@pytest.mark.parametrize("mutation", ["generation", "policy", "target"])
+def test_fact_sheet_rejects_stale_or_outside_graph_state(mutation) -> None:
+    factory = _factory()
+    event, _, _, _ = _seed_verified_story(factory)
+    with factory() as session, session.begin():
+        edge = session.scalar(select(EvidenceGraphRelation))
+        if mutation == "generation":
+            edge.research_generation += 1
+        elif mutation == "policy":
+            edge.policy_version = "evidence-graph-policy-v0"
+        else:
+            stale = EvidenceItem(evidence_type="ARTICLE", evidence_metadata={})
+            session.add(stale)
+            session.flush()
+            edge.target_evidence_id = stale.id
+            edge.external_reference = None
+    with pytest.raises(ValueError, match="evidence graph"), factory() as session, session.begin():
+        FactSheetGenerator().generate(session, event)
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactSheet)) == 0
+
+
+def test_fact_sheet_rejects_cross_claim_graph_target() -> None:
+    factory = _factory()
+    event, _, _, _ = _seed_verified_story(factory)
+
+    with factory() as session, session.begin():
+        edge = session.scalar(select(EvidenceGraphRelation))
+        contradiction_link = session.scalar(
+            select(ClaimEvidence).where(
+                ClaimEvidence.relation == EvidenceRelation.CONTRADICTS.value
+            )
+        )
+
+        assert edge is not None
+        assert contradiction_link is not None
+        assert edge.source_evidence_id != contradiction_link.evidence_id
+
+        edge.target_evidence_id = contradiction_link.evidence_id
+        edge.external_reference = None
+
+    with (
+        pytest.raises(ValueError, match="different claim"),
+        factory() as session,
+        session.begin(),
+    ):
+        FactSheetGenerator().generate(session, event)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactSheet)) == 0

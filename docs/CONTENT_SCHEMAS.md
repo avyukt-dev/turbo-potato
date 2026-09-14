@@ -194,6 +194,14 @@ class EvidenceRef(BaseModel):
 
 `relation` maps to evidence relationships owned by `DATA_MODEL.md`.
 
+Immutable Fact Sheet evidence snapshots also preserve the four typed evidence
+dimensions and `semantics_policy_version` from `claim_evidence`, plus typed
+`graph_relations` with endpoint/reference, basis, policy, research run/generation.
+Historical missing fields remain NULL/absent; current empty graph arrays mean
+evaluated with no explicit edges. Exact source/version, authority, lineage and
+AI provenance remain separate and unchanged. Snapshot identity includes these
+semantics and edges; later source versions do not rewrite earlier artifacts.
+
 A citation/reference must actually support the associated proposition.
 
 ---

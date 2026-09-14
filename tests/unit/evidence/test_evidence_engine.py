@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from news_ai_common.config import ConfigLoader
 from news_ai_database import (
     AIRun,
@@ -15,6 +16,7 @@ from news_ai_database import (
     Claim,
     ClaimEvidence,
     EventOutbox,
+    EvidenceGraphRelation,
     EvidenceItem,
     Job,
     ResearchRunClaim,
@@ -113,6 +115,7 @@ class ExplicitAssessor:
             claim_id=candidate.claim_id,
             candidate_url=candidate.result.url,
             relation=relation,
+            directness=("DIRECT" if relation is EvidenceRelation.DIRECT_SUPPORT else "UNKNOWN"),
             strength_score=Decimal("0.60"),
             notes=f"Explicit test assessment for: {claim_text}",
         )
@@ -299,6 +302,77 @@ def test_research_methodology_version_invalidates_semantic_operation() -> None:
         assert stored_claim.current_research_run_id == second.research_run_id
     assert second.created is True
     assert second.research_run_id != first.research_run_id
+
+
+def test_evidence_graph_policy_version_invalidates_semantic_operation(monkeypatch) -> None:
+    import news_ai_evidence.engine as engine_module
+
+    factory = _factory()
+    engine = _engine()
+    _, _, trigger, _, _, first = _prepare(factory, engine)
+    monkeypatch.setattr(engine_module, "EVIDENCE_GRAPH_POLICY_VERSION", "evidence-graph-policy-v2")
+    with factory() as session, session.begin():
+        second = engine.request_research(session, trigger)
+    assert second.created and second.research_run_id != first.research_run_id
+
+
+def test_in_flight_old_graph_policy_requires_replanning(monkeypatch) -> None:
+    import news_ai_evidence.engine as engine_module
+
+    factory = _factory()
+    engine = _engine()
+    _, _, _, requested, task, _ = _prepare(factory, engine)
+    collection = asyncio.run(engine.collect(task))
+    monkeypatch.setattr(engine_module, "EVIDENCE_GRAPH_POLICY_VERSION", "evidence-graph-policy-v2")
+    with factory() as session, pytest.raises(ValueError, match="replanning"):
+        engine.load_collection_task(session, requested)
+    with pytest.raises(ValueError, match="replanning"), factory() as session, session.begin():
+        engine.persist_collection(session, requested, task, collection)
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(EvidenceItem)) == 0
+
+
+def test_graph_target_from_another_or_stale_collection_is_rejected() -> None:
+    from news_ai_evidence import EvidenceGraphRelationSpec
+    from news_ai_evidence.source_policy import (
+        CandidateSourceResolution,
+        LineageResolution,
+        SourcePolicyResolution,
+    )
+
+    class InvalidTargetResolver:
+        def resolve(self, session, candidates):
+            return {
+                (candidate.claim_id, candidate.result.url): CandidateSourceResolution(
+                    source=None,
+                    article=None,
+                    version=None,
+                    authority=SourcePolicyResolution(effective_level=4, basis="unknown"),
+                    lineage=LineageResolution(status="UNRESOLVED", basis="unresolved"),
+                    graph_relations=(
+                        EvidenceGraphRelationSpec(
+                            relation_type="REFERENCES",
+                            target_evidence_id=uuid4(),
+                            basis="explicit-reference",
+                        ),
+                    ),
+                )
+                for candidate in candidates
+            }
+
+    factory = _factory()
+    engine = _engine()
+    engine.source_resolver = InvalidTargetResolver()
+    _, _, _, requested, task, _ = _prepare(factory, engine)
+    collection = asyncio.run(engine.collect(task))
+    with (
+        pytest.raises(ValueError, match="outside current claim"),
+        factory() as session,
+        session.begin(),
+    ):
+        engine.persist_collection(session, requested, task, collection)
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(EvidenceItem)) == 0
 
 
 def test_research_generations_advance_per_claim_in_multi_claim_story() -> None:
@@ -595,6 +669,7 @@ def test_collection_persists_exact_source_version_lineage_and_ai_run() -> None:
         claim_id=claim.id,
         candidate_url=result.url,
         relation=EvidenceRelation.DIRECT_SUPPORT,
+        directness="DIRECT",
         strength_score=Decimal("0.90"),
         relevant_excerpt="government announced a new policy",
         ai_provenance=EvidenceAssessmentAIProvenance(
@@ -632,6 +707,16 @@ def test_collection_persists_exact_source_version_lineage_and_ai_run() -> None:
         assert evidence.evidence_metadata["lineage_status"] == "INDEPENDENT"
         assert evidence.evidence_metadata["source_level"] == 1
         assert evidence.evidence_metadata["assessment_ai_run_ids"] == [str(ai_run.id)]
+        link = session.scalar(select(ClaimEvidence))
+        assert link.directness == "DIRECT"
+        assert link.origin_role == "ORIGINAL"
+        assert link.provenance_state == "DURABLE_VERSION_PRESERVED"
+        assert link.semantics_policy_version == "evidence-graph-policy-v1"
+        edge = session.scalar(select(EvidenceGraphRelation))
+        assert edge.relation_type == "REFERENCES"
+        assert edge.external_reference == "document:policy-1"
+        assert edge.research_run_id == task.plan.research_run_id
+        assert edge.research_generation == 1
         assert ai_run is not None and ai_run.task_type == "EVIDENCE_ASSESSMENT"
 
 

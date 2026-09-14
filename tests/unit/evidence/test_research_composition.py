@@ -89,9 +89,9 @@ def test_production_research_stack_uses_production_boundaries() -> None:
         "prompts/claim-extraction/v3.txt"
     )
     assert stack.evidence_engine.assessor.prompt.prompt_id == "evidence-assessment"
-    assert stack.evidence_engine.assessor.prompt.version == "v1"
+    assert stack.evidence_engine.assessor.prompt.version == "v2"
     assert stack.evidence_engine.assessor.prompt.checksum == _prompt_checksum(
-        "prompts/evidence-assessment/v1.txt"
+        "prompts/evidence-assessment/v2.txt"
     )
     assert not hasattr(stack, "content_worker")
     assert stack.fact_sheet_worker.generator.requested_platforms == ("INSTAGRAM",)

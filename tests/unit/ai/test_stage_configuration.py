@@ -30,7 +30,7 @@ EXPECTED = {
     AIStageId.EVIDENCE_ASSESSMENT: (
         AITaskType.EVIDENCE_ASSESSMENT,
         "evidence-assessment",
-        "prompts/evidence-assessment/v1.txt",
+        "prompts/evidence-assessment/v2.txt",
     ),
     AIStageId.CONTENT_GENERATION: (
         AITaskType.CONTENT_GENERATION,
@@ -86,6 +86,8 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
             if stage.stage_id in (AIStageId.CONTENT_GENERATION, AIStageId.QUALITY_CHECKING)
             else "v3"
             if stage.stage_id is AIStageId.CLAIM_EXTRACTION
+            else "v2"
+            if stage.stage_id is AIStageId.EVIDENCE_ASSESSMENT
             else "v1"
         )
         assert stage.prompt.path == prompt_path

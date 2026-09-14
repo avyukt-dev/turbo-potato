@@ -18,6 +18,7 @@ from news_ai_database import (
     Claim,
     ClaimEvidence,
     EventOutbox,
+    EvidenceGraphRelation,
     EvidenceItem,
     Job,
     ResearchRunClaim,
@@ -31,6 +32,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .contracts import SearchCapability, SearchQueryFamily, SearchRequest, SearchResult
+from .graph import (
+    EVIDENCE_GRAPH_POLICY_VERSION,
+    EvidenceDirectness,
+    EvidenceOriginRole,
+    EvidenceProvenanceState,
+    EvidenceTemporalRole,
+)
 from .policy import SearchPolicy, SearchPolicyEnforcer
 from .provider import (
     SearchCapabilityError,
@@ -141,6 +149,10 @@ class EvidenceAssessment(BaseModel):
     claim_id: UUID
     candidate_url: str = Field(min_length=1, max_length=4096)
     relation: EvidenceRelation
+    directness: EvidenceDirectness = EvidenceDirectness.UNKNOWN
+    origin_role: EvidenceOriginRole = EvidenceOriginRole.UNKNOWN
+    provenance_state: EvidenceProvenanceState = EvidenceProvenanceState.UNKNOWN
+    temporal_role: EvidenceTemporalRole = EvidenceTemporalRole.UNKNOWN
     strength_score: Decimal | None = Field(default=None, ge=0, le=1)
     relevant_excerpt: str | None = Field(default=None, max_length=4000)
     notes: str | None = Field(default=None, max_length=4000)
@@ -153,6 +165,16 @@ class EvidenceAssessment(BaseModel):
             EvidenceRelation.SECONDARY_EVIDENCE,
         }:
             raise ValueError("evidence assessor cannot assign source-authority relations")
+        if (
+            self.relation is EvidenceRelation.DIRECT_SUPPORT
+            and self.directness is not EvidenceDirectness.DIRECT
+        ):
+            raise ValueError("direct support must be direct")
+        if (
+            self.relation is EvidenceRelation.INDIRECT_SUPPORT
+            and self.directness is not EvidenceDirectness.INDIRECT
+        ):
+            raise ValueError("indirect support must be indirect")
         return self
 
 
@@ -313,6 +335,7 @@ class EvidenceEngine:
             "research",
             {
                 "methodology_version": self.methodology_version,
+                "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
                 "story_id": story.id,
                 "claim_ids": sorted(payload.claim_ids, key=str),
                 "ai_run_id": payload.ai_run_id,
@@ -352,6 +375,7 @@ class EvidenceEngine:
             payload={
                 "plan": plan.model_dump(mode="json"),
                 "methodology_version": self.methodology_version,
+                "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
                 "triggering_event_id": str(triggering_event.event_id),
             },
             semantic_key=operation_key,
@@ -455,6 +479,8 @@ class EvidenceEngine:
             raise ValueError("evidence.requested references unknown research run")
         if job.status not in {"PENDING", "RUNNING"}:
             raise ValueError(f"research run is not collectible from status {job.status!r}")
+        if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
+            raise ValueError("research run requires replanning under current evidence semantics")
         raw_plan = job.payload.get("plan")
         if raw_plan is None:
             raise ValueError("research job is missing persisted plan")
@@ -685,6 +711,8 @@ class EvidenceEngine:
             raise ValueError("research run is already completed")
         if job.status not in {"PENDING", "RUNNING"}:
             raise ValueError(f"research run cannot complete from status {job.status!r}")
+        if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
+            raise ValueError("research run requires replanning under current evidence semantics")
         self._validate_event_against_plan(event, task.plan)
         currency = self.collection_currency(session, task, lock=True)
         current_claim_ids = currency.current_claim_ids
@@ -736,6 +764,8 @@ class EvidenceEngine:
         grouped = self._group_candidates(assessed_candidates)
         evidence_ids: list[UUID] = []
         relation_count = 0
+        evidence_by_claim_url: dict[tuple[UUID, str], UUID] = {}
+        pending_graph_relations = []
 
         for (claim_id, url), candidates in grouped.items():
             first = candidates[0]
@@ -809,6 +839,11 @@ class EvidenceEngine:
             session.add(evidence)
             session.flush()
             evidence_ids.append(evidence.id)
+            evidence_by_claim_url[(claim_id, url)] = evidence.id
+            if resolution is not None:
+                pending_graph_relations.extend(
+                    (claim_id, evidence.id, spec) for spec in resolution.graph_relations
+                )
 
             for assessment in assessment_records:
                 session.add(
@@ -817,12 +852,69 @@ class EvidenceEngine:
                         evidence_id=evidence.id,
                         relation=assessment.relation.value,
                         strength_score=assessment.strength_score,
+                        directness=assessment.directness.value,
+                        origin_role=(
+                            resolution.origin_role.value
+                            if resolution is not None
+                            else EvidenceOriginRole.UNKNOWN.value
+                        ),
+                        provenance_state=(
+                            resolution.provenance_state.value
+                            if resolution is not None
+                            else EvidenceProvenanceState.UNKNOWN.value
+                        ),
+                        temporal_role=assessment.temporal_role.value,
+                        semantics_policy_version=EVIDENCE_GRAPH_POLICY_VERSION,
                     )
                 )
                 relation_count += 1
 
+        seen_graph_relations = set()
+        for claim_id, source_evidence_id, spec in pending_graph_relations:
+            target_id = (
+                evidence_by_claim_url.get((claim_id, spec.external_reference))
+                if spec.external_reference is not None
+                else spec.target_evidence_id
+            )
+            if target_id == source_evidence_id and spec.external_reference is not None:
+                # An explicit originating reference may name the reviewed document;
+                # retain that reference rather than inventing a self-edge.
+                target_id = None
+            if target_id is not None and (
+                target_id == source_evidence_id
+                or target_id
+                not in {
+                    value
+                    for (owner, _), value in evidence_by_claim_url.items()
+                    if owner == claim_id
+                }
+            ):
+                raise ValueError("graph target is outside current claim research evidence")
+            identity = (
+                source_evidence_id,
+                spec.relation_type,
+                target_id,
+                None if target_id is not None else spec.external_reference,
+            )
+            if identity in seen_graph_relations:
+                continue
+            seen_graph_relations.add(identity)
+            session.add(
+                EvidenceGraphRelation(
+                    source_evidence_id=source_evidence_id,
+                    target_evidence_id=target_id,
+                    external_reference=None if target_id is not None else spec.external_reference,
+                    relation_type=spec.relation_type.value,
+                    basis=spec.basis,
+                    policy_version=EVIDENCE_GRAPH_POLICY_VERSION,
+                    research_run_id=task.plan.research_run_id,
+                    research_generation=int(job.payload["claim_generations"][str(claim_id)]),
+                )
+            )
+
         job.status = "COMPLETED"
         job.result = {
+            "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
             "evidence_ids": [str(item) for item in evidence_ids],
             "claim_evidence_count": relation_count,
             "candidate_count": len(collection.candidates),
