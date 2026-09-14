@@ -76,8 +76,9 @@ def _project_quality_checking(payload: dict[str, Any]) -> dict[str, Any]:
     artifact = _mapping(_required(payload, "content_artifact"), "content_artifact")
     _require_same_identity(fact_sheet, brief)
 
-    selected_claim_ids = frozenset(
-        str(item) for item in _list(_required(artifact, "claim_ids_used"), "claim_ids_used")
+    selected_claim_ids = _unique_ids(
+        _list(_required(artifact, "claim_ids_used"), "claim_ids_used"),
+        owner="quality-checking claim_ids_used",
     )
     if not selected_claim_ids:
         raise AIInputProjectionError("quality-checking requires at least one selected claim")
@@ -87,8 +88,9 @@ def _project_quality_checking(payload: dict[str, Any]) -> dict[str, Any]:
     if not selected_claim_ids <= fact_claim_ids or not selected_claim_ids <= brief_claim_ids:
         raise AIInputProjectionError("quality-checking references an unknown claim")
 
-    selected_source_ids = frozenset(
-        str(item) for item in _list(artifact.get("source_ids_used", []), "source_ids_used")
+    selected_source_ids = _unique_ids(
+        _list(artifact.get("source_ids_used", []), "source_ids_used"),
+        owner="quality-checking source_ids_used",
     )
     evidence = _list(_required(fact_sheet, "evidence"), "Fact Sheet evidence")
     expected_source_ids = frozenset(
@@ -217,16 +219,10 @@ def _project_brief(brief: dict[str, Any], *, selected_claim_ids: frozenset[str])
             "story_id",
             "fact_sheet_id",
             "fact_sheet_version",
-            "headline",
-            "summary",
             "editorial_angle",
-            "key_points",
             "exclusions",
             "tone",
             "audience_relevance",
-            "risk_level",
-            "sensitive_topics",
-            "unresolved_questions",
             "priority_topics",
             "style_rules",
             "target",
@@ -240,12 +236,7 @@ def _project_claim(claim: dict[str, Any]) -> dict[str, Any]:
         claim,
         (
             "claim_id",
-            "claim_text",
             "claim_type",
-            "semantics",
-            "values",
-            "status",
-            "confidence_score",
             "importance_score",
             "risk_level",
             "sensitive_topics",
@@ -274,7 +265,7 @@ def _project_fact_check(fact_check: dict[str, Any]) -> dict[str, Any]:
 
 
 def _project_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
-    return _pick(
+    projected = _pick(
         evidence,
         (
             "evidence_id",
@@ -288,13 +279,36 @@ def _project_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             "source_level",
             "source_policy_basis",
             "lineage_status",
+            "lineage_basis",
             "independence_group",
             "directness",
             "origin_role",
             "provenance_state",
             "temporal_role",
+            "semantics_policy_version",
         ),
     )
+    if "graph_relations" in evidence:
+        projected["graph_relations"] = _project_graph_relations(evidence["graph_relations"])
+    return projected
+
+
+def _project_graph_relations(value: Any) -> list[dict[str, Any]] | None:
+    if value is None:
+        return None
+    return [
+        _pick(
+            _mapping(raw, "Fact Sheet graph relation"),
+            (
+                "relation_type",
+                "target_evidence_id",
+                "external_reference",
+                "basis",
+                "policy_version",
+            ),
+        )
+        for raw in _list(value, "Fact Sheet graph relations")
+    ]
 
 
 def _project_source(source: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +337,13 @@ def _claim_ids(claims: list[Any]) -> frozenset[str]:
     result = [str(_required(_mapping(item, "claim"), "claim_id")) for item in claims]
     if len(result) != len(set(result)):
         raise AIInputProjectionError("claim identifiers must be unique")
+    return frozenset(result)
+
+
+def _unique_ids(values: list[Any], *, owner: str) -> frozenset[str]:
+    result = [str(item) for item in values]
+    if len(result) != len(set(result)):
+        raise AIInputProjectionError(f"{owner} must not contain duplicates")
     return frozenset(result)
 
 
