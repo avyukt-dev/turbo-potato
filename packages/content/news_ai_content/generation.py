@@ -50,7 +50,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .ai_projection import AI_INPUT_PROJECTION_VERSION, project_content_generation_input
+from .ai_projection import (
+    AI_INPUT_PROJECTION_VERSION,
+    project_content_generation_input,
+)
 from .brief import build_editorial_brief
 from .certainty import (
     CERTAINTY_POLICY_VERSION,
