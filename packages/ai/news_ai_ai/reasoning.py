@@ -28,15 +28,6 @@ class ReasoningDecision(BaseModel):
             raise ValueError("non-HIGH reasoning cannot contain escalation reasons")
         return self
 
-    def request_updates(self) -> dict[str, object]:
-        """Return typed AIRequest fields without coupling callers to field spelling."""
-
-        return {
-            "reasoning_effort": self.effort,
-            "reasoning_policy_version": self.policy_version,
-            "reasoning_reasons": self.reasons,
-        }
-
 
 def select_reasoning_effort(
     *,
