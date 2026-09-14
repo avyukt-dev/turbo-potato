@@ -100,6 +100,15 @@ class AIStageRequestDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     reasoning_effort: AIReasoningEffort | None = None
 
+    @field_validator("reasoning_effort")
+    @classmethod
+    def forbid_unexplained_high_default(
+        cls, value: AIReasoningEffort | None
+    ) -> AIReasoningEffort | None:
+        if value is AIReasoningEffort.HIGH:
+            raise ValueError("stage default HIGH reasoning requires deterministic runtime escalation")
+        return value
+
 
 class AIStageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -419,7 +428,7 @@ class AIRouter:
         stage: AIStageConfig,
         selection: AIStageProviderSelection,
     ) -> AIRequest:
-        return request.model_copy(
+        attempt = request.model_copy(
             update={
                 "model": selection.model,
                 "reasoning_effort": (
@@ -429,6 +438,13 @@ class AIRouter:
                 ),
             }
         )
+        if attempt.reasoning_effort is AIReasoningEffort.HIGH and (
+            not attempt.reasoning_reasons or attempt.reasoning_policy_version is None
+        ):
+            raise AIRoutingPolicyError(
+                "HIGH reasoning requires deterministic escalation provenance"
+            )
+        return attempt
 
     def _mode_allows(self, locality: ProviderLocality) -> bool:
         if self.policy.mode is AIRoutingMode.HYBRID:
