@@ -25,22 +25,26 @@ EXPECTED = {
     AIStageId.CLAIM_EXTRACTION: (
         AITaskType.CLAIM_EXTRACTION,
         "claim-extraction",
+        "v4",
         "prompts/claim-extraction/v4.txt",
     ),
     AIStageId.EVIDENCE_ASSESSMENT: (
         AITaskType.EVIDENCE_ASSESSMENT,
         "evidence-assessment",
+        "v2",
         "prompts/evidence-assessment/v2.txt",
     ),
     AIStageId.CONTENT_GENERATION: (
         AITaskType.CONTENT_GENERATION,
         "content-generation",
-        "prompts/content/v4.txt",
+        "v5",
+        "prompts/content/v5.txt",
     ),
     AIStageId.QUALITY_CHECKING: (
         AITaskType.QUALITY_CHECKING,
         "content-quality",
-        "prompts/quality/v4.txt",
+        "v5",
+        "prompts/quality/v5.txt",
     ),
 }
 
@@ -76,23 +80,12 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
     stage_loader = AIStageConfigLoader(loader)
     stages = stage_loader.load_all()
     assert set(stages) == set(AIStageId)
-    for stage_id, (task, prompt_id, prompt_path) in EXPECTED.items():
+    for stage_id, (task, prompt_id, prompt_version, prompt_path) in EXPECTED.items():
         stage = stages[stage_id]
         assert stage.stage_id is stage_id
         assert stage.task_type is task
         assert stage.prompt.prompt_id == prompt_id
-        assert stage.prompt.version == (
-            "v4"
-            if stage.stage_id
-            in (
-                AIStageId.CLAIM_EXTRACTION,
-                AIStageId.CONTENT_GENERATION,
-                AIStageId.QUALITY_CHECKING,
-            )
-            else "v2"
-            if stage.stage_id is AIStageId.EVIDENCE_ASSESSMENT
-            else "v1"
-        )
+        assert stage.prompt.version == prompt_version
         assert stage.prompt.path == prompt_path
         assert [(item.provider_id, item.model) for item in stage.providers] == [
             ("groq", "openai/gpt-oss-120b"),
@@ -112,7 +105,7 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
 
     monkeypatch.setenv("GROQ_API_KEY", "test-placeholder")
     router = build_ai_router(loader)
-    for _, (task, _, _) in EXPECTED.items():
+    for _, (task, _, _, _) in EXPECTED.items():
         request = AIRequest(
             task_type=task,
             system_prompt="configuration equivalence",
@@ -143,6 +136,39 @@ def test_claim_v4_prompt_matches_output_contract() -> None:
         '{"source_text":"$5 million","value":{"kind":"EXACT_COPY_ONLY","value_kind":"CURRENCY"}}'
         in prompt
     )
+
+
+def test_current_groq_structured_stage_prompts_explicitly_request_json() -> None:
+    loader = ConfigLoader("config")
+    stage_loader = AIStageConfigLoader(loader)
+
+    for stage in stage_loader.load_all().values():
+        assert stage.providers[0].provider_id == "groq"
+        prompt = stage_loader.resolve_prompt(stage).read_text(encoding="utf-8")
+        has_json_instruction = any(
+            line.strip().lower().startswith("return") and "json" in line.lower()
+            for line in prompt.splitlines()
+        )
+        assert has_json_instruction, (
+            f"{stage.stage_id.value} Groq structured prompt must explicitly request JSON"
+        )
+
+
+def test_content_and_quality_v5_prompts_require_single_json_object() -> None:
+    loader = ConfigLoader("config")
+    stage_loader = AIStageConfigLoader(loader)
+
+    expected = {
+        AIStageId.CONTENT_GENERATION: ("v5", "prompts/content/v5.txt"),
+        AIStageId.QUALITY_CHECKING: ("v5", "prompts/quality/v5.txt"),
+    }
+    for stage_id, (version, path) in expected.items():
+        stage = stage_loader.load(stage_id)
+        prompt = stage_loader.resolve_prompt(stage).read_text(encoding="utf-8")
+        assert stage.prompt.version == version
+        assert stage.prompt.path == path
+        assert "Return exactly one valid JSON object only." in prompt
+        assert "Do not wrap it in markdown, code fences or prose." in prompt
 
 
 def test_provider_configuration_is_closed_and_secret_is_only_an_environment_reference() -> None:

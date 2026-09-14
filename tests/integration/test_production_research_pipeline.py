@@ -639,7 +639,7 @@ async def _run_pipeline(
             assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
             assert content_run.task_type == AITaskType.CONTENT_GENERATION.value
             assert content_run.prompt_id == "content-generation"
-            assert content_run.prompt_version == "v4"
+            assert content_run.prompt_version == "v5"
             assert content_run.prompt_checksum
             assert len(quality_checks) == 1
             quality_check = quality_checks[0]
@@ -657,7 +657,7 @@ async def _run_pipeline(
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"
-            assert quality_run.prompt_version == "v4"
+            assert quality_run.prompt_version == "v5"
             assert quality_run.prompt_checksum
             assert quality_event.aggregate_type == "content_draft"
             assert quality_event.aggregate_id == draft.id
