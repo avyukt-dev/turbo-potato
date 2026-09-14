@@ -20,6 +20,7 @@ from .configuration import (
 )
 from .contracts import (
     AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -36,7 +37,7 @@ from .provider import (
     AICapabilityError,
     AIContextTooLargeError,
     AIInvalidResponseError,
-    AILocalResourceExhaustedError,
+    AILocalResourceExhausted,
     AIProvider,
     AIProviderError,
     AIProviderPolicyError,
@@ -44,6 +45,11 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
     require_provider_compatibility,
+)
+from .reasoning import (
+    REASONING_ROUTING_POLICY_VERSION,
+    ReasoningDecision,
+    select_reasoning_effort,
 )
 from .registry import AIProviderNotRegisteredError, AIProviderRegistry
 from .routing import (
@@ -73,7 +79,7 @@ __all__ = [
     "AIPolicyConfig",
     "AIPolicyConfigLoader",
     "AIInvalidResponseError",
-    "AILocalResourceExhaustedError",
+    "AILocalResourceExhausted",
     "AIProvider",
     "AIProviderError",
     "AIProviderNotRegisteredError",
@@ -88,6 +94,7 @@ __all__ = [
     "ConfiguredLlamaCppProvider",
     "AIRequest",
     "AIReasoningEffort",
+    "AIReasoningReason",
     "AIResponse",
     "AIResponseFormat",
     "AIRouteAttempt",
@@ -118,6 +125,8 @@ __all__ = [
     "PromptReference",
     "ProviderCapabilities",
     "ProviderLocality",
+    "REASONING_ROUTING_POLICY_VERSION",
+    "ReasoningDecision",
     "StaleStoryContextError",
     "StoryArticleInput",
     "StoryClaimContext",
@@ -125,4 +134,5 @@ __all__ = [
     "metadata_contains_secret_key",
     "build_ai_router",
     "require_provider_compatibility",
+    "select_reasoning_effort",
 ]
