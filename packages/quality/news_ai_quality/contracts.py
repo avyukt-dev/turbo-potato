@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .semantic import SemanticValidationReport
+
 Finding = Annotated[str, Field(min_length=1, max_length=1000)]
 
 
@@ -73,6 +75,7 @@ def decide_quality(
     *,
     deterministic_quotes: tuple[str, ...],
     review_required: bool,
+    semantic_report: SemanticValidationReport,
 ) -> QualityDecision:
     fabricated = tuple(dict.fromkeys((*deterministic_quotes, *output.fabricated_quotes)))
     passed = all(
@@ -89,6 +92,7 @@ def decide_quality(
             not output.missing_context,
             not output.defamation_risk,
             not output.sensitive_topic_error,
+            semantic_report.passed,
         )
     )
     return QualityDecision(

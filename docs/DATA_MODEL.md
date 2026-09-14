@@ -716,6 +716,16 @@ updated_at
 
 A material edit after approval must not silently retain approval for the previous version.
 
+`content_quality_checks` additionally persists nullable
+`semantic_validation_passed`, `semantic_methodology_version`, and
+`semantic_findings` (JSONB containing the entire typed semantic report, including
+findings, quote matches and check counts). New quality-methodology-v4 rows contain
+the deterministic report. Historical rows retain NULL in all three columns:
+NULL means not evaluated, not a fabricated pass or semantic-validator-v1 result.
+Migration `0013_semantic_validation` adds no fabricated historical backfill.
+The quality semantic key binds exact content, Fact Sheet/version, and both quality
+and semantic methodology identities. Historical checks remain immutable.
+
 ---
 
 # 25. Media Assets

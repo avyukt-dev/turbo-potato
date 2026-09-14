@@ -59,6 +59,7 @@ from news_ai_processor import (
     ProcessorEventWorker,
     StoryClusteringService,
 )
+from news_ai_quality import SemanticValidationReport
 from news_ai_research_worker import build_production_research_stack
 from news_ai_review import ApprovalEligibilityService
 from redis.asyncio import Redis
@@ -607,7 +608,10 @@ async def _run_pipeline(
             assert quality_check.content_variant_version == variants[0].version
             assert quality_check.fact_sheet_id == sheet.id
             assert quality_check.fact_sheet_version == sheet.version
-            assert quality_check.methodology_version == "quality-gate-methodology-v3"
+            assert quality_check.methodology_version == "quality-gate-methodology-v4"
+            assert quality_check.semantic_methodology_version == "semantic-validator-v1"
+            assert quality_check.semantic_validation_passed is True
+            assert SemanticValidationReport.model_validate(quality_check.semantic_findings).passed
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"
