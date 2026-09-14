@@ -59,13 +59,25 @@ def occurrence(text="5 km", amount="5", unit="km", path="caption", transformatio
 
 @pytest.mark.parametrize(
     "mode",
-    ["missing", "duplicate", "unknown", "owner", "path", "text", "magnitude", "unit", "conversion"],
+    [
+        "missing",
+        "duplicate",
+        "unknown",
+        "owner",
+        "path",
+        "text",
+        "embedded",
+        "magnitude",
+        "unit",
+        "conversion",
+    ],
 )
 def test_bad_value_metadata_uses_existing_fallback(mode):
     factory, ai = _factory(), ContentAI()
     event, _, _ = _seed(factory)
     claim = attach_values(factory)
     item = record(claim, [occurrence()])
+    caption = "A convoy travelled 5 km, 6 km, 5 m and 5000 m."
     if mode == "missing":
         records = []
     elif mode == "duplicate":
@@ -90,8 +102,11 @@ def test_bad_value_metadata_uses_existing_fallback(mode):
             item["occurrences"] = [
                 occurrence("5000 m", "5000", "m", transformation="FORMAT_EQUIVALENT")
             ]
+        elif mode == "embedded":
+            caption = "The convoy travelled 15 km."
+            item["occurrences"] = [occurrence("5 km", "5")]
     ai.mutate = {
-        "caption": "A convoy travelled 5 km, 6 km, 5 m and 5000 m.",
+        "caption": caption,
         "claim_value_presentations": records,
     }
     service = _service(ai)

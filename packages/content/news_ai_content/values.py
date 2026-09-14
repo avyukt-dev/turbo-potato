@@ -9,6 +9,7 @@ from news_ai_domain.values import (
     ClaimValues,
     FrozenValue,
     ValueTransformation,
+    mechanical_span_present,
     mechanical_text,
     value_violations,
 )
@@ -107,7 +108,7 @@ def presentation_errors(
                 if owner not in slide.claim_ids:
                     findings.append(("OCCURRENCE_SCOPE_MISMATCH", location, owner))
                 text = getattr(slide, occurrence.artifact_path.rsplit(".", 1)[1])
-            if mechanical_text(occurrence.rendered_text) not in mechanical_text(text):
+            if not mechanical_span_present(text, occurrence.rendered_text):
                 findings.append(("RENDERED_TEXT_MISSING", location, owner))
             findings.extend(
                 (violation.value, location, owner)

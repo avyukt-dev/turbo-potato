@@ -8,6 +8,7 @@ from news_ai_domain.values import (
     ClaimValueKind,
     Quantity,
     anchors_for_claim,
+    mechanical_span_present,
     value_violations,
 )
 from pydantic import ValidationError
@@ -52,6 +53,32 @@ def temporal(text, value, precision="DAY", kind="DATE"):
 def compare(source, target, transformation="FORMAT_EQUIVALENT"):
     anchor = anchors_for_claim(uuid4(), (source,))[0]
     return value_violations(anchor, target.value, target.source_text, transformation)
+
+
+@pytest.mark.parametrize(
+    ("text", "span", "expected"),
+    [
+        ("The convoy travelled 15 km.", "5 km", False),
+        ("Support reached 15%.", "5%", False),
+        ("The total was 115.", "15", False),
+        ("The distance was 1500 m.", "500 m", False),
+        ("Support reached 152%.", "52%", False),
+        ("The total was 12026.", "2026", False),
+        ("The convoy travelled 5 km.", "5 km", True),
+        ("Support reached 5%.", "5%", True),
+        ("The total was (15).", "15", True),
+        ("The route was 15 km and then 5 km.", "5 km", True),
+        ("The value was 5.5.", "5", False),
+        ("The value was -5.", "5", False),
+        ("The total was 1,200.", "200", False),
+        ("The date was 2026-09.", "2026", False),
+        ("The time was 10:30.", "10", False),
+        ("The value was (5).", "5", True),
+        ("The convoy travelled 5 km,", "5 km", True),
+    ],
+)
+def test_mechanical_span_present_is_boundary_aware(text, span, expected):
+    assert mechanical_span_present(text, span) is expected
 
 
 @pytest.mark.parametrize(

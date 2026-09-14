@@ -259,6 +259,66 @@ def mechanical_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFC", value).split())
 
 
+def mechanical_span_present(text: str, span: str) -> bool:
+    """Return whether a normalized span occurs without value-token embedding."""
+    normalized_text = mechanical_text(text)
+    normalized_span = mechanical_text(span)
+    if not normalized_span:
+        return False
+
+    def embedded_left(offset: int) -> bool:
+        if offset == 0 or not normalized_span[0].isalnum():
+            return False
+
+        previous = normalized_text[offset - 1]
+
+        # Direct alphanumeric embedding: "5 km" inside "15 km".
+        if previous.isalnum():
+            return True
+
+        # A numeric span must not drop an explicit sign or currency marker.
+        if normalized_span[0].isdigit() and previous in "+-$₹£€":
+            return True
+
+        # Separators are part of a larger numeric/date/time/range token only
+        # when there is value material on their other side.
+        return previous in ".,:/-–—" and offset >= 2 and normalized_text[offset - 2].isalnum()
+
+    def embedded_right(end: int) -> bool:
+        if end == len(normalized_text) or not normalized_span[-1].isalnum():
+            return False
+
+        following = normalized_text[end]
+
+        # Direct alphanumeric embedding.
+        if following.isalnum():
+            return True
+
+        # "5" must not bind to the numeric part of "5%".
+        if normalized_span[-1].isdigit() and following == "%":
+            return True
+
+        # Decimal/group/date/time/range separators continue the token only
+        # when followed by more value material. A terminal "." or "," is
+        # ordinary prose punctuation and is therefore allowed.
+        return (
+            following in ".,:/-–—"
+            and end + 1 < len(normalized_text)
+            and normalized_text[end + 1].isalnum()
+        )
+
+    offset = normalized_text.find(normalized_span)
+    while offset >= 0:
+        end = offset + len(normalized_span)
+
+        if not embedded_left(offset) and not embedded_right(end):
+            return True
+
+        offset = normalized_text.find(normalized_span, offset + 1)
+
+    return False
+
+
 def _quantity_text(text: str) -> Quantity:
     lowered = text.lower().strip()
     relation = "EXACT"

@@ -34,7 +34,7 @@ from news_ai_domain.values import (
     ClaimValueAnchor,
     ClaimValueCandidate,
     anchors_for_claim,
-    mechanical_text,
+    mechanical_span_present,
 )
 from news_ai_events import EventEnvelope, EventType, PermanentEventError
 from news_ai_events.outbox import build_outbox_record
@@ -96,7 +96,7 @@ class ClaimExtractionItem(BaseModel):
     @model_validator(mode="after")
     def validate_temporal_range(self) -> ClaimExtractionItem:
         if any(
-            mechanical_text(item.source_text) not in mechanical_text(self.claim_text)
+            not mechanical_span_present(self.claim_text, item.source_text)
             for item in self.value_candidates
         ):
             raise ValueError("value source span is absent from atomic claim")

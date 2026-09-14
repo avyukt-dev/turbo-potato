@@ -30,6 +30,8 @@ def test_values_required_and_span_bound():
         ClaimExtractionOutput.model_validate({"claims": [value]})
     with pytest.raises(ValidationError):
         ClaimExtractionOutput.model_validate({"claims": [item("The convoy travelled nowhere.")]})
+    with pytest.raises(ValidationError):
+        ClaimExtractionOutput.model_validate({"claims": [item("The convoy travelled 15 km.", "5")]})
 
 
 def test_value_anchors_durable_identity_and_reused_provenance(tmp_path):
