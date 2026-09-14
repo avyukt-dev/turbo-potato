@@ -82,9 +82,7 @@ def _router(*providers: FakeProvider) -> AIRouter:
             ),
             providers=selections,
             fallback_on=frozenset({AIFailureReason.INVALID_RESPONSE}),
-            request_defaults=AIStageRequestDefaults(
-                reasoning_effort=AIReasoningEffort.MEDIUM
-            ),
+            request_defaults=AIStageRequestDefaults(reasoning_effort=AIReasoningEffort.MEDIUM),
         )
         for stage_id, task in (
             (AIStageId.CLAIM_EXTRACTION, AITaskType.CLAIM_EXTRACTION),
@@ -141,9 +139,7 @@ def test_medium_validation_failure_retries_same_reasoning_aware_provider_at_high
     ]
     assert result.attempts[0].failure_reason is AIFailureReason.INVALID_RESPONSE
     assert result.attempts[1].reasoning_policy_version == REASONING_ROUTING_POLICY_VERSION
-    assert result.attempts[1].reasoning_reasons == (
-        AIReasoningReason.VALIDATION_FAILURE,
-    )
+    assert result.attempts[1].reasoning_reasons == (AIReasoningReason.VALIDATION_FAILURE,)
 
 
 def test_explicit_high_never_retries_high_again() -> None:
@@ -216,7 +212,5 @@ def test_failed_high_retry_carries_high_decision_into_authorized_fallback() -> N
         AIReasoningEffort.HIGH,
     ]
     assert fallback.requests[0].reasoning_effort is AIReasoningEffort.HIGH
-    assert fallback.requests[0].reasoning_reasons == (
-        AIReasoningReason.VALIDATION_FAILURE,
-    )
+    assert fallback.requests[0].reasoning_reasons == (AIReasoningReason.VALIDATION_FAILURE,)
     assert result.attempts[-1].outcome is AIRouteAttemptOutcome.SUCCESS
