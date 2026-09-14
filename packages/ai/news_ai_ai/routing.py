@@ -325,14 +325,11 @@ class AIRouter:
                 except AIProviderError as exc:
                     reason = _failure_reason(exc)
                     attempts.append(self._attempt_record(selection, attempt_request, reason))
-                    if self._should_escalate_validation(
-                        provider.capabilities.honors_reasoning_effort,
-                        attempt_request,
-                        reason,
-                    ):
+                    if self._should_escalate_validation(attempt_request, reason):
                         route_request = self._validation_escalated_request(route_request)
-                        attempt_request = self._attempt_request(route_request, stage, selection)
-                        continue
+                        if provider.capabilities.honors_reasoning_effort:
+                            attempt_request = self._attempt_request(route_request, stage, selection)
+                            continue
                     if index + 1 >= len(candidates) or reason not in stage.fallback_on:
                         raise AIRoutingExecutionError(tuple(attempts)) from exc
                     break
@@ -364,13 +361,11 @@ class AIRouter:
 
     @staticmethod
     def _should_escalate_validation(
-        honors_reasoning_effort: bool,
         request: AIRequest,
         failure_reason: AIFailureReason,
     ) -> bool:
         return (
-            honors_reasoning_effort
-            and failure_reason is AIFailureReason.INVALID_RESPONSE
+            failure_reason is AIFailureReason.INVALID_RESPONSE
             and request.reasoning_effort is AIReasoningEffort.MEDIUM
             and request.reasoning_policy_version in {None, REASONING_ROUTING_POLICY_VERSION}
         )

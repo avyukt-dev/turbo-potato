@@ -164,7 +164,7 @@ def test_explicit_high_never_retries_high_again() -> None:
     assert len(provider.requests) == 1
 
 
-def test_reasoning_agnostic_provider_skips_fake_high_retry_and_falls_back() -> None:
+def test_reasoning_agnostic_provider_skips_high_retry_but_escalates_fallback() -> None:
     local = FakeProvider(
         "local-a",
         "model-a",
@@ -182,8 +182,12 @@ def test_reasoning_agnostic_provider_skips_fake_high_retry_and_falls_back() -> N
 
     assert len(local.requests) == 1
     assert local.requests[0].reasoning_effort is AIReasoningEffort.MEDIUM
-    assert cloud.requests[0].reasoning_effort is AIReasoningEffort.MEDIUM
+    assert cloud.requests[0].reasoning_effort is AIReasoningEffort.HIGH
+    assert cloud.requests[0].reasoning_policy_version == REASONING_ROUTING_POLICY_VERSION
+    assert cloud.requests[0].reasoning_reasons == (AIReasoningReason.VALIDATION_FAILURE,)
     assert result.response.provider == "cloud-b"
+    assert result.attempts[-1].reasoning_effort is AIReasoningEffort.HIGH
+    assert result.attempts[-1].reasoning_reasons == (AIReasoningReason.VALIDATION_FAILURE,)
 
 
 def test_failed_high_retry_carries_high_decision_into_authorized_fallback() -> None:
