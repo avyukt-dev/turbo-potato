@@ -67,6 +67,7 @@ from .contracts import (
     EditorialBrief,
     normalize_generation_language,
 )
+from .reasoning import editorial_reasoning_decision
 from .values import ClaimValuePresentation, presentation_errors
 
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
@@ -311,6 +312,7 @@ class ContentGenerationService:
                 raise AIInvalidResponseError("content output failed contract validation") from exc
             parsed = output
 
+        reasoning = editorial_reasoning_decision(context.brief)
         request = AIRequest(
             task_type=AITaskType.CONTENT_GENERATION,
             system_prompt=self.prompt.system_prompt,
@@ -332,6 +334,9 @@ class ContentGenerationService:
                 version=self.prompt.version,
                 checksum=self.prompt.checksum,
             ),
+            reasoning_effort=reasoning.effort,
+            reasoning_policy_version=reasoning.policy_version,
+            reasoning_reasons=reasoning.reasons,
             response_format=AIResponseFormat.STRUCTURED,
             correlation_id=event.correlation_id,
             language=context.generation_language,
