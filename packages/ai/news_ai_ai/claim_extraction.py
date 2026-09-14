@@ -22,8 +22,14 @@ from news_ai_database import (
     Story,
     StorySource,
 )
-from news_ai_domain import ClaimVerificationStatus, RiskLevel
-from news_ai_events import EventEnvelope, EventType
+from news_ai_domain import (
+    CLAIM_SEMANTICS_POLICY_VERSION,
+    ClaimSemanticState,
+    ClaimSemanticType,
+    ClaimVerificationStatus,
+    RiskLevel,
+)
+from news_ai_events import EventEnvelope, EventType, PermanentEventError
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select
@@ -32,6 +38,8 @@ from sqlalchemy.orm import Session
 from .contracts import AIRequest, AIResponse, AIResponseFormat, AITaskType, PromptReference
 from .provider import AIInvalidResponseError
 from .routing import AIRoutedResponse, AIRouter
+
+CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v2"
 
 
 class ClaimExtractionItem(BaseModel):
@@ -44,7 +52,8 @@ class ClaimExtractionItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     claim_text: str = Field(min_length=1, max_length=4000)
-    claim_type: str = Field(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]*$")
+    semantic_type: ClaimSemanticType
+    semantic_state: ClaimSemanticState
     importance_score: float | None = Field(default=None, ge=0.0, le=1.0)
     risk_level: RiskLevel = RiskLevel.LOW
     sensitive_topics: tuple[str, ...] = ()
@@ -143,7 +152,7 @@ class ClaimExtractionPrompt:
     system_prompt: str
 
     @classmethod
-    def load(cls, path: Path, *, version: str = "v1") -> ClaimExtractionPrompt:
+    def load(cls, path: Path, *, version: str = "v2") -> ClaimExtractionPrompt:
         text = path.read_text(encoding="utf-8").strip()
         if not text:
             raise ValueError("claim extraction prompt must not be blank")
@@ -202,6 +211,19 @@ class ClaimExtractionService:
         self.prompt = prompt
         self.producer = producer
         self.producer_version = producer_version
+
+    def operation_identity(self, context_hash: str) -> str:
+        material = {
+            "context_hash": context_hash,
+            "methodology_version": CLAIM_EXTRACTION_METHODOLOGY_VERSION,
+            "semantic_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
+            "prompt_id": self.prompt.prompt_id,
+            "prompt_version": self.prompt.version,
+            "prompt_checksum": self.prompt.checksum,
+        }
+        return hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
     def load_context(
         self,
@@ -290,13 +312,25 @@ class ClaimExtractionService:
             .where(
                 EventOutbox.event_type == EventType.CLAIMS_EXTRACTED.value,
                 EventOutbox.aggregate_id == story_id,
-                EventOutbox.idempotency_key == f"claims.extracted:{story_id}:{context_hash}",
+                EventOutbox.idempotency_key
+                == (f"claims.extracted:{story_id}:{self.operation_identity(context_hash)}"),
             )
             .order_by(EventOutbox.created_at.desc())
             .limit(1)
         )
         if row is None:
             return None
+        for identity in row.payload.get("claim_ids", []):
+            claim = session.get(Claim, UUID(identity))
+            if (
+                claim is None
+                or claim.story_id != story_id
+                or claim.semantic_type is None
+                or claim.semantic_state is None
+                or claim.semantic_ai_run_id is None
+                or claim.semantic_policy_version != CLAIM_SEMANTICS_POLICY_VERSION
+            ):
+                raise PermanentEventError("CLAIM_SEMANTICS_MISSING")
         return {
             "story_id": str(story_id),
             "claim_ids": list(row.payload.get("claim_ids", [])),
@@ -340,7 +374,7 @@ class ClaimExtractionService:
                 f"story:{context.story_id}",
                 *(f"article_version:{article.article_version_id}" for article in context.articles),
             ),
-            input_hash=context.context_hash,
+            input_hash=self.operation_identity(context.context_hash),
         )
         routed = await self.router.execute(request, response_validator=validate_response)
         if parsed is None:
@@ -359,6 +393,21 @@ class ClaimExtractionService:
         current = self.load_context(session, context.story_id, lock_story=True)
         if current.context_hash != context.context_hash:
             raise StaleStoryContextError("story source material changed during claim extraction")
+
+        # The Story lock serializes semantic completion, even with a different event UUID.
+        existing = self.existing_result(
+            session, story_id=context.story_id, context_hash=context.context_hash
+        )
+        if existing is not None:
+            return ClaimExtractionResult(
+                story_id=context.story_id,
+                claim_ids=tuple(UUID(item) for item in existing["claim_ids"]),
+                created_claims=0,
+                reused_claims=len(existing["claim_ids"]),
+                ai_run_id=UUID(existing["ai_run_id"]),
+                model_id=UUID(existing["model_id"]),
+                event_id=UUID(existing["event_id"]),
+            )
 
         response = execution.routed.response
         provider = self.router.registry.get(response.provider)
@@ -379,7 +428,7 @@ class ClaimExtractionService:
                 f"story:{context.story_id}",
                 *(f"article_version:{article.article_version_id}" for article in context.articles),
             ],
-            input_hash=context.context_hash,
+            input_hash=self.operation_identity(context.context_hash),
             output_payload=execution.output.model_dump(mode="json"),
             status="SUCCEEDED",
             validation_status="VALIDATED",
@@ -418,7 +467,11 @@ class ClaimExtractionService:
                     story_id=context.story_id,
                     claim_text=item.claim_text,
                     normalized_claim=normalized,
-                    claim_type=item.claim_type,
+                    claim_type=item.semantic_type.value,
+                    semantic_type=item.semantic_type,
+                    semantic_state=item.semantic_state,
+                    semantic_policy_version=CLAIM_SEMANTICS_POLICY_VERSION,
+                    semantic_ai_run_id=ai_run.id,
                     status=ClaimVerificationStatus.UNASSESSED,
                     confidence_score=None,
                     importance_score=(
@@ -441,6 +494,18 @@ class ClaimExtractionService:
                 by_normalized[normalized] = claim
                 created_claims += 1
             else:
+                if claim.semantic_policy_version is not None:
+                    if (
+                        claim.semantic_policy_version != CLAIM_SEMANTICS_POLICY_VERSION
+                        or claim.semantic_type != item.semantic_type
+                        or claim.semantic_state != item.semantic_state
+                    ):
+                        raise PermanentEventError("CLAIM_SEMANTICS_CONFLICT")
+                else:
+                    claim.semantic_type = item.semantic_type
+                    claim.semantic_state = item.semantic_state
+                    claim.semantic_policy_version = CLAIM_SEMANTICS_POLICY_VERSION
+                    claim.semantic_ai_run_id = ai_run.id
                 metadata = dict(claim.claim_metadata or {})
                 run_ids = list(metadata.get("extraction_ai_run_ids", []))
                 if str(ai_run.id) not in run_ids:
@@ -458,7 +523,9 @@ class ClaimExtractionService:
             aggregate_id=context.story_id,
             correlation_id=triggering_event.correlation_id,
             causation_id=triggering_event.event_id,
-            idempotency_key=f"claims.extracted:{context.story_id}:{context.context_hash}",
+            idempotency_key=(
+                f"claims.extracted:{context.story_id}:{self.operation_identity(context.context_hash)}"
+            ),
             payload={
                 "story_id": str(context.story_id),
                 "claim_ids": [str(claim_id) for claim_id in claim_ids],

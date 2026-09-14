@@ -7,10 +7,17 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
+from news_ai_domain import (
+    ClaimSemantics,
+    ClaimVerificationStatus,
+    FactCheckLabel,
+    ReviewState,
+    RiskLevel,
+)
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .certainty import ClaimPresentation
+from .claim_semantics import ClaimSemanticPresentation
 
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
@@ -45,6 +52,7 @@ class BriefClaim(BaseModel):
     status: ClaimVerificationStatus
     fact_check_id: UUID
     label: FactCheckLabel
+    semantics: ClaimSemantics | None = None
     confidence_score: float | None = Field(default=None, ge=0, le=1)
     evidence_ids: tuple[UUID, ...] = ()
     evidence_excerpts: tuple[str, ...] = ()
@@ -109,6 +117,7 @@ class ContentGenerationOutput(BaseModel):
     claim_ids_used: tuple[UUID, ...] = Field(min_length=1)
 
     claim_presentations: tuple[ClaimPresentation, ...] = Field(min_length=1)
+    claim_semantic_presentations: tuple[ClaimSemanticPresentation, ...] = Field(min_length=1)
 
     @field_validator("language")
     @classmethod
@@ -136,6 +145,11 @@ class ContentGenerationOutput(BaseModel):
         presented = tuple(item.claim_id for item in self.claim_presentations)
         if len(presented) != len(set(presented)) or set(presented) != set(self.claim_ids_used):
             raise ValueError("claim_presentations must exactly cover used claims once")
+        semantic_ids = tuple(item.claim_id for item in self.claim_semantic_presentations)
+        if len(semantic_ids) != len(set(semantic_ids)) or set(semantic_ids) != set(
+            self.claim_ids_used
+        ):
+            raise ValueError("claim_semantic_presentations must exactly cover used claims once")
         return self
 
     def structured_payload(self) -> dict[str, Any]:
@@ -145,6 +159,9 @@ class ContentGenerationOutput(BaseModel):
             "claim_ids_used": [str(item) for item in self.claim_ids_used],
             "claim_presentations": [
                 item.model_dump(mode="json") for item in self.claim_presentations
+            ],
+            "claim_semantic_presentations": [
+                item.model_dump(mode="json") for item in self.claim_semantic_presentations
             ],
         }
 
@@ -196,6 +213,7 @@ class ContentVariantArtifact(BaseModel):
     claim_ids_used: tuple[UUID, ...]
     source_ids_used: tuple[UUID, ...]
     claim_presentations: tuple[ClaimPresentation, ...] | None = None
+    claim_semantic_presentations: tuple[ClaimSemanticPresentation, ...] | None = None
     risk_level: RiskLevel
     sensitive_topics: tuple[str, ...]
     review_state: ReviewState

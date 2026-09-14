@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from helpers.claim_semantics import presentation
 from media_fixtures import persist_caller_assets
 from news_ai_common.config import ConfigLoader
 from news_ai_content import content_artifact_hash
@@ -198,6 +199,7 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
                             "frame": "DIRECT",
                         }
                     ],
+                    "claim_semantic_presentations": [presentation(claim_id)],
                 },
                 claim_ids_used=[str(claim_id)],
                 source_ids_used=[],

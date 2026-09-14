@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from uuid import UUID
 
-from news_ai_ai import ClaimExtractionService
+from news_ai_ai import ClaimExtractionService, StaleStoryContextError
 from news_ai_events import (
     EventEnvelope,
     EventType,
@@ -109,6 +109,9 @@ class ClaimExtractionWorker:
                     consumer_group=self.consumer_group,
                 ):
                     return "duplicate"
+                current = self.service.load_context(session, story_id, lock_story=True)
+                if current.context_hash != context.context_hash:
+                    raise StaleStoryContextError("story changed before extraction reuse")
                 mark_processed(
                     session,
                     event_id=event.event_id,

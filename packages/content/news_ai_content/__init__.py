@@ -15,6 +15,11 @@ from .certainty import (
     certainty_ceiling,
     presentation_violations,
 )
+from .claim_semantics import (
+    ClaimSemanticPresentation,
+    ClaimSemanticViolation,
+    semantic_presentation_violations,
+)
 from .configuration import (
     ContentStyleConfig,
     ContentStyleConfigLoader,
@@ -42,6 +47,9 @@ from .generation import (
 from .integrity import content_artifact_hash
 
 __all__ = [
+    "ClaimSemanticPresentation",
+    "ClaimSemanticViolation",
+    "semantic_presentation_violations",
     "CERTAINTY_POLICY_VERSION",
     "ClaimAssertionStrength",
     "ClaimPresentation",

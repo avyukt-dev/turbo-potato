@@ -119,6 +119,7 @@ class ContentMediaAttachmentService:
                     "hashtags",
                     "claim_ids_used",
                     "claim_presentations",
+                    "claim_semantic_presentations",
                 }:
                     raise MediaValidationError()
                 ContentGenerationOutput.model_validate(
@@ -135,6 +136,7 @@ class ContentMediaAttachmentService:
                         "hashtags": payload["hashtags"],
                         "claim_ids_used": payload["claim_ids_used"],
                         "claim_presentations": payload["claim_presentations"],
+                        "claim_semantic_presentations": payload["claim_semantic_presentations"],
                     }
                 )
             except (ValidationError, KeyError, TypeError):

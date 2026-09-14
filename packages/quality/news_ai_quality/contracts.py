@@ -32,6 +32,26 @@ class CertaintyEscalation(BaseModel):
     reason_code: CertaintyEscalationCode
 
 
+class ClaimSemanticEscalationCode(StrEnum):
+    ANNOUNCEMENT_AS_COMPLETED = "ANNOUNCEMENT_AS_COMPLETED"
+    PLAN_AS_COMPLETED = "PLAN_AS_COMPLETED"
+    EXPECTATION_AS_OBSERVED = "EXPECTATION_AS_OBSERVED"
+    PREDICTION_AS_OUTCOME = "PREDICTION_AS_OUTCOME"
+    ATTRIBUTION_DROPPED = "ATTRIBUTION_DROPPED"
+    SEMANTIC_TYPE_RECAST = "SEMANTIC_TYPE_RECAST"
+
+
+class ClaimSemanticEscalation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    claim_id: UUID
+    artifact_path: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^(title|caption|slides\[[0-9]{1,2}\]\.(heading|body))$",
+    )
+    reason_code: ClaimSemanticEscalationCode
+
+
 class QualityAssessmentOutput(BaseModel):
     """Untrusted AI output; workflow decisions are deliberately absent."""
 
@@ -39,6 +59,7 @@ class QualityAssessmentOutput(BaseModel):
 
     content_variant_id: UUID
     certainty_escalations: tuple[CertaintyEscalation, ...] = Field(max_length=50)
+    claim_semantic_escalations: tuple[ClaimSemanticEscalation, ...] = Field(max_length=50)
     factual_accuracy_passed: bool
     source_alignment_passed: bool
     citation_alignment_passed: bool
@@ -78,12 +99,22 @@ class QualityAssessmentOutput(BaseModel):
             raise ValueError("certainty escalations must be unique")
         return tuple(sorted(value, key=lambda item: item.model_dump_json()))
 
+    @field_validator("claim_semantic_escalations")
+    @classmethod
+    def unique_semantic_escalations(
+        cls, value: tuple[ClaimSemanticEscalation, ...]
+    ) -> tuple[ClaimSemanticEscalation, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("claim semantic escalations must be unique")
+        return tuple(sorted(value, key=lambda item: item.model_dump_json()))
+
 
 class QualityDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     content_variant_id: UUID
     certainty_escalations: tuple[CertaintyEscalation, ...]
+    claim_semantic_escalations: tuple[ClaimSemanticEscalation, ...]
     factual_accuracy_passed: bool
     source_alignment_passed: bool
     citation_alignment_passed: bool
@@ -125,6 +156,7 @@ def decide_quality(
             not output.sensitive_topic_error,
             semantic_report.passed,
             not output.certainty_escalations,
+            not output.claim_semantic_escalations,
         )
     )
     return QualityDecision(

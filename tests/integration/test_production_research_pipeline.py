@@ -108,7 +108,8 @@ class DeterministicResearchAI:
                 "claims": [
                     {
                         "claim_text": "The river gauge measured two metres.",
-                        "claim_type": "MEASUREMENT",
+                        "semantic_type": "QUANTITATIVE",
+                        "semantic_state": "OBSERVED",
                         "importance_score": 0.9,
                         "risk_level": "HIGH",
                         "sensitive_topics": [],
@@ -117,7 +118,8 @@ class DeterministicResearchAI:
                     },
                     {
                         "claim_text": "An uncorroborated evacuation estimate was final.",
-                        "claim_type": "ESTIMATE",
+                        "semantic_type": "QUANTITATIVE",
+                        "semantic_state": "OBSERVED",
                         "importance_score": 0.7,
                         "risk_level": "LOW",
                         "sensitive_topics": [],
@@ -192,6 +194,15 @@ class DeterministicResearchAI:
                         ][0],
                     }
                 ],
+                "claim_semantic_presentations": [
+                    {
+                        "claim_id": claim["claim_id"],
+                        "source_semantic_type": claim["semantics"]["semantic_type"],
+                        "source_semantic_state": claim["semantics"]["semantic_state"],
+                        "presented_semantic_type": claim["semantics"]["semantic_type"],
+                        "presented_semantic_state": claim["semantics"]["semantic_state"],
+                    }
+                ],
             }
         elif request.task_type is AITaskType.QUALITY_CHECKING:
             variant = request.input["content_artifact"]
@@ -199,6 +210,7 @@ class DeterministicResearchAI:
             structured = {
                 "content_variant_id": variant["content_variant_id"],
                 "certainty_escalations": [],
+                "claim_semantic_escalations": [],
                 "factual_accuracy_passed": not defect,
                 "source_alignment_passed": True,
                 "citation_alignment_passed": True,
@@ -621,7 +633,7 @@ async def _run_pipeline(
             assert generated.payload["ai_run_id"] == str(draft.created_by_ai_run_id)
             assert content_run.task_type == AITaskType.CONTENT_GENERATION.value
             assert content_run.prompt_id == "content-generation"
-            assert content_run.prompt_version == "v2"
+            assert content_run.prompt_version == "v3"
             assert content_run.prompt_checksum
             assert len(quality_checks) == 1
             quality_check = quality_checks[0]
@@ -631,15 +643,15 @@ async def _run_pipeline(
             assert quality_check.content_variant_version == variants[0].version
             assert quality_check.fact_sheet_id == sheet.id
             assert quality_check.fact_sheet_version == sheet.version
-            assert quality_check.methodology_version == "quality-gate-methodology-v5"
-            assert quality_check.semantic_methodology_version == "semantic-validator-v2"
+            assert quality_check.methodology_version == "quality-gate-methodology-v6"
+            assert quality_check.semantic_methodology_version == "semantic-validator-v3"
             assert quality_check.certainty_escalations == []
             assert quality_check.semantic_validation_passed is True
             assert SemanticValidationReport.model_validate(quality_check.semantic_findings).passed
             quality_run = session.get(AIRun, quality_check.ai_run_id)
             assert quality_run.task_type == AITaskType.QUALITY_CHECKING.value
             assert quality_run.prompt_id == "content-quality"
-            assert quality_run.prompt_version == "v2"
+            assert quality_run.prompt_version == "v3"
             assert quality_run.prompt_checksum
             assert quality_event.aggregate_type == "content_draft"
             assert quality_event.aggregate_id == draft.id

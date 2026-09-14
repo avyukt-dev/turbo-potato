@@ -37,8 +37,12 @@ def check_warning_detail(factory, monkeypatch):
     payload = detail.model_dump(mode="json")["quality_check"]
     assert payload["quality_check_id"] == expected_id
     assert payload["semantic_validation_passed"] is True
-    assert payload["semantic_methodology_version"] == "semantic-validator-v2"
+    assert payload["semantic_methodology_version"] == "semantic-validator-v3"
     assert payload["semantic_findings"] == expected_report
+    assert payload["claim_semantic_escalations"] == []
+    assert detail.fact_sheet["claims"][0]["semantics"]["semantic_state"] == "OBSERVED"
+    assert detail.editorial_brief["claims"][0]["semantics"]["semantic_state"] == "OBSERVED"
+    assert detail.content_variant["structured_payload"]["claim_semantic_presentations"]
     assert payload["semantic_findings"]["findings"][0]["severity"] == "WARNING"
     assert ai.calls == 1
 
@@ -58,6 +62,7 @@ def test_nullable_semantic_fields_remain_null_in_serialized_review_detail():
     assert payload["semantic_methodology_version"] is None
     assert payload["semantic_findings"] is None
     assert payload["certainty_escalations"] is None
+    assert payload["claim_semantic_escalations"] is None
 
 
 def test_historical_v3_quality_payload_does_not_fabricate_semantic_result():

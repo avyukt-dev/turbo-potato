@@ -20,10 +20,18 @@ from news_ai_database import (
     Story,
     StorySource,
 )
-from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
+from news_ai_domain import (
+    CLAIM_SEMANTICS_POLICY_VERSION,
+    ClaimSemantics,
+    ClaimVerificationStatus,
+    FactCheckLabel,
+    ReviewState,
+    RiskLevel,
+)
 from news_ai_events import (
     EventEnvelope,
     EventType,
+    PermanentEventError,
     StaleWorkError,
     StoryVerifiedV1,
     parse_event_payload,
@@ -51,6 +59,7 @@ class FactSheetClaimSnapshot(BaseModel):
     story_id: UUID
     claim_text: str
     claim_type: str
+    semantics: ClaimSemantics | None = None
     status: ClaimVerificationStatus
     confidence_score: float | None = None
     importance_score: float | None = None
@@ -454,6 +463,13 @@ class FactSheetGenerator:
             links_by_claim.setdefault(link.claim_id, []).append(link)
         snapshots: list[FactSheetClaimSnapshot] = []
         for claim in claims:
+            if (
+                claim.semantic_type is None
+                or claim.semantic_state is None
+                or claim.semantic_policy_version != CLAIM_SEMANTICS_POLICY_VERSION
+                or claim.semantic_ai_run_id is None
+            ):
+                raise PermanentEventError("CLAIM_SEMANTICS_MISSING")
             claim_links = links_by_claim.get(claim.id, [])
             all_evidence = tuple(link.evidence_id for link in claim_links)
             contradictory = tuple(
@@ -467,6 +483,12 @@ class FactSheetGenerator:
                     story_id=claim.story_id,
                     claim_text=claim.claim_text,
                     claim_type=claim.claim_type or "UNKNOWN",
+                    semantics=ClaimSemantics(
+                        policy_version=claim.semantic_policy_version,
+                        semantic_type=claim.semantic_type,
+                        semantic_state=claim.semantic_state,
+                        ai_run_id=claim.semantic_ai_run_id,
+                    ),
                     status=claim.status,
                     confidence_score=_decimal_float(claim.confidence_score),
                     importance_score=_decimal_float(claim.importance_score),

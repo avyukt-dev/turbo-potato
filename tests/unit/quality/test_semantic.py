@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from helpers.claim_semantics import SEMANTICS, presentation
 from news_ai_content import ContentGenerationOutput
 from news_ai_evidence import FactSheetArtifact
 from news_ai_quality.semantic import (
@@ -38,6 +39,7 @@ def artifacts():
                     "story_id": story,
                     "claim_text": "The café recorded two metres.",
                     "claim_type": "MEASUREMENT",
+                    "semantics": SEMANTICS,
                     "status": "PARTIALLY_SUPPORTED",
                     "risk_level": "LOW",
                     "evidence_ids": [evidence],
@@ -87,6 +89,7 @@ def artifacts():
                     "frame": "QUALIFIED",
                 }
             ],
+            "claim_semantic_presentations": [presentation(claim)],
             "slides": [
                 {
                     "position": 1,

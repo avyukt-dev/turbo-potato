@@ -9,11 +9,13 @@ from uuid import UUID
 
 from news_ai_content import ContentGenerationOutput, EditorialBrief
 from news_ai_content.certainty import presentation_violations
+from news_ai_content.claim_semantics import semantic_presentation_violations
+from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION
 from news_ai_evidence import FactSheetArtifact
 from news_ai_evidence.engine import EvidenceRelation
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SEMANTIC_METHODOLOGY_VERSION = "semantic-validator-v2"
+SEMANTIC_METHODOLOGY_VERSION = "semantic-validator-v3"
 _QUOTES = re.compile(r'"([^"]+)"|“([^”]+)”|«([^»]+)»|„([^“]+)“')
 
 
@@ -31,6 +33,7 @@ class SemanticFindingCategory(StrEnum):
     DUPLICATE = "DUPLICATE"
     CATEGORICAL_ASSERTION = "CATEGORICAL_ASSERTION"
     CERTAINTY = "CERTAINTY"
+    CLAIM_SEMANTICS = "CLAIM_SEMANTICS"
 
 
 class SemanticFindingCode(StrEnum):
@@ -53,6 +56,12 @@ class SemanticFindingCode(StrEnum):
     CERTAINTY_FRAME_MISMATCH = "CERTAINTY_FRAME_MISMATCH"
     CERTAINTY_SOURCE_COMBINATION_INVALID = "CERTAINTY_SOURCE_COMBINATION_INVALID"
     CERTAINTY_PRESENTATION_MISSING = "CERTAINTY_PRESENTATION_MISSING"
+    CLAIM_SEMANTICS_PRESENTATION_MISSING = "CLAIM_SEMANTICS_PRESENTATION_MISSING"
+    CLAIM_SEMANTICS_SOURCE_TYPE_MISMATCH = "CLAIM_SEMANTICS_SOURCE_TYPE_MISMATCH"
+    CLAIM_SEMANTICS_SOURCE_STATE_MISMATCH = "CLAIM_SEMANTICS_SOURCE_STATE_MISMATCH"
+    CLAIM_SEMANTICS_TYPE_MISMATCH = "CLAIM_SEMANTICS_TYPE_MISMATCH"
+    CLAIM_SEMANTICS_STATE_MISMATCH = "CLAIM_SEMANTICS_STATE_MISMATCH"
+    CLAIM_SEMANTICS_POLICY_MISMATCH = "CLAIM_SEMANTICS_POLICY_MISMATCH"
 
 
 class SemanticFinding(BaseModel):
@@ -461,6 +470,41 @@ class SemanticValidator:
                         path,
                         claim=claim_id,
                     )
+        semantic_presentations = getattr(content, "claim_semantic_presentations", ())
+        refs(
+            tuple(item.claim_id for item in semantic_presentations),
+            claims,
+            "content.claim_semantic_presentations",
+        )
+        for claim_id in content.claim_ids_used:
+            if not any(item.claim_id == claim_id for item in semantic_presentations):
+                add(
+                    SemanticFindingCode.CLAIM_SEMANTICS_PRESENTATION_MISSING,
+                    SemanticFindingCategory.CLAIM_SEMANTICS,
+                    "content.claim_semantic_presentations",
+                    claim=claim_id,
+                )
+        for i, presentation in enumerate(semantic_presentations):
+            claim = claims.get(presentation.claim_id)
+            if claim is None:
+                continue
+            path = f"content.claim_semantic_presentations[{i}]"
+            if claim.semantics is None:
+                add(
+                    SemanticFindingCode.CLAIM_SEMANTICS_PRESENTATION_MISSING,
+                    SemanticFindingCategory.CLAIM_SEMANTICS,
+                    path,
+                    claim=claim.claim_id,
+                )
+                continue
+            for violation in semantic_presentation_violations(presentation, claim.semantics):
+                add(
+                    SemanticFindingCode[f"CLAIM_SEMANTICS_{violation.value}"],
+                    SemanticFindingCategory.CLAIM_SEMANTICS,
+                    path,
+                    claim=claim.claim_id,
+                )
+
         if editorial_brief is not None:
             index(editorial_brief.claims, "claim_id", "editorial_brief.claims")
             for i, brief_claim in enumerate(editorial_brief.claims):
@@ -475,6 +519,17 @@ class SemanticValidator:
                 )
                 check = fact_checks.get(brief_claim.fact_check_id)
                 claim = claims.get(brief_claim.claim_id)
+                if claim is not None and (
+                    claim.semantics is None
+                    or claim.semantics.policy_version != CLAIM_SEMANTICS_POLICY_VERSION
+                    or brief_claim.semantics != claim.semantics
+                ):
+                    add(
+                        SemanticFindingCode.CLAIM_SEMANTICS_POLICY_MISMATCH,
+                        SemanticFindingCategory.CLAIM_SEMANTICS,
+                        path,
+                        claim=brief_claim.claim_id,
+                    )
                 if check is not None and check.claim_id != brief_claim.claim_id:
                     add(
                         SemanticFindingCode.WRONG_REFERENCE_OWNER,

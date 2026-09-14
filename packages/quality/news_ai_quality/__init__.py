@@ -3,6 +3,8 @@
 from .contracts import (
     CertaintyEscalation,
     CertaintyEscalationCode,
+    ClaimSemanticEscalation,
+    ClaimSemanticEscalationCode,
     QualityAssessmentOutput,
     QualityDecision,
     decide_quality,
@@ -26,6 +28,8 @@ from .service import (
 )
 
 __all__ = [
+    "ClaimSemanticEscalation",
+    "ClaimSemanticEscalationCode",
     "CertaintyEscalation",
     "CertaintyEscalationCode",
     "SEMANTIC_METHODOLOGY_VERSION",

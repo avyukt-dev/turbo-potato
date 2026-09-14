@@ -171,6 +171,26 @@ It must not publish a `ClaimVerificationStatus` value in a field presented as th
 
 ---
 
+# 5.4 Claim semantics (independent dimensions)
+
+`claim-semantics-policy-v1` separates semantic type, semantic state, verification
+status, FactCheck label, and downstream certainty. Semantic types are GENERAL_FACT,
+EVENT, QUANTITATIVE, ATTRIBUTION, LEGAL_PROCEDURAL, CAUSAL, PREDICTION_FORECAST,
+POLICY_COMMITMENT. States are OBSERVED, ANNOUNCED, PLANNED, EXPECTED, PREDICTED.
+OBSERVED means the proposition asserts a past/current occurrence or state; it does
+not mean true, verified, or personally witnessed. ANNOUNCED is an explicit declaration;
+PLANNED an intended/scheduled action; EXPECTED a forward expectation; PREDICTED an
+explicit forecast. The atomic wording must preserve attribution/procedural nuance.
+
+SUPPORTED + ANNOUNCED supports an announcement, not implementation. PLANNED is not
+completed; EXPECTED/PREDICTED are not observed outcomes. Current downstream typed
+presentations must copy and preserve exact type/state independently of certainty.
+AI quality separately flags prose laundering; deterministic metadata checks do not
+claim natural-language understanding. Neither layer changes factual truth.
+Historical NULL/absent semantics mean not classified, never a fabricated OBSERVED
+default. Current processing requires versioned semantics or re-extraction/regeneration.
+PR2's five certainty pairs and `certainty-policy-v1` remain unchanged.
+
 # 6. Confidence
 
 Confidence is an evidence assessment.
