@@ -44,6 +44,7 @@ class SemanticFindingCode(StrEnum):
     FACTUAL_IDENTITY_MISMATCH = "FACTUAL_IDENTITY_MISMATCH"
     EVIDENCE_IDENTITY_CONFLICT = "EVIDENCE_IDENTITY_CONFLICT"
     BRIEF_FACTUAL_METADATA_MISMATCH = "BRIEF_FACTUAL_METADATA_MISMATCH"
+    SOURCE_IDENTITY_CONFLICT = "SOURCE_IDENTITY_CONFLICT"
 
 
 class SemanticFinding(BaseModel):
@@ -209,7 +210,29 @@ class SemanticValidator:
         # ClaimEvidence is many-to-many, with a relation owned by the pair.
         evidence_links = index(sheet.evidence, ("claim_id", "evidence_id"), "fact_sheet.evidence")
         evidence = {item.evidence_id: item for item in evidence_links.values()}
-        sources = index(sheet.sources, "source_id", "fact_sheet.sources")
+        # The generator deduplicates documents, not publishers. Multiple documents
+        # can legitimately resolve to the same Source ID (never independence proof).
+        index(sheet.sources, ("source_id", "url"), "fact_sheet.sources")
+        sources = {}
+        publishers = {}
+        for i, source in enumerate(sheet.sources):
+            original = sources.setdefault(source.source_id, source)
+            publisher_conflict = False
+            if source.publisher is not None:
+                publisher_conflict = (
+                    publishers.setdefault(source.source_id, source.publisher) != source.publisher
+                )
+            if (
+                original.name != source.name
+                or original.source_level != source.source_level
+                or publisher_conflict
+            ):
+                add(
+                    SemanticFindingCode.SOURCE_IDENTITY_CONFLICT,
+                    SemanticFindingCategory.CATEGORICAL_ASSERTION,
+                    f"fact_sheet.sources[{i}]",
+                    source=source.source_id,
+                )
         fact_checks = index(sheet.fact_checks, "fact_check_id", "fact_sheet.fact_checks")
         # Relation/strength/note are pair-specific; immutable material is not.
         material_fields = (

@@ -109,6 +109,67 @@ def test_valid_graph_and_no_independence_inference(artifacts):
     assert "independence" not in report.model_dump_json()
 
 
+def test_repeated_source_id_with_distinct_documents_is_valid(artifacts):
+    sheet, content, source_ids = artifacts
+    source = sheet.sources[0]
+    first = source.model_copy(
+        update={"url": "https://publisher.example/article-a", "language": "en"}
+    )
+    second = source.model_copy(
+        update={
+            "url": "https://publisher.example/article-b",
+            "language": "hi",
+            "published_at": datetime(2026, 1, 1, tzinfo=UTC),
+            "retrieved_at": datetime(2026, 1, 2, tzinfo=UTC),
+        }
+    )
+    sheet = sheet.model_copy(update={"sources": (first, second)})
+    report = validate((sheet, content, source_ids))
+    assert report.passed
+    assert not report.findings  # Evidence and content still resolve this source ID.
+    assert "independence" not in report.model_dump_json()
+    assert report.model_dump_json() == validate((sheet, content, source_ids)).model_dump_json()
+
+
+def test_duplicate_source_document_snapshot_is_an_error(artifacts):
+    sheet, content, sources = artifacts
+    source = sheet.sources[0].model_copy(update={"url": "https://publisher.example/article-a"})
+    sheet = sheet.model_copy(update={"sources": (source, source)})
+    report = validate((sheet, content, sources))
+    assert not report.passed
+    assert [f.code for f in report.findings] == [Code.DUPLICATE_REFERENCE]
+
+
+def test_missing_optional_publisher_does_not_hide_later_identity_conflict(artifacts):
+    sheet, content, sources = artifacts
+    snapshots = tuple(
+        sheet.sources[0].model_copy(
+            update={"url": f"https://publisher.example/{i}", "publisher": publisher}
+        )
+        for i, publisher in enumerate((None, "Register", "Different publisher"))
+    )
+    report = validate((sheet.model_copy(update={"sources": snapshots}), content, sources))
+    assert [f.code for f in report.findings] == [Code.SOURCE_IDENTITY_CONFLICT]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("name", "Different canonical name"),
+        ("source_level", 4),
+        ("publisher", "Different publisher"),
+    ],
+)
+def test_same_source_id_cannot_conflict_on_source_identity(artifacts, field, value):
+    sheet, content, sources = artifacts
+    first = sheet.sources[0].model_copy(
+        update={"url": "https://publisher.example/article-a", "publisher": "Register"}
+    )
+    second = first.model_copy(update={"url": "https://publisher.example/article-b", field: value})
+    report = validate((sheet.model_copy(update={"sources": (first, second)}), content, sources))
+    assert [f.code for f in report.findings] == [Code.SOURCE_IDENTITY_CONFLICT]
+
+
 def test_same_evidence_can_have_distinct_claim_specific_relations(artifacts):
     sheet, content, sources = artifacts
     original = sheet.claims[0]

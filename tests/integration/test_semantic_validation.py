@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from unit.quality.test_quality_gate import QualityAI, _run, _seed, _service
 from unit.quality.test_semantic_integration import check_semantic_error
+from unit.review.test_semantic_detail import check_warning_detail
 
 
 @pytest.fixture
@@ -24,6 +25,10 @@ def postgres_factory():
 
 def test_postgresql_semantic_failure_and_replay(postgres_factory):
     check_semantic_error(postgres_factory)
+
+
+def test_postgresql_review_detail_exposes_durable_semantic_warning(postgres_factory, monkeypatch):
+    check_warning_detail(postgres_factory, monkeypatch)
 
 
 def test_0013_preserves_legacy_semantics_and_exact_0012_schema(monkeypatch):
