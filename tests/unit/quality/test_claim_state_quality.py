@@ -220,7 +220,7 @@ def test_v5_v2_checks_cannot_satisfy_current_v6_v3(monkeypatch):
     with factory() as session, session.begin():
         old = session.get(ContentQualityCheck, first.quality_check_ids[0])
         old.claim_semantic_escalations = None
-    service.semantic_validator.methodology_version = "semantic-validator-v3"
+    service.semantic_validator.methodology_version = "semantic-validator-v4"
     current, second = _run(factory, service, event)
     assert previous.event_semantic_key != current.event_semantic_key
     assert first.quality_check_ids != second.quality_check_ids

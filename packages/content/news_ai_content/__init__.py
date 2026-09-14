@@ -45,8 +45,11 @@ from .generation import (
     ContentGenerationService,
 )
 from .integrity import content_artifact_hash
+from .values import ClaimValueOccurrence, ClaimValuePresentation
 
 __all__ = [
+    "ClaimValuePresentation",
+    "ClaimValueOccurrence",
     "ClaimSemanticPresentation",
     "ClaimSemanticViolation",
     "semantic_presentation_violations",

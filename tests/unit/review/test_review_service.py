@@ -200,6 +200,7 @@ def seed_reviewable(factory: sessionmaker[Session], *, variants: int = 1) -> tup
                         }
                     ],
                     "claim_semantic_presentations": [presentation(claim_id)],
+                    "claim_value_presentations": [],
                 },
                 claim_ids_used=[str(claim_id)],
                 source_ids_used=[],

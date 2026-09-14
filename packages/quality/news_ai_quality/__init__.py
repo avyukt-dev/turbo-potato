@@ -7,6 +7,8 @@ from .contracts import (
     ClaimSemanticEscalationCode,
     QualityAssessmentOutput,
     QualityDecision,
+    ValueEscalation,
+    ValueEscalationCode,
     decide_quality,
 )
 from .prompt import QualityPrompt
@@ -28,6 +30,8 @@ from .service import (
 )
 
 __all__ = [
+    "ValueEscalation",
+    "ValueEscalationCode",
     "ClaimSemanticEscalation",
     "ClaimSemanticEscalationCode",
     "CertaintyEscalation",

@@ -1109,3 +1109,18 @@ Fact Sheets used for publication are immutable versions.
 Publication approval is version-specific and mandatory for MVP external publishing.
 Evidence/source provenance remains reconstructable.
 ```
+
+---
+
+## Value integrity persistence — 0016_value_integrity
+
+Claims add nullable JSONB value_anchors, VARCHAR64 value_policy_version, and indexed
+UUID value_ai_run_id FK to ai_runs. All three must be SQL NULL or all non-NULL.
+Non-NULL value_anchors must be a JSON array. [] plus current policy/AIRun is evaluated
+with no material values; SQL NULL is unevaluated history. No historical backfill/default.
+ContentQualityCheck adds nullable JSONB value_escalations. Historical SQL NULL means
+not evaluated; current v7 [] means evaluated without prose findings. Deterministic
+VALUE_INTEGRITY findings remain in the existing typed semantic_findings report.
+Value presentation metadata is inside immutable ContentVariant structured_payload;
+there is no new truth table. Exact reviewed/hash bindings and historical methodologies remain intact.
+Downgrade removes only these new columns, checks, FK and index, restoring 0015 schema.

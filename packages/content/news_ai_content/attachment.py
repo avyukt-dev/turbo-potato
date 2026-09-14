@@ -120,6 +120,7 @@ class ContentMediaAttachmentService:
                     "claim_ids_used",
                     "claim_presentations",
                     "claim_semantic_presentations",
+                    "claim_value_presentations",
                 }:
                     raise MediaValidationError()
                 ContentGenerationOutput.model_validate(
@@ -137,6 +138,7 @@ class ContentMediaAttachmentService:
                         "claim_ids_used": payload["claim_ids_used"],
                         "claim_presentations": payload["claim_presentations"],
                         "claim_semantic_presentations": payload["claim_semantic_presentations"],
+                        "claim_value_presentations": payload["claim_value_presentations"],
                     }
                 )
             except (ValidationError, KeyError, TypeError):

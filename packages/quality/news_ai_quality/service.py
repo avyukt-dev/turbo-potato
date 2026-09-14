@@ -36,6 +36,7 @@ from news_ai_database import (
     Story,
 )
 from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ReviewState
+from news_ai_domain.values import VALUE_INTEGRITY_POLICY_VERSION
 from news_ai_editorial import ContentStyleConfig, PublishingPolicyConfig
 from news_ai_events import (
     ContentGeneratedV1,
@@ -57,8 +58,8 @@ from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
 from .semantic import SemanticValidationReport, SemanticValidator, fabricated_quotes
 
-# v6 adds statement type/state preservation; historical checks remain immutable.
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v6"
+# v7 adds value integrity; historical quality methodologies remain immutable.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v7"
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
     AIFailureReason.UNAVAILABLE,
@@ -184,6 +185,11 @@ class QualityAssessmentService:
             raise PermanentEventError("content Fact Sheet artifact is malformed") from None
         fact_sheet_topics = _sensitive_topics(artifact.sensitive_topics, owner="Fact Sheet")
         if any(
+            claim.values is None or claim.values.policy_version != VALUE_INTEGRITY_POLICY_VERSION
+            for claim in artifact.claims
+        ):
+            raise PermanentEventError("CLAIM_VALUES_MISSING: re-extraction/regeneration required")
+        if any(
             claim.semantics is None
             or claim.semantics.policy_version != CLAIM_SEMANTICS_POLICY_VERSION
             for claim in artifact.claims
@@ -201,6 +207,8 @@ class QualityAssessmentService:
         except ValidationError as exc:
             raise PermanentEventError("content draft has an invalid Editorial Brief") from exc
         brief_topics = _sensitive_topics(brief_model.sensitive_topics, owner="EditorialBrief")
+        if any(claim.values is None for claim in brief_model.claims):
+            raise PermanentEventError("CLAIM_VALUES_MISSING: Editorial Brief requires regeneration")
         if any(claim.semantics is None for claim in brief_model.claims):
             raise PermanentEventError(
                 "CLAIM_SEMANTICS_MISSING: Editorial Brief requires regeneration"
@@ -291,6 +299,7 @@ class QualityAssessmentService:
                 "claim_ids_used",
                 "claim_presentations",
                 "claim_semantic_presentations",
+                "claim_value_presentations",
             }:
                 raise ValueError("carousel structured payload has unexpected fields")
             carousel = ContentGenerationOutput.model_validate(
@@ -308,6 +317,7 @@ class QualityAssessmentService:
                     "claim_ids_used": structured["claim_ids_used"],
                     "claim_presentations": structured["claim_presentations"],
                     "claim_semantic_presentations": structured["claim_semantic_presentations"],
+                    "claim_value_presentations": structured["claim_value_presentations"],
                 }
             )
         except (KeyError, TypeError, ValidationError, ValueError) as exc:
@@ -343,6 +353,7 @@ class QualityAssessmentService:
                 "semantic_methodology_version": semantic_report.methodology_version,
                 "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
+                "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
                 "semantic_inputs": fact_sheet,
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -418,6 +429,7 @@ class QualityAssessmentService:
                     for escalation in (
                         *output.certainty_escalations,
                         *output.claim_semantic_escalations,
+                        *output.value_escalations,
                     ):
                         if (
                             str(escalation.claim_id) not in used_claims
@@ -434,6 +446,19 @@ class QualityAssessmentService:
                                 raise ValueError(
                                     "certainty escalation refers to an unrelated slide claim"
                                 )
+                    anchors = {
+                        str(anchor["anchor_id"]): claim["claim_id"]
+                        for claim in context.fact_sheet["claims"]
+                        for anchor in claim["values"]["anchors"]
+                    }
+                    for escalation in output.value_escalations:
+                        if escalation.anchor_id is None:
+                            if escalation.reason_code.value != "UNDECLARED_VALUE":
+                                raise ValueError("only undeclared values may omit anchor identity")
+                        elif anchors.get(str(escalation.anchor_id)) != str(escalation.claim_id):
+                            raise ValueError(
+                                "value escalation references an unknown or unrelated anchor"
+                            )
                 except (ValidationError, ValueError) as exc:
                     raise AIInvalidResponseError(
                         "quality output failed contract validation"
@@ -457,6 +482,7 @@ class QualityAssessmentService:
                     "quality_methodology_version": QUALITY_METHODOLOGY_VERSION,
                     "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                     "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
+                    "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
                 },
                 prompt=PromptReference(
                     prompt_id=self.prompt.prompt_id,
@@ -595,6 +621,7 @@ class QualityAssessmentService:
                     item.missing_context,
                     item.certainty_escalations,
                     item.claim_semantic_escalations,
+                    item.value_escalations,
                 )
             )
             and not item.defamation_risk

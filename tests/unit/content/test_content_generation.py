@@ -117,6 +117,11 @@ class ContentAI:
                     "frame": "QUALIFIED",
                 }
             ],
+            "claim_value_presentations": [
+                {"claim_id": claim["claim_id"], "anchor_id": anchor["anchor_id"], "occurrences": []}
+                for claim in brief["claims"]
+                for anchor in claim["values"]["anchors"]
+            ],
             "claim_semantic_presentations": [
                 presentation(claim_id, brief["claims"][0]["semantics"])
             ],
@@ -170,6 +175,7 @@ def _seed(
                         "claim_text": "The river gauge measured two metres.",
                         "claim_type": "MEASUREMENT",
                         "semantics": SEMANTICS,
+                        "values": {"policy_version": "value-integrity-policy-v1", "anchors": []},
                         "status": "PARTIALLY_SUPPORTED",
                         "confidence_score": 0.7,
                         "importance_score": 0.9,
@@ -270,7 +276,7 @@ def _service(ai: ContentAI) -> ContentGenerationService:
             loader,
             providers=(ai, ContentAI(provider_id="local-llama", error=ai.error, mutate=ai.mutate)),
         ),
-        ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v3.txt", version="v3"),
+        ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v4.txt", version="v4"),
         ContentStyleConfigLoader(loader).load(),
         editorial.load_publishing_policy(),
     )
@@ -303,7 +309,7 @@ def test_exact_fact_sheet_generates_not_ready_draft_variant_and_canonical_event(
     assert draft_artifact.variant_ids == (variant.id,)
     assert variant_artifacts[0].fact_sheet_id == fact_sheet_id
     assert variant_artifacts[0].claim_ids_used
-    assert run.prompt_version == "v3" and run.validation_status == "VALIDATED"
+    assert run.prompt_version == "v4" and run.validation_status == "VALIDATED"
     assert run.input_hash == context.semantic_key
     assert (
         variant.structured_payload["claim_presentations"]
@@ -524,7 +530,7 @@ def test_methodology_version_change_creates_legitimate_new_draft() -> None:
 
     second_service = _service(ai)
     second_service.style = second_service.style.model_copy(
-        update={"methodology_version": "content-generation-methodology-v4"}
+        update={"methodology_version": "content-generation-methodology-v5"}
     )
     changed_event = event.model_copy(update={"event_id": uuid4(), "idempotency_key": str(uuid4())})
     with factory() as session:

@@ -1,7 +1,7 @@
 # News AI Social Media Manager — AI Platform
 
-Content prompt v3 requires application-validated claim presentations under
-`certainty-policy-v1`. Quality prompt v3 checks prose against those declarations
+Content prompt v4 requires application-validated claim presentations under
+`certainty-policy-v1`. Quality prompt v4 checks prose against those declarations
 and the immutable Fact Sheet and returns typed certainty_escalations. AI cannot
 change claim status/label or override deterministic certainty errors. This is not
 reasoning escalation, a new AI stage, or deterministic natural-language inference.
@@ -12,13 +12,13 @@ canonical labels; future semantics require an explicitly versioned producer/poli
 
 ## 1. Purpose
 
-Current claim extraction uses prompt v2 and methodology v2 for typed statement
-classification, not verification. Content prompt v3 / methodology v3 requires
+Current claim extraction uses prompt v3 and methodology v3 for typed statement
+classification, not verification. Content prompt v4 / methodology v4 requires
 exact claim-semantic presentations as well as PR2 certainty presentations.
-Quality prompt v3 / methodology v6 runs secondary prose checks for announcement,
+Quality prompt v4 / methodology v7 runs secondary prose checks for announcement,
 plan, expectation, forecast, attribution and semantic-type laundering. Typed prose
 claim_semantic_escalations are separate from certainty_escalations; any escalation
-fails application quality. Deterministic semantic-validator-v3 independently checks
+fails application quality. Deterministic semantic-validator-v4 independently checks
 persisted metadata against the immutable Fact Sheet under claim-semantics-policy-v1.
 No new AI stage/provider, routing change or AI factual authority is introduced.
 
@@ -746,7 +746,7 @@ uses scoped canonical claim/evidence spans and explicit artifact relationships,
 not another AI call or provider-specific self-grading prompt. AI assessment still
 runs for diagnosis but cannot override deterministic ERROR findings. The existing
 deterministic checks are not delegated to an AI prompt and grant no AI evidence
-authority. Current quality prompt v3 adds only the secondary prose checks.
+authority. Current quality prompt v4 adds only the secondary prose checks.
 
 ---
 
@@ -936,3 +936,18 @@ Do not assume local hardware acceleration.
 AI service control is runtime-adapter based, not OS-specific.
 Quality pass does not replace human approval in the MVP.
 ```
+
+---
+
+## Current value annotation and transformation stages
+
+Extraction prompt v3 / methodology v3 requires source-bound typed value candidates.
+Content prompt v4 / methodology v4 requires complete anchor presentation declarations.
+Quality prompt v4 / methodology v7 returns additional typed prose value_escalations.
+The application, not AI, owns exact normalization, stable anchor IDs, conversions,
+value-integrity-policy-v1 and semantic-validator-v4 decisions.
+No new AI stage/provider/routing/fallback behavior is introduced.
+Policy versions and exact anchors/presentations participate in extraction, content
+and quality semantic identities alongside exact source/Fact Sheet/Brief/artifact inputs.
+The AI secondary prose comparison is not deterministic natural-language proof,
+does not calculate new facts and cannot override deterministic ERRORs or alter truth.

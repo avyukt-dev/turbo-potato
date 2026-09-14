@@ -84,7 +84,7 @@ def test_new_and_reused_classification_is_honest_and_preserves_verification(tmp_
         assert claim.semantic_ai_run_id == first.ai_run_id
         assert claim.semantic_type == "POLICY_COMMITMENT"
         assert claim.semantic_state == "ANNOUNCED"
-        assert session.get(AIRun, claim.semantic_ai_run_id).prompt_version == "v2"
+        assert session.get(AIRun, claim.semantic_ai_run_id).prompt_version == "v3"
         # Simulate an honest pre-PR3 row; original wording/verification remains historical.
         claim.status = ClaimVerificationStatus.SUPPORTED
         claim.claim_type = "POLICY_ACTION"

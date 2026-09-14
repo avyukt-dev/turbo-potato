@@ -83,6 +83,7 @@ class QualityAI:
             "content_variant_id": request.input["content_artifact"]["content_variant_id"],
             "certainty_escalations": [],
             "claim_semantic_escalations": [],
+            "value_escalations": [],
             "factual_accuracy_passed": True,
             "source_alignment_passed": True,
             "citation_alignment_passed": True,
@@ -153,6 +154,7 @@ def _seed(factory: sessionmaker[Session], *, media: bool = True):
                         "claim_text": "The gauge measured two metres.",
                         "claim_type": "MEASUREMENT",
                         "semantics": SEMANTICS,
+                        "values": {"policy_version": "value-integrity-policy-v1", "anchors": []},
                         "status": "PARTIALLY_SUPPORTED",
                         "confidence_score": 0.7,
                         "importance_score": 0.9,
@@ -256,6 +258,7 @@ def _seed(factory: sessionmaker[Session], *, media: bool = True):
                         "confidence_score": 0.7,
                         "evidence_ids": [str(evidence_id)],
                         "semantics": SEMANTICS,
+                        "values": {"policy_version": "value-integrity-policy-v1", "anchors": []},
                         "evidence_excerpts": ["The gauge measured two metres."],
                     }
                 ],
@@ -314,6 +317,7 @@ def _seed(factory: sessionmaker[Session], *, media: bool = True):
                     }
                 ],
                 "claim_semantic_presentations": [presentation(claim_id)],
+                "claim_value_presentations": [],
             },
             claim_ids_used=[str(claim_id)],
             source_ids_used=[str(source_id)],
@@ -357,7 +361,7 @@ def _service(ai: QualityAI) -> QualityAssessmentService:
                 ),
             ),
         ),
-        QualityPrompt.load(loader.root / "prompts" / "quality" / "v3.txt", version="v3"),
+        QualityPrompt.load(loader.root / "prompts" / "quality" / "v4.txt", version="v4"),
         EditorialConfigLoader(loader).load_content_style(),
         EditorialConfigLoader(loader).load_publishing_policy(),
     )
@@ -642,6 +646,7 @@ def test_prompt_injection_is_bounded_untrusted_input_only() -> None:
         "quality_methodology_version",
         "certainty_policy_version",
         "claim_semantics_policy_version",
+        "value_integrity_policy_version",
     }
 
 

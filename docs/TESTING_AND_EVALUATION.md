@@ -418,7 +418,8 @@ multi-claim isolation and methodology separation. PostgreSQL verifies
 `0015 -> 0014 -> 0015` schema parity, vocabulary/FK/coherence constraints and honest
 historical NULL. Existing PR1 quote/reference/warning and PR2 certainty tests remain
 binding. These tests prove typed preservation, not deterministic prose understanding.
-Zero-claim cardinality (AI-CLAIM-01) and numerical/unit comparisons remain separate.
+Zero-claim cardinality (AI-CLAIM-01) remains separate. Current numerical/unit
+comparisons are covered by the value-integrity regression section below.
 
 Claim extraction must distinguish:
 
@@ -1128,3 +1129,22 @@ Test historical, demographic, legal, caste, and communal claims for preserved un
 Test backups by restoring them.
 No release passes solely because unit tests pass.
 ```
+
+---
+
+## Value-integrity-policy-v1 regression coverage
+
+Test exact Decimal/magnitude preservation, percent vs percentage points, currency identity,
+approximation and inclusive/strict bounds, range endpoints, date/time precision, explicit
+aware-instant equivalence and no assumed timezone. Test exact duration/distance/mass
+registry conversion and fail closed on unsupported units or arithmetic.
+Extraction tests require source spans, evaluated [] vs absence, stable application anchor IDs,
+genuine reused-Claim classification/provenance and conflicting-value rollback.
+Generation tests bind exact anchor coverage, claim ownership, paths and actual rendered text;
+invalid declarations follow the existing AIRouter invalid-response/fallback mechanism.
+Quality independently revalidates and persists ERRORs despite AI pass, and rejects
+bad AI claim/anchor/path/code references. Any typed prose value escalation fails quality.
+Preserve PR1 scoped quotations/source snapshots, PR2 certainty matrix and PR3 type/state.
+Real PostgreSQL tests enforce JSON arrays, complete metadata, provenance FKs, honest
+historical NULLs and exact 0016→0015→0016 schema restoration, plus base→head round trip.
+Existing PostgreSQL/Redis pipeline regressions remain mandatory. No real social calls.

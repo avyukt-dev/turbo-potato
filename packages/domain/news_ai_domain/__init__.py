@@ -13,8 +13,26 @@ from .enums import (
     ReviewState,
     RiskLevel,
 )
+from .values import (
+    VALUE_INTEGRITY_POLICY_VERSION,
+    ClaimValueAnchor,
+    ClaimValueCandidate,
+    ClaimValueKind,
+    ClaimValues,
+    MeasurementDimension,
+    TemporalPrecision,
+    ValueRelation,
+)
 
 __all__ = [
+    "VALUE_INTEGRITY_POLICY_VERSION",
+    "ClaimValueKind",
+    "ValueRelation",
+    "TemporalPrecision",
+    "MeasurementDimension",
+    "ClaimValueAnchor",
+    "ClaimValueCandidate",
+    "ClaimValues",
     "CLAIM_SEMANTICS_POLICY_VERSION",
     "ClaimSemantics",
     "ClaimSemanticState",

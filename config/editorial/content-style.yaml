@@ -1,5 +1,5 @@
 schema_version: 1
-methodology_version: content-generation-methodology-v3
+methodology_version: content-generation-methodology-v4
 default_target:
   platform: INSTAGRAM
   format: CAROUSEL

@@ -40,6 +40,7 @@ def artifacts():
                     "claim_text": "The café recorded two metres.",
                     "claim_type": "MEASUREMENT",
                     "semantics": SEMANTICS,
+                    "values": {"policy_version": "value-integrity-policy-v1", "anchors": []},
                     "status": "PARTIALLY_SUPPORTED",
                     "risk_level": "LOW",
                     "evidence_ids": [evidence],
@@ -90,6 +91,7 @@ def artifacts():
                 }
             ],
             "claim_semantic_presentations": [presentation(claim)],
+            "claim_value_presentations": [],
             "slides": [
                 {
                     "position": 1,

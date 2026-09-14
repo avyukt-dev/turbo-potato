@@ -848,3 +848,23 @@ ANALYTICS
 ```
 
 No subsystem may bypass the evidence boundary, publication approval policy, persistence boundary, configuration ownership, or runtime abstraction by redefining a shared term locally.
+
+---
+
+# Value integrity (independent factual annotations)
+
+`value-integrity-policy-v1` preserves exact upstream value semantics independently
+of semantic type/state, verification, FactCheck label and certainty. NUMBER, PERCENT,
+PERCENTAGE_POINT, CURRENCY, DATE, TIME, DATETIME, DURATION and MEASUREMENT are closed kinds.
+Numeric magnitudes use exact finite Decimal strings, not binary floats or tolerances.
+10% is PERCENT amount=10, never a NUMBER 0.10 or 10 percentage points.
+EXACT, APPROXIMATE, RANGE, AT_LEAST, GREATER_THAN, AT_MOST and LESS_THAN preserve
+their exact relation/endpoints. No range midpoint, lost approximation or derived arithmetic.
+Date/time precision YEAR/MONTH/DAY/MINUTE/SECOND cannot be invented. Timezone is never
+inferred; only explicit aware datetimes can receive equivalent-instant conversion.
+Currency identity is preserved without FX. Ambiguous currencies/dates/unsupported units
+use EXACT_COPY_ONLY with the original kind and mechanically preserved source text.
+Only the application exact unit/scale registry authorizes equivalent formatting/conversion.
+Typed metadata and occurrence binding are deterministic; arbitrary prose is not.
+Secondary AI quality reports mismatches but cannot create anchors, alter truth or override ERRORs.
+NULL means historically unevaluated; [] with current policy/AIRun means evaluated with no values.

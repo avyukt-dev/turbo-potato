@@ -32,6 +32,7 @@ from news_ai_database import (
     Story,
 )
 from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ReviewState
+from news_ai_domain.values import VALUE_INTEGRITY_POLICY_VERSION
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_events import (
     ContentRequestedV1,
@@ -66,6 +67,7 @@ from .contracts import (
     EditorialBrief,
     normalize_generation_language,
 )
+from .values import ClaimValuePresentation, presentation_errors
 
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
 _TRANSIENT_AI_FAILURES = {
@@ -206,6 +208,7 @@ class ContentGenerationService:
                 "methodology_version": self.style.methodology_version,
                 "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
+                "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
                 "style": self.style.model_dump(mode="json"),
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -267,6 +270,12 @@ class ContentGenerationService:
                 if "claim_semantic_presentations" in variant.structured_payload
                 else None,
                 risk_level=draft.risk_level,
+                claim_value_presentations=tuple(
+                    ClaimValuePresentation.model_validate(item)
+                    for item in variant.structured_payload["claim_value_presentations"]
+                )
+                if "claim_value_presentations" in variant.structured_payload
+                else None,
                 sensitive_topics=tuple(draft.sensitive_topics),
                 review_state=variant.review_state,
                 version=variant.version,
@@ -309,6 +318,7 @@ class ContentGenerationService:
                 "immutable_fact_sheet": context.fact_sheet.model_dump(mode="json"),
                 "editorial_brief": context.brief.model_dump(mode="json"),
                 "generation_language": context.generation_language,
+                "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
                 "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "certainty_ceilings": {
                     str(claim.claim_id): certainty_ceiling(claim.status, claim.label).model_dump(
@@ -542,6 +552,8 @@ def _validate_output(
     if not referenced <= known_claims:
         raise ValueError("content output references an unknown claim")
     claims = {claim.claim_id: claim for claim in context.brief.claims}
+    if presentation_errors(output, {identity: claim.values for identity, claim in claims.items()}):
+        raise ValueError("content value presentation violates immutable source values")
     for presentation in output.claim_semantic_presentations:
         claim = claims[presentation.claim_id]
         if claim.semantics is None or semantic_presentation_violations(

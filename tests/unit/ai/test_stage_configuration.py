@@ -25,7 +25,7 @@ EXPECTED = {
     AIStageId.CLAIM_EXTRACTION: (
         AITaskType.CLAIM_EXTRACTION,
         "claim-extraction",
-        "prompts/claim-extraction/v2.txt",
+        "prompts/claim-extraction/v3.txt",
     ),
     AIStageId.EVIDENCE_ASSESSMENT: (
         AITaskType.EVIDENCE_ASSESSMENT,
@@ -35,12 +35,12 @@ EXPECTED = {
     AIStageId.CONTENT_GENERATION: (
         AITaskType.CONTENT_GENERATION,
         "content-generation",
-        "prompts/content/v3.txt",
+        "prompts/content/v4.txt",
     ),
     AIStageId.QUALITY_CHECKING: (
         AITaskType.QUALITY_CHECKING,
         "content-quality",
-        "prompts/quality/v3.txt",
+        "prompts/quality/v4.txt",
     ),
 }
 
@@ -82,9 +82,9 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
         assert stage.task_type is task
         assert stage.prompt.prompt_id == prompt_id
         assert stage.prompt.version == (
-            "v3"
+            "v4"
             if stage.stage_id in (AIStageId.CONTENT_GENERATION, AIStageId.QUALITY_CHECKING)
-            else "v2"
+            else "v3"
             if stage.stage_id is AIStageId.CLAIM_EXTRACTION
             else "v1"
         )

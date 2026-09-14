@@ -29,6 +29,13 @@ from news_ai_domain import (
     ClaimVerificationStatus,
     RiskLevel,
 )
+from news_ai_domain.values import (
+    VALUE_INTEGRITY_POLICY_VERSION,
+    ClaimValueAnchor,
+    ClaimValueCandidate,
+    anchors_for_claim,
+    mechanical_span_present,
+)
 from news_ai_events import EventEnvelope, EventType, PermanentEventError
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -39,7 +46,7 @@ from .contracts import AIRequest, AIResponse, AIResponseFormat, AITaskType, Prom
 from .provider import AIInvalidResponseError
 from .routing import AIRoutedResponse, AIRouter
 
-CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v2"
+CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v3"
 
 
 class ClaimExtractionItem(BaseModel):
@@ -54,6 +61,7 @@ class ClaimExtractionItem(BaseModel):
     claim_text: str = Field(min_length=1, max_length=4000)
     semantic_type: ClaimSemanticType
     semantic_state: ClaimSemanticState
+    value_candidates: tuple[ClaimValueCandidate, ...] = Field(max_length=100)
     importance_score: float | None = Field(default=None, ge=0.0, le=1.0)
     risk_level: RiskLevel = RiskLevel.LOW
     sensitive_topics: tuple[str, ...] = ()
@@ -87,6 +95,14 @@ class ClaimExtractionItem(BaseModel):
 
     @model_validator(mode="after")
     def validate_temporal_range(self) -> ClaimExtractionItem:
+        if any(
+            not mechanical_span_present(self.claim_text, item.source_text)
+            for item in self.value_candidates
+        ):
+            raise ValueError("value source span is absent from atomic claim")
+        materials = [item.model_dump_json() for item in self.value_candidates]
+        if len(materials) != len(set(materials)):
+            raise ValueError("value candidates must be unique")
         if self.temporal_start and self.temporal_end and self.temporal_start > self.temporal_end:
             raise ValueError("temporal_start must not be after temporal_end")
         return self
@@ -152,7 +168,7 @@ class ClaimExtractionPrompt:
     system_prompt: str
 
     @classmethod
-    def load(cls, path: Path, *, version: str = "v2") -> ClaimExtractionPrompt:
+    def load(cls, path: Path, *, version: str = "v3") -> ClaimExtractionPrompt:
         text = path.read_text(encoding="utf-8").strip()
         if not text:
             raise ValueError("claim extraction prompt must not be blank")
@@ -217,6 +233,7 @@ class ClaimExtractionService:
             "context_hash": context_hash,
             "methodology_version": CLAIM_EXTRACTION_METHODOLOGY_VERSION,
             "semantic_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
+            "value_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
             "prompt_id": self.prompt.prompt_id,
             "prompt_version": self.prompt.version,
             "prompt_checksum": self.prompt.checksum,
@@ -331,6 +348,12 @@ class ClaimExtractionService:
                 or claim.semantic_policy_version != CLAIM_SEMANTICS_POLICY_VERSION
             ):
                 raise PermanentEventError("CLAIM_SEMANTICS_MISSING")
+            if (
+                claim.value_anchors is None
+                or claim.value_policy_version != VALUE_INTEGRITY_POLICY_VERSION
+                or claim.value_ai_run_id is None
+            ):
+                raise PermanentEventError("CLAIM_VALUES_MISSING")
         return {
             "story_id": str(story_id),
             "claim_ids": list(row.payload.get("claim_ids", [])),
@@ -513,6 +536,29 @@ class ClaimExtractionService:
                 metadata["extraction_ai_run_ids"] = run_ids
                 claim.claim_metadata = metadata
                 reused_claims += 1
+            anchors = anchors_for_claim(claim.id, item.value_candidates)
+            material = [anchor.model_dump(mode="json") for anchor in anchors]
+            if claim.value_policy_version is not None:
+                existing_values = sorted(
+                    json.dumps(
+                        ClaimValueAnchor.model_validate(anchor).value.model_dump(mode="json"),
+                        sort_keys=True,
+                    )
+                    for anchor in claim.value_anchors or []
+                )
+                returned_values = sorted(
+                    json.dumps(anchor.value.model_dump(mode="json"), sort_keys=True)
+                    for anchor in anchors
+                )
+                if (
+                    claim.value_policy_version != VALUE_INTEGRITY_POLICY_VERSION
+                    or existing_values != returned_values
+                ):
+                    raise PermanentEventError("CLAIM_VALUES_CONFLICT")
+            else:
+                claim.value_anchors = material
+                claim.value_policy_version = VALUE_INTEGRITY_POLICY_VERSION
+                claim.value_ai_run_id = ai_run.id
             claim_ids.append(claim.id)
 
         event = EventEnvelope(

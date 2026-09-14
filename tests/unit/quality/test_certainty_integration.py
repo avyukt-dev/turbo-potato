@@ -60,8 +60,8 @@ def test_quality_independently_revalidates_and_overrides_ai(field, value, code):
         check = session.scalar(select(ContentQualityCheck))
         assert code in {f["code"] for f in check.semantic_findings["findings"]}
         assert check.certainty_escalations == []
-        assert check.semantic_methodology_version == "semantic-validator-v3"
-        assert check.methodology_version == "quality-gate-methodology-v6"
+        assert check.semantic_methodology_version == "semantic-validator-v4"
+        assert check.methodology_version == "quality-gate-methodology-v7"
         assert session.get(ContentDraft, draft_id).review_state == ReviewState.NOT_READY
         assert session.get(ContentVariant, variant_id).review_state == ReviewState.NOT_READY
         detail = ReviewService(factory, _policy()).detail(
