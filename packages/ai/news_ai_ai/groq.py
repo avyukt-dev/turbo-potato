@@ -196,21 +196,22 @@ class GroqProvider:
         if status < 400:
             return
 
-        error_type, error_code = GroqProvider._error_fields(response)
-
         if status == 429:
             raise AIProviderRateLimitError("Groq request was rate limited")
         if status in {401, 403}:
             raise AIProviderPolicyError("Groq request was not authorized")
         if status == 413:
+            error_type, error_code = GroqProvider._error_fields(response)
             if "rate_limit_exceeded" in {error_type, error_code}:
                 raise AIProviderRateLimitError("Groq request was rate limited")
             raise AIContextTooLargeError("Groq request exceeded the accepted context size")
         if status >= 500:
             raise AIProviderUnavailableError(f"Groq server returned HTTP {status}")
 
-        if status == 400 and error_code == "json_validate_failed":
-            raise AIInvalidResponseError("Groq failed to produce valid structured output")
+        if status == 400:
+            _, error_code = GroqProvider._error_fields(response)
+            if error_code == "json_validate_failed":
+                raise AIInvalidResponseError("Groq failed to produce valid structured output")
 
         raise AIProviderError(f"Groq rejected request with HTTP {status}")
 
