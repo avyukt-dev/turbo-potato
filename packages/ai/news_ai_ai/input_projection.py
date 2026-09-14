@@ -198,6 +198,7 @@ def _project_brief(brief: dict[str, Any], *, selected_claim_ids: frozenset[str])
             item,
             (
                 "claim_id",
+                "text",
                 "status",
                 "fact_check_id",
                 "label",
