@@ -23,7 +23,13 @@ from news_ai_ai import (
     PromptReference,
     escalate_reasoning_for_validation,
 )
-from news_ai_content import ContentGenerationOutput, EditorialBrief, content_artifact_hash
+from news_ai_content import (
+    AI_INPUT_PROJECTION_VERSION,
+    ContentGenerationOutput,
+    EditorialBrief,
+    content_artifact_hash,
+    project_quality_assessment_input,
+)
 from news_ai_content.certainty import CERTAINTY_POLICY_VERSION
 from news_ai_content.integrity import quality_artifact
 from news_ai_content.media import MediaNotAttachedError, MediaValidationError
@@ -477,16 +483,10 @@ class QualityAssessmentService:
             if not variant.semantic_report.passed:
                 reasoning = escalate_reasoning_for_validation(reasoning)
 
-            request = AIRequest(
-                task_type=AITaskType.QUALITY_CHECKING,
-                system_prompt=self.prompt.system_prompt,
-                input={
+            provider_input = project_quality_assessment_input(
+                {
                     "immutable_fact_sheet": context.fact_sheet,
-                    "content_artifact": {
-                        key: value
-                        for key, value in variant.artifact.items()
-                        if key != "media_provenance"
-                    },
+                    "content_artifact": variant.artifact,
                     "editorial_brief": context.editorial_brief,
                     "risk_level": context.risk_level,
                     "sensitive_topics": context.sensitive_topics,
@@ -495,7 +495,12 @@ class QualityAssessmentService:
                     "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                     "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                     "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
-                },
+                }
+            )
+            request = AIRequest(
+                task_type=AITaskType.QUALITY_CHECKING,
+                system_prompt=self.prompt.system_prompt,
+                input=provider_input,
                 prompt=PromptReference(
                     prompt_id=self.prompt.prompt_id,
                     version=self.prompt.version,
@@ -513,6 +518,7 @@ class QualityAssessmentService:
                     f"content_variant:{variant.variant_id}:v{variant.variant_version}",
                 ),
                 input_hash=variant.semantic_key,
+                metadata={"input_projection_version": AI_INPUT_PROJECTION_VERSION},
             )
             try:
                 routed = await self.router.execute(request, response_validator=validate)
