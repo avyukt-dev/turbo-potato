@@ -86,9 +86,7 @@ def test_high_or_critical_story_risk_escalates_to_high() -> None:
 
 
 def test_disputed_claim_records_credible_source_conflict() -> None:
-    decision = editorial_reasoning_decision(
-        _brief(_claim(status=ClaimVerificationStatus.DISPUTED))
-    )
+    decision = editorial_reasoning_decision(_brief(_claim(status=ClaimVerificationStatus.DISPUTED)))
 
     assert decision.effort is AIReasoningEffort.HIGH
     assert AIReasoningReason.CREDIBLE_SOURCE_CONFLICT in decision.reasons
