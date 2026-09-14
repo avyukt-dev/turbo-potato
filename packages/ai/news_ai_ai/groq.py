@@ -202,7 +202,9 @@ class GroqProvider:
             raise AIProviderPolicyError("Groq request was not authorized")
         if status == 413:
             error_type, error_code = GroqProvider._error_fields(response)
-            if "rate_limit_exceeded" in {error_type, error_code}:
+            if error_code == "rate_limit_exceeded" or (
+                error_code is None and error_type == "rate_limit_exceeded"
+            ):
                 raise AIProviderRateLimitError("Groq request was rate limited")
             raise AIContextTooLargeError("Groq request exceeded the accepted context size")
         if status >= 500:
