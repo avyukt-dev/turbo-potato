@@ -282,6 +282,32 @@ def test_413_non_rate_limit_code_remains_context_too_large_without_provider_body
     assert "test-secret" not in error
 
 
+def test_413_error_code_takes_precedence_over_conflicting_rate_limit_type() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                413,
+                json={
+                    "error": {
+                        "message": "secret-provider-body",
+                        "type": "rate_limit_exceeded",
+                        "code": "request_too_large",
+                    }
+                },
+            )
+
+        async with _client(handler) as client:
+            await GroqProvider(_config(), api_key="test-secret", client=client).execute(_request())
+
+    with pytest.raises(AIContextTooLargeError) as caught:
+        asyncio.run(run())
+
+    error = str(caught.value)
+    assert type(caught.value) is AIContextTooLargeError
+    assert "secret-provider-body" not in error
+    assert "test-secret" not in error
+
+
 def test_json_validation_failure_maps_to_invalid_response_without_provider_body() -> None:
     async def run() -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
