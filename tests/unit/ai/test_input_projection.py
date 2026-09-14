@@ -127,14 +127,19 @@ def _payload(claim_count: int = 6) -> dict[str, Any]:
                     "assessment_ai_run_ids": [f"run-{index}-support"],
                     "directness": "DIRECT",
                     "origin_role": "ORIGINAL",
-                    "provenance_state": "PRIMARY",
-                    "temporal_role": "CONTEMPORANEOUS",
+                    "provenance_state": "DURABLE_VERSION_PRESERVED",
+                    "temporal_role": "CONTEMPORARY",
                     "semantics_policy_version": "evidence-semantics-v1",
                     "graph_relations": [
                         {
-                            "policy_version": "graph-v1",
-                            "relation": "SUPPORTS",
-                            "opaque": "g" * 1200,
+                            "relation_type": "REFERENCES",
+                            "target_evidence_id": None,
+                            "external_reference": f"document:{index}:support",
+                            "basis": "explicit citation",
+                            "policy_version": "evidence-graph-policy-v1",
+                            "research_run_id": f"research-run-{index}",
+                            "research_generation": 1,
+                            "operational_blob": "g" * 1200,
                         }
                     ],
                 },
@@ -161,17 +166,11 @@ def _payload(claim_count: int = 6) -> dict[str, Any]:
                     "originating_reference": f"ref-{index}-contradict",
                     "assessment_ai_run_ids": [f"run-{index}-contradict"],
                     "directness": "INDIRECT",
-                    "origin_role": "REPORTING",
-                    "provenance_state": "SECONDARY",
-                    "temporal_role": "CONTEMPORANEOUS",
+                    "origin_role": "REFERENCE",
+                    "provenance_state": "EXTERNAL_REFERENCE_ONLY",
+                    "temporal_role": "CONTEMPORARY",
                     "semantics_policy_version": "evidence-semantics-v1",
-                    "graph_relations": [
-                        {
-                            "policy_version": "graph-v1",
-                            "relation": "CONTRADICTS",
-                            "opaque": "h" * 1200,
-                        }
-                    ],
+                    "graph_relations": [],
                 },
             ]
         )
@@ -317,26 +316,52 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
     assert [item["claim_id"] for item in brief["claims"]] == [
         f"claim-{index}" for index in range(6)
     ]
-    assert (
-        fact_sheet["claims"][0]["semantics"]
-        == snapshot["immutable_fact_sheet"]["claims"][0]["semantics"]
-    )
-    assert (
-        fact_sheet["claims"][0]["values"] == snapshot["immutable_fact_sheet"]["claims"][0]["values"]
-    )
+    assert brief["claims"][0]["text"] == snapshot["editorial_brief"]["claims"][0]["text"]
+    assert brief["claims"][0]["semantics"] == snapshot["editorial_brief"]["claims"][0][
+        "semantics"
+    ]
+    assert brief["claims"][0]["values"] == snapshot["editorial_brief"]["claims"][0]["values"]
+    assert brief["claims"][0]["status"] == "SUPPORTED"
+    assert brief["claims"][0]["label"] == "TRUE"
     assert fact_sheet["claims"][0]["contradictory_evidence_ids"] == ["evidence-0-contradict"]
+    assert not {
+        "claim_text",
+        "semantics",
+        "values",
+        "status",
+        "confidence_score",
+    } & set(fact_sheet["claims"][0])
     assert {item["relation"] for item in fact_sheet["evidence"]} == {
         "DIRECT_SUPPORT",
         "CONTRADICTS",
     }
     assert fact_sheet["locations"] == ["India"]
     assert fact_sheet["context"] == ["Monthly inflation release"]
-    assert brief["claims"][0]["text"] == snapshot["editorial_brief"]["claims"][0]["text"]
     assert "evidence_excerpts" not in brief["claims"][0]
-    assert "human_review_required" not in brief
+    assert not {
+        "headline",
+        "summary",
+        "key_points",
+        "risk_level",
+        "sensitive_topics",
+        "unresolved_questions",
+        "human_review_required",
+    } & set(brief)
+    first_relation = fact_sheet["evidence"][0]["graph_relations"][0]
+    assert first_relation == {
+        "relation_type": "REFERENCES",
+        "target_evidence_id": None,
+        "external_reference": "document:0:support",
+        "basis": "explicit citation",
+        "policy_version": "evidence-graph-policy-v1",
+    }
+    assert fact_sheet["evidence"][1]["graph_relations"] == []
+    assert fact_sheet["evidence"][0]["semantics_policy_version"] == "evidence-semantics-v1"
+    assert "research_run_id" not in first_relation
+    assert "research_generation" not in first_relation
+    assert "operational_blob" not in first_relation
     assert "url" not in fact_sheet["evidence"][0]
     assert "content_hash" not in fact_sheet["evidence"][0]
-    assert "graph_relations" not in fact_sheet["evidence"][0]
     assert "created_at" not in fact_sheet
 
 
@@ -372,7 +397,7 @@ def test_quality_projection_defensively_removes_media_provenance_only() -> None:
     assert artifact == original_artifact
 
 
-def test_projection_fails_closed_for_identity_claim_and_source_mismatches() -> None:
+def test_projection_fails_closed_for_identity_claim_source_and_duplicate_mismatches() -> None:
     content = _payload()
     content["editorial_brief"]["fact_sheet_version"] = 99
     with pytest.raises(AIInputProjectionError, match="identity do not match"):
@@ -388,6 +413,17 @@ def test_projection_fails_closed_for_identity_claim_and_source_mismatches() -> N
     with pytest.raises(AIInputProjectionError, match="source provenance"):
         project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
 
+    quality = _quality_payload()
+    quality["content_artifact"]["claim_ids_used"] = ["claim-1", "claim-1"]
+    with pytest.raises(AIInputProjectionError, match="must not contain duplicates"):
+        project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
+
+    quality = _quality_payload()
+    source_id = quality["content_artifact"]["source_ids_used"][0]
+    quality["content_artifact"]["source_ids_used"] = [source_id, source_id]
+    with pytest.raises(AIInputProjectionError, match="must not contain duplicates"):
+        project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
+
 
 def test_projection_is_deterministic_and_materially_smaller_for_e2e_shaped_input() -> None:
     content = _payload()
@@ -398,10 +434,12 @@ def test_projection_is_deterministic_and_materially_smaller_for_e2e_shaped_input
         second, sort_keys=True, default=str
     )
     assert _encoded_size(first) < _encoded_size(content) * 0.65
+    assert _encoded_size(first) < 26_000
 
     quality = _quality_payload()
     compact_quality = project_ai_input(AITaskType.QUALITY_CHECKING.value, quality)
     assert _encoded_size(compact_quality) < _encoded_size(quality) * 0.60
+    assert _encoded_size(compact_quality) < 22_000
 
 
 def test_ai_request_applies_projection_without_changing_canonical_input_hash() -> None:
@@ -415,7 +453,7 @@ def test_ai_request_applies_projection_without_changing_canonical_input_hash() -
 
     assert request.input_hash == "canonical-full-context-hash"
     assert request.metadata["input_projection_version"] == AI_INPUT_PROJECTION_VERSION
-    assert _encoded_size(request.input) < _encoded_size(payload) * 0.65
+    assert _encoded_size(request.input) < 26_000
     assert "url" not in request.input["immutable_fact_sheet"]["evidence"][0]
 
     reconstructed = AIRequest.model_validate(request.model_dump(mode="python"))
