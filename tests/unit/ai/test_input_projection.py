@@ -331,7 +331,7 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
     }
     assert fact_sheet["locations"] == ["India"]
     assert fact_sheet["context"] == ["Monthly inflation release"]
-    assert "text" not in brief["claims"][0]
+    assert brief["claims"][0]["text"] == snapshot["editorial_brief"]["claims"][0]["text"]
     assert "evidence_excerpts" not in brief["claims"][0]
     assert "human_review_required" not in brief
     assert "url" not in fact_sheet["evidence"][0]
