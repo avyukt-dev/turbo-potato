@@ -95,6 +95,7 @@ class GroqProvider:
             models=frozenset({config.model}),
             supports_vision=False,
             supports_tools=False,
+            honors_reasoning_effort=True,
             max_context_tokens=config.max_context_tokens,
         )
 
