@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .contracts import (
     AIReasoningEffort,
+    AIReasoningReason,
     AIRequest,
     AIResponse,
     AIResponseFormat,
@@ -29,6 +30,7 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
+from .reasoning import REASONING_ROUTING_POLICY_VERSION
 from .registry import AIProviderRegistry
 
 ResponseValidator = Callable[[AIResponse], None]
@@ -201,6 +203,8 @@ class AIRouteAttempt(BaseModel):
     provider_id: ProviderId
     model: ModelId | None = None
     reasoning_effort: AIReasoningEffort | None = None
+    reasoning_policy_version: str | None = None
+    reasoning_reasons: tuple[AIReasoningReason, ...] = ()
     outcome: AIRouteAttemptOutcome
     failure_reason: AIFailureReason | None = None
 
@@ -210,6 +214,10 @@ class AIRouteAttempt(BaseModel):
             raise ValueError("successful route attempt cannot contain a failure reason")
         if self.outcome is AIRouteAttemptOutcome.FAILED and self.failure_reason is None:
             raise ValueError("failed route attempt must contain a failure reason")
+        if self.reasoning_reasons and self.reasoning_policy_version is None:
+            raise ValueError("reasoning attempt reasons require a policy version")
+        if self.reasoning_reasons and self.reasoning_effort is not AIReasoningEffort.HIGH:
+            raise ValueError("reasoning attempt reasons require HIGH effort")
         return self
 
 
@@ -291,37 +299,84 @@ class AIRouter:
         selections = {item.provider_id: item for item in stage.providers}
         candidates = self.candidate_provider_ids(request)
         attempts: list[AIRouteAttempt] = []
+        route_request = request
+
         for index, provider_id in enumerate(candidates):
             selection = selections[provider_id]
-            attempt_request = self._attempt_request(request, stage, selection)
-            try:
-                response = await self.registry.execute(provider_id, attempt_request)
-                if response_validator is not None:
-                    response_validator(response)
-            except AIProviderError as exc:
-                reason = _failure_reason(exc)
-                attempts.append(
-                    AIRouteAttempt(
-                        provider_id=provider_id,
-                        model=selection.model,
-                        reasoning_effort=attempt_request.reasoning_effort,
-                        outcome=AIRouteAttemptOutcome.FAILED,
-                        failure_reason=reason,
-                    )
-                )
-                if index + 1 >= len(candidates) or reason not in stage.fallback_on:
-                    raise AIRoutingExecutionError(tuple(attempts)) from exc
-                continue
-            attempts.append(
-                AIRouteAttempt(
-                    provider_id=provider_id,
-                    model=selection.model,
-                    reasoning_effort=attempt_request.reasoning_effort,
-                    outcome=AIRouteAttemptOutcome.SUCCESS,
-                )
-            )
-            return AIRoutedResponse(response=response, attempts=tuple(attempts))
+            provider = self.registry.get(provider_id)
+            attempt_request = self._attempt_request(route_request, stage, selection)
+
+            while True:
+                try:
+                    response = await self.registry.execute(provider_id, attempt_request)
+                    if response_validator is not None:
+                        response_validator(response)
+                except AIProviderError as exc:
+                    reason = _failure_reason(exc)
+                    attempts.append(self._attempt_record(selection, attempt_request, reason))
+                    if self._should_escalate_validation(
+                        provider.capabilities.honors_reasoning_effort,
+                        attempt_request,
+                        reason,
+                    ):
+                        route_request = self._validation_escalated_request(route_request)
+                        attempt_request = self._attempt_request(route_request, stage, selection)
+                        continue
+                    if index + 1 >= len(candidates) or reason not in stage.fallback_on:
+                        raise AIRoutingExecutionError(tuple(attempts)) from exc
+                    break
+
+                attempts.append(self._attempt_record(selection, attempt_request, None))
+                return AIRoutedResponse(response=response, attempts=tuple(attempts))
+
         raise AIRoutingExecutionError(tuple(attempts))
+
+    @staticmethod
+    def _attempt_record(
+        selection: AIStageProviderSelection,
+        request: AIRequest,
+        failure_reason: AIFailureReason | None,
+    ) -> AIRouteAttempt:
+        return AIRouteAttempt(
+            provider_id=selection.provider_id,
+            model=selection.model,
+            reasoning_effort=request.reasoning_effort,
+            reasoning_policy_version=request.reasoning_policy_version,
+            reasoning_reasons=request.reasoning_reasons,
+            outcome=(
+                AIRouteAttemptOutcome.FAILED
+                if failure_reason is not None
+                else AIRouteAttemptOutcome.SUCCESS
+            ),
+            failure_reason=failure_reason,
+        )
+
+    @staticmethod
+    def _should_escalate_validation(
+        honors_reasoning_effort: bool,
+        request: AIRequest,
+        failure_reason: AIFailureReason,
+    ) -> bool:
+        return (
+            honors_reasoning_effort
+            and failure_reason is AIFailureReason.INVALID_RESPONSE
+            and request.reasoning_effort is AIReasoningEffort.MEDIUM
+            and request.reasoning_policy_version
+            in {None, REASONING_ROUTING_POLICY_VERSION}
+        )
+
+    @staticmethod
+    def _validation_escalated_request(request: AIRequest) -> AIRequest:
+        reasons = tuple(
+            dict.fromkeys((*request.reasoning_reasons, AIReasoningReason.VALIDATION_FAILURE))
+        )
+        return request.model_copy(
+            update={
+                "reasoning_effort": AIReasoningEffort.HIGH,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
+                "reasoning_reasons": reasons,
+            }
+        )
 
     def _validate_configuration(self) -> None:
         if set(self.stages) != set(AIStageId):
