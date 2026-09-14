@@ -470,9 +470,7 @@ class QualityAssessmentService:
 
             reasoning = editorial_reasoning_decision(
                 brief,
-                claim_ids=tuple(
-                    UUID(str(item)) for item in variant.artifact["claim_ids_used"]
-                ),
+                claim_ids=tuple(UUID(str(item)) for item in variant.artifact["claim_ids_used"]),
             )
             if not variant.semantic_report.passed:
                 reasoning = escalate_reasoning_for_validation(reasoning)
