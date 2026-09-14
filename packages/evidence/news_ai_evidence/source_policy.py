@@ -14,6 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from .engine import ResearchCandidate
+from .graph import (
+    EvidenceGraphRelationSpec,
+    EvidenceGraphRelationType,
+    EvidenceOriginRole,
+    EvidenceProvenanceState,
+)
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _POSITIVE_ORIGIN_KEYS = (
@@ -160,6 +166,9 @@ class CandidateSourceResolution:
     version: ArticleVersion | None
     authority: SourcePolicyResolution
     lineage: LineageResolution
+    graph_relations: tuple[EvidenceGraphRelationSpec, ...] = ()
+    origin_role: EvidenceOriginRole = EvidenceOriginRole.UNKNOWN
+    provenance_state: EvidenceProvenanceState = EvidenceProvenanceState.UNKNOWN
 
 
 @dataclass(slots=True)
@@ -236,6 +245,27 @@ class SourceEvidenceResolver:
             if combined.get(key) is not None and str(combined[key]).strip()
         }
         return _Record(candidate, source, article, version, references)
+
+    @staticmethod
+    def _graph_relations(record: _Record) -> tuple[EvidenceGraphRelationSpec, ...]:
+        mappings = {
+            "originating_url": EvidenceGraphRelationType.DERIVED_FROM,
+            "wire_origin": EvidenceGraphRelationType.DERIVED_FROM,
+            "citation_source_url": EvidenceGraphRelationType.REFERENCES,
+            "primary_document_id": EvidenceGraphRelationType.REFERENCES,
+            "dataset_id": EvidenceGraphRelationType.REFERENCES,
+            "eyewitness_record_id": EvidenceGraphRelationType.REFERENCES,
+            "source_record_id": EvidenceGraphRelationType.REFERENCES,
+        }
+        return tuple(
+            EvidenceGraphRelationSpec(
+                relation_type=mappings[key],
+                external_reference=record.references[key],
+                basis=f"explicit-{key}",
+            )
+            for key in mappings
+            if key in record.references
+        )
 
     def _resolve_claim(
         self, records: list[_Record]
@@ -333,9 +363,22 @@ class SourceEvidenceResolver:
                         version=record.version,
                         authority=authority,
                         lineage=lineage,
+                        graph_relations=self._graph_relations(record),
+                        origin_role=self._origin_role(record),
+                        provenance_state=EvidenceProvenanceState.DURABLE_VERSION_PRESERVED,
                     )
                 )
         return output
+
+    @staticmethod
+    def _origin_role(record: _Record) -> EvidenceOriginRole:
+        if any(key in record.references for key in ("originating_url", "wire_origin")):
+            return EvidenceOriginRole.DERIVATIVE
+        if any(key in record.references for key in _POSITIVE_ORIGIN_KEYS):
+            return EvidenceOriginRole.ORIGINAL
+        if "citation_source_url" in record.references:
+            return EvidenceOriginRole.REFERENCE
+        return EvidenceOriginRole.UNKNOWN
 
     @staticmethod
     def _positive_origin(record: _Record) -> tuple[str, str] | None:

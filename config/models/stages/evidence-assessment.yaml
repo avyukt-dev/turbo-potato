@@ -3,8 +3,8 @@ stage_id: evidence-assessment
 task_type: EVIDENCE_ASSESSMENT
 prompt:
   prompt_id: evidence-assessment
-  version: v1
-  path: prompts/evidence-assessment/v1.txt
+  version: v2
+  path: prompts/evidence-assessment/v2.txt
 providers:
   - provider_id: groq
     model: openai/gpt-oss-120b

@@ -138,6 +138,8 @@ class DeterministicResearchAI:
                 "claim_id": request.input["claim_id"],
                 "candidate_url": request.input["candidate_url"],
                 "relation": "CONTEXT" if unverified else "DIRECT_SUPPORT",
+                "directness": "UNKNOWN" if unverified else "DIRECT",
+                "temporal_role": "CONTEMPORARY",
                 "strength_score": 0.2 if unverified else 0.95,
                 "relevant_excerpt": None if unverified else snippet[:1000],
                 "notes": "Context only." if unverified else "The reviewed text states the reading.",
@@ -719,6 +721,21 @@ async def _run_pipeline(
             assert all(
                 entry["article_version_id"] and entry["content_hash"]
                 for entry in sheet.evidence_snapshot
+            )
+            assert all(
+                entry["semantics_policy_version"] == "evidence-graph-policy-v1"
+                and entry["provenance_state"] == "DURABLE_VERSION_PRESERVED"
+                and entry["temporal_role"] == "CONTEMPORARY"
+                and isinstance(entry["graph_relations"], list)
+                for entry in sheet.evidence_snapshot
+            )
+            edges = [edge for entry in sheet.evidence_snapshot for edge in entry["graph_relations"]]
+            assert edges
+            assert all(edge["policy_version"] == "evidence-graph-policy-v1" for edge in edges)
+            assert all(
+                edge["research_run_id"] in {str(check.research_run_id) for check in checks}
+                and edge["research_generation"] >= 1
+                for edge in edges
             )
             assessment_calls = [
                 request

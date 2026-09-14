@@ -522,6 +522,25 @@ A source merely discussing the same topic is not necessarily evidence for the cl
 
 Persistence belongs to `claim_evidence` as defined by `DATA_MODEL.md`.
 
+`evidence-graph-policy-v1` adds separate closed dimensions: directness
+(`DIRECT`, `INDIRECT`, `UNKNOWN`), origin role (`ORIGINAL`, `DERIVATIVE`,
+`REFERENCE`, `UNKNOWN`), provenance state (`DURABLE_VERSION_PRESERVED`,
+`EXTERNAL_REFERENCE_ONLY`, `UNKNOWN`), and temporal role (`CONTEMPORARY`,
+`RETROSPECTIVE`, `UPDATE`, `UNKNOWN`). Directness and temporal role are validated
+within the existing AI assessment call; origin/provenance require the durable
+source resolver. None grants authority, independence, truth or a claim status.
+
+Separate graph relations are `DERIVED_FROM`, `REFERENCES`, `CONTEXT_FOR`,
+`VERIFIES`, `UPDATES`, with exactly one durable evidence target or explicit
+external/origin reference, basis, policy, research run and Claim generation.
+Current automatic edges use explicit durable origin/wire and citation/record
+signals only. Near-duplicate inference never creates a known derivation edge;
+shared publisher or matching content alone does not manufacture an explicit
+dependency. Other relation types require explicit justified signals, not topic
+similarity or pairwise AI guesses. Graph `VERIFIES` is a document relationship,
+not authority to set Claim status or FactCheck label. Existing conservative
+lineage/corroboration policy remains authoritative.
+
 ---
 
 # 18. Evidence Strength

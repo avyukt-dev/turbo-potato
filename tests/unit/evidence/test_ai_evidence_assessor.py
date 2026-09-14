@@ -124,6 +124,8 @@ def _valid_output(candidate: ResearchCandidate) -> dict[str, object]:
         "claim_id": str(candidate.claim_id),
         "candidate_url": candidate.result.url,
         "relation": "DIRECT_SUPPORT",
+        "directness": "DIRECT",
+        "temporal_role": "CONTEMPORARY",
         "strength_score": 0.8,
         "relevant_excerpt": "gauge recorded a level of two metres",
         "notes": "The excerpt directly reports the measurement.",
@@ -138,6 +140,9 @@ def test_ai_assessor_validates_output_and_preserves_ai_provenance(tmp_path: Path
 
     assert result is not None
     assert result.relation is EvidenceRelation.DIRECT_SUPPORT
+    assert result.directness == "DIRECT"
+    assert result.temporal_role == "CONTEMPORARY"
+    assert result.origin_role == "UNKNOWN"
     assert result.ai_provenance is not None
     assert result.ai_provenance.model_name == "assessment-model-v1"
     assert result.ai_provenance.input_artifact_ids[0] == f"claim:{candidate.claim_id}"
@@ -151,6 +156,9 @@ def test_ai_assessor_validates_output_and_preserves_ai_provenance(tmp_path: Path
         {"relation": "TRUE"},
         {"strength_score": 1.5},
         {"unexpected": "drift"},
+        {"origin_role": "ORIGINAL"},
+        {"independence_group": "model-invented"},
+        {"directness": "INDIRECT"},
     ),
 )
 def test_ai_assessor_rejects_invalid_semantics(tmp_path: Path, mutation: dict[str, object]) -> None:

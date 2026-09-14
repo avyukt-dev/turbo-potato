@@ -28,6 +28,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy import (
     Enum as SAEnum,
@@ -367,12 +368,96 @@ class EvidenceItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class ClaimEvidence(Base):
     __tablename__ = "claim_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "(directness IS NULL AND origin_role IS NULL AND provenance_state IS NULL "
+            "AND temporal_role IS NULL AND semantics_policy_version IS NULL) OR "
+            "(directness IS NOT NULL AND origin_role IS NOT NULL AND provenance_state IS NOT NULL "
+            "AND temporal_role IS NOT NULL AND semantics_policy_version IS NOT NULL)",
+            name="ck_claim_evidence_semantics_complete",
+        ),
+        CheckConstraint(
+            "directness IN ('DIRECT','INDIRECT','UNKNOWN')", name="ck_claim_evidence_directness"
+        ),
+        CheckConstraint(
+            "origin_role IN ('ORIGINAL','DERIVATIVE','REFERENCE','UNKNOWN')",
+            name="ck_claim_evidence_origin_role",
+        ),
+        CheckConstraint(
+            "provenance_state IN ('DURABLE_VERSION_PRESERVED','EXTERNAL_REFERENCE_ONLY','UNKNOWN')",
+            name="ck_claim_evidence_provenance_state",
+        ),
+        CheckConstraint(
+            "temporal_role IN ('CONTEMPORARY','RETROSPECTIVE','UPDATE','UNKNOWN')",
+            name="ck_claim_evidence_temporal_role",
+        ),
+    )
 
     claim_id: Mapped[UUID] = mapped_column(ForeignKey("claims.id"), primary_key=True)
     evidence_id: Mapped[UUID] = mapped_column(ForeignKey("evidence_items.id"), primary_key=True)
     relation: Mapped[str] = mapped_column(String(32), nullable=False)
     strength_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
+    directness: Mapped[str | None] = mapped_column(String(16))
+    origin_role: Mapped[str | None] = mapped_column(String(16))
+    provenance_state: Mapped[str | None] = mapped_column(String(32))
+    temporal_role: Mapped[str | None] = mapped_column(String(16))
+    semantics_policy_version: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EvidenceGraphRelation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "evidence_graph_relations"
+    __table_args__ = (
+        CheckConstraint(
+            "relation_type IN ('DERIVED_FROM','REFERENCES','CONTEXT_FOR','VERIFIES','UPDATES')",
+            name="ck_evidence_graph_relations_type",
+        ),
+        CheckConstraint(
+            "(target_evidence_id IS NOT NULL AND external_reference IS NULL) OR "
+            "(target_evidence_id IS NULL AND external_reference IS NOT NULL)",
+            name="ck_evidence_graph_relations_target",
+        ),
+        CheckConstraint("research_generation >= 1", name="ck_evidence_graph_relations_generation"),
+        CheckConstraint(
+            "source_evidence_id <> target_evidence_id", name="ck_evidence_graph_relations_no_self"
+        ),
+        CheckConstraint(
+            "length(trim(basis)) > 0 AND (external_reference IS NULL OR "
+            "(length(trim(external_reference)) > 0 AND length(external_reference) <= 4096))",
+            name="ck_evidence_graph_relations_reference",
+        ),
+        Index(
+            "uq_evidence_graph_durable_target",
+            "source_evidence_id",
+            "relation_type",
+            "target_evidence_id",
+            "policy_version",
+            unique=True,
+            postgresql_where=text("target_evidence_id IS NOT NULL"),
+            sqlite_where=text("target_evidence_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_evidence_graph_external_target",
+            "source_evidence_id",
+            "relation_type",
+            "external_reference",
+            "policy_version",
+            unique=True,
+            postgresql_where=text("external_reference IS NOT NULL"),
+            sqlite_where=text("external_reference IS NOT NULL"),
+        ),
+    )
+
+    source_evidence_id: Mapped[UUID] = mapped_column(ForeignKey("evidence_items.id"), index=True)
+    target_evidence_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("evidence_items.id"), index=True
+    )
+    external_reference: Mapped[str | None] = mapped_column(Text)
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    basis: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    research_run_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id"), index=True)
+    research_generation: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class FactCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):

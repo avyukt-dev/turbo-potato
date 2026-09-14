@@ -13,6 +13,7 @@ from news_ai_database import (
     Claim,
     ClaimEvidence,
     EventOutbox,
+    EvidenceGraphRelation,
     EvidenceItem,
     FactCheck,
     FactSheet,
@@ -38,11 +39,18 @@ from news_ai_events import (
     parse_event_payload,
 )
 from news_ai_events.outbox import build_outbox_record
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .engine import EvidenceRelation
+from .graph import (
+    EvidenceDirectness,
+    EvidenceGraphRelationSpec,
+    EvidenceOriginRole,
+    EvidenceProvenanceState,
+    EvidenceTemporalRole,
+)
 from .semantic import semantic_key
 
 _RISK_ORDER = {
@@ -89,6 +97,12 @@ class FactSheetFactCheckSnapshot(BaseModel):
     review_state: ReviewState
 
 
+class FactSheetEvidenceGraphRelationSnapshot(EvidenceGraphRelationSpec):
+    policy_version: str = Field(min_length=1, max_length=64)
+    research_run_id: UUID
+    research_generation: int = Field(ge=1)
+
+
 class FactSheetEvidenceSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -113,6 +127,12 @@ class FactSheetEvidenceSnapshot(BaseModel):
     independence_group: str | None = None
     originating_reference: str | None = None
     assessment_ai_run_ids: tuple[UUID, ...] = ()
+    directness: EvidenceDirectness | None = None
+    origin_role: EvidenceOriginRole | None = None
+    provenance_state: EvidenceProvenanceState | None = None
+    temporal_role: EvidenceTemporalRole | None = None
+    semantics_policy_version: str | None = None
+    graph_relations: tuple[FactSheetEvidenceGraphRelationSnapshot, ...] | None = None
 
 
 class FactSheetSourceSnapshot(BaseModel):
@@ -204,7 +224,7 @@ class FactSheetGenerator:
             raise ValueError("Fact Sheet cannot include UNASSESSED claim state")
         links, evidence = self._load_evidence(session, checks)
         claim_snapshots = self._claim_snapshots(claims, links)
-        evidence_snapshots = self._evidence_snapshots(links, evidence)
+        evidence_snapshots = self._evidence_snapshots(session, links, evidence)
         fact_check_snapshots = self._fact_check_snapshots(checks, links)
         source_snapshots = self._source_snapshots(session, story_id, evidence)
         metadata = dict(story.story_metadata or {})
@@ -522,13 +542,45 @@ class FactSheetGenerator:
 
     @staticmethod
     def _evidence_snapshots(
+        session: Session,
         links: list[ClaimEvidence],
         evidence: dict[UUID, EvidenceItem],
     ) -> tuple[FactSheetEvidenceSnapshot, ...]:
+        from .graph import EVIDENCE_GRAPH_POLICY_VERSION
+
+        evidence_ids = set(evidence)
+        graph_by_source: dict[UUID, list[EvidenceGraphRelation]] = {}
+        if evidence_ids:
+            for edge in session.scalars(
+                select(EvidenceGraphRelation)
+                .where(EvidenceGraphRelation.source_evidence_id.in_(evidence_ids))
+                .order_by(
+                    EvidenceGraphRelation.source_evidence_id,
+                    EvidenceGraphRelation.relation_type,
+                    EvidenceGraphRelation.external_reference,
+                    EvidenceGraphRelation.target_evidence_id,
+                    EvidenceGraphRelation.basis,
+                )
+            ):
+                graph_by_source.setdefault(edge.source_evidence_id, []).append(edge)
         snapshots: list[FactSheetEvidenceSnapshot] = []
         for link in links:
+            if link.semantics_policy_version != EVIDENCE_GRAPH_POLICY_VERSION:
+                raise ValueError("claim evidence is missing current evidence semantics")
             item = evidence[link.evidence_id]
             metadata = dict(item.evidence_metadata or {})
+            for edge in graph_by_source.get(item.id, ()):
+                if edge.policy_version != EVIDENCE_GRAPH_POLICY_VERSION:
+                    raise ValueError("evidence graph relation has incompatible policy")
+                if (
+                    edge.target_evidence_id is not None
+                    and edge.target_evidence_id not in evidence_ids
+                ):
+                    raise ValueError("evidence graph target is outside current Fact Sheet evidence")
+                if str(edge.research_run_id) != metadata.get(
+                    "research_run_id"
+                ) or edge.research_generation != metadata.get("research_generation"):
+                    raise ValueError("evidence graph relation has stale research provenance")
             snapshots.append(
                 FactSheetEvidenceSnapshot(
                     evidence_id=item.id,
@@ -552,6 +604,23 @@ class FactSheetGenerator:
                     independence_group=_metadata_optional_str(metadata, "independence_group"),
                     originating_reference=_metadata_optional_str(metadata, "originating_reference"),
                     assessment_ai_run_ids=_metadata_uuid_list(metadata, "assessment_ai_run_ids"),
+                    directness=link.directness,
+                    origin_role=link.origin_role,
+                    provenance_state=link.provenance_state,
+                    temporal_role=link.temporal_role,
+                    semantics_policy_version=link.semantics_policy_version,
+                    graph_relations=tuple(
+                        FactSheetEvidenceGraphRelationSnapshot(
+                            relation_type=edge.relation_type,
+                            target_evidence_id=edge.target_evidence_id,
+                            external_reference=edge.external_reference,
+                            basis=edge.basis,
+                            policy_version=edge.policy_version,
+                            research_run_id=edge.research_run_id,
+                            research_generation=edge.research_generation,
+                        )
+                        for edge in graph_by_source.get(item.id, ())
+                    ),
                 )
             )
         return tuple(snapshots)

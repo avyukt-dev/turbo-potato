@@ -464,6 +464,16 @@ confidence calculation
 
 Absence of evidence must not automatically become evidence of falsity.
 
+Evidence-graph-policy tests cover closed assessment dimensions, rejection of AI
+authority/independence assignments, explicit origin/citation edge persistence,
+current Claim/run/generation endpoint checks, retained contradiction, and exact
+Fact Sheet semantic/edge snapshots. Unresolved lineage stays unresolved and
+near-duplicate inference never becomes known derivation. Test same-policy replay,
+changed-policy identity invalidation, historical absent fields, and PostgreSQL
+0016→0017→0016→0017 parity, nullable history, FK/enum/unique constraints. Production
+research integration must use the real router and source resolver, without live
+model or social-network calls.
+
 ---
 
 # 13. Source Hierarchy Tests
