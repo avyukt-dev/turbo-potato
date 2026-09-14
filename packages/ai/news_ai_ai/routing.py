@@ -361,8 +361,7 @@ class AIRouter:
             honors_reasoning_effort
             and failure_reason is AIFailureReason.INVALID_RESPONSE
             and request.reasoning_effort is AIReasoningEffort.MEDIUM
-            and request.reasoning_policy_version
-            in {None, REASONING_ROUTING_POLICY_VERSION}
+            and request.reasoning_policy_version in {None, REASONING_ROUTING_POLICY_VERSION}
         )
 
     @staticmethod
