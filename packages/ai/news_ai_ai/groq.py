@@ -170,21 +170,25 @@ class GroqProvider:
             raise AIProviderError("AI request input is not JSON serializable") from exc
 
     @staticmethod
-    def _error_code(response: httpx.Response) -> str | None:
+    def _error_fields(response: httpx.Response) -> tuple[str | None, str | None]:
         try:
             body = response.json()
         except ValueError:
-            return None
+            return None, None
 
         if not isinstance(body, dict):
-            return None
+            return None, None
 
         error = body.get("error")
         if not isinstance(error, dict):
-            return None
+            return None, None
 
+        error_type = error.get("type")
         code = error.get("code")
-        return code if isinstance(code, str) else None
+        return (
+            error_type if isinstance(error_type, str) else None,
+            code if isinstance(code, str) else None,
+        )
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
@@ -197,12 +201,19 @@ class GroqProvider:
         if status in {401, 403}:
             raise AIProviderPolicyError("Groq request was not authorized")
         if status == 413:
+            error_type, error_code = GroqProvider._error_fields(response)
+            if error_code == "rate_limit_exceeded" or (
+                error_code is None and error_type == "rate_limit_exceeded"
+            ):
+                raise AIProviderRateLimitError("Groq request was rate limited")
             raise AIContextTooLargeError("Groq request exceeded the accepted context size")
         if status >= 500:
             raise AIProviderUnavailableError(f"Groq server returned HTTP {status}")
 
-        if status == 400 and GroqProvider._error_code(response) == "json_validate_failed":
-            raise AIInvalidResponseError("Groq failed to produce valid structured output")
+        if status == 400:
+            _, error_code = GroqProvider._error_fields(response)
+            if error_code == "json_validate_failed":
+                raise AIInvalidResponseError("Groq failed to produce valid structured output")
 
         raise AIProviderError(f"Groq rejected request with HTTP {status}")
 
