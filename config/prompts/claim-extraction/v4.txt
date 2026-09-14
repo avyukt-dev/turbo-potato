@@ -71,5 +71,7 @@ Examples: "1.2 billion" NUMBER EXACT amount="1200000000"; "52%" PERCENT amount="
 amount="12000000"; "about 5 km" MEASUREMENT DISTANCE km APPROXIMATE amount="5";
 "between 5 and 7 km" RANGE amount="5" upper="7"; "3 days" DURATION day amount="3";
 "September 14, 2026" DATE DAY "2026-09-14"; "September 2026" DATE MONTH "2026-09".
-For example, ambiguous "$5 million" must use:
+For a standard percentage such as "4.82%", use:
+{"source_text":"4.82%","value":{"kind":"PERCENT","quantity":{"relation":"EXACT","amount":"4.82","upper":null}}}
+For ambiguous "$5 million", use:
 {"source_text":"$5 million","value":{"kind":"EXACT_COPY_ONLY","value_kind":"CURRENCY"}}
