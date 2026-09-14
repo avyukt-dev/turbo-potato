@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIFailureReason,
     AIInvalidResponseError,
     AIRequest,
@@ -210,6 +211,7 @@ class ContentGenerationService:
                 "certainty_policy_version": CERTAINTY_POLICY_VERSION,
                 "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "style": self.style.model_dump(mode="json"),
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
