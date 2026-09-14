@@ -23,10 +23,26 @@ class AIInputProjectionError(ValueError):
 def project_ai_input(task_type: str, payload: Any) -> Any:
     """Return a deterministic compact provider input for supported high-volume stages."""
 
+    if not isinstance(payload, dict):
+        return payload
     if task_type == _CONTENT_GENERATION:
-        return _project_content_generation(_mapping(payload, "content-generation input"))
+        required = {"immutable_fact_sheet", "editorial_brief"}
+        if not (required & payload.keys()):
+            return payload
+        if not required <= payload.keys():
+            raise AIInputProjectionError(
+                "content-generation projection requires Fact Sheet and Editorial Brief together"
+            )
+        return _project_content_generation(payload)
     if task_type == _QUALITY_CHECKING:
-        return _project_quality_checking(_mapping(payload, "quality-checking input"))
+        required = {"immutable_fact_sheet", "editorial_brief", "content_artifact"}
+        if not (required & payload.keys()):
+            return payload
+        if not required <= payload.keys():
+            raise AIInputProjectionError(
+                "quality-checking projection requires Fact Sheet, Editorial Brief and artifact"
+            )
+        return _project_quality_checking(payload)
     return payload
 
 
@@ -133,7 +149,9 @@ def _project_fact_sheet(
     evidence_source_ids = frozenset(
         str(item["source_id"]) for item in evidence if item.get("source_id") is not None
     )
-    allowed_source_ids = selected_source_ids if selected_source_ids is not None else evidence_source_ids
+    allowed_source_ids = (
+        selected_source_ids if selected_source_ids is not None else evidence_source_ids
+    )
     sources = [
         _project_source(item)
         for raw in _list(fact_sheet.get("sources", []), "Fact Sheet sources")
@@ -308,8 +326,10 @@ def _project_content_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 def _require_same_identity(fact_sheet: dict[str, Any], brief: dict[str, Any]) -> None:
     if (
         str(_required(fact_sheet, "story_id")) != str(_required(brief, "story_id"))
-        or str(_required(fact_sheet, "fact_sheet_id")) != str(_required(brief, "fact_sheet_id"))
-        or int(_required(fact_sheet, "version")) != int(_required(brief, "fact_sheet_version"))
+        or str(_required(fact_sheet, "fact_sheet_id"))
+        != str(_required(brief, "fact_sheet_id"))
+        or int(_required(fact_sheet, "version"))
+        != int(_required(brief, "fact_sheet_version"))
     ):
         raise AIInputProjectionError("Fact Sheet and Editorial Brief identity do not match")
 
