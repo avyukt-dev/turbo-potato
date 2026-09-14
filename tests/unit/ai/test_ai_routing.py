@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIFailureReason,
     AIInvalidResponseError,
     AIPolicyConfig,
@@ -36,7 +37,6 @@ from news_ai_ai import (
     AITaskType,
     ProviderCapabilities,
     ProviderLocality,
-    REASONING_ROUTING_POLICY_VERSION,
 )
 from news_ai_common.config import ConfigError, ConfigLoader
 from pydantic import ValidationError
