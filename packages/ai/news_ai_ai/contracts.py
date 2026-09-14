@@ -9,8 +9,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .input_projection import AI_INPUT_PROJECTION_VERSION, project_ai_input
-
 ProviderId = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]*$")]
 ModelId = Annotated[str, Field(min_length=1, max_length=255)]
 
@@ -142,21 +140,6 @@ class AIRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("reasoning_reasons must be unique")
         return value
-
-    @model_validator(mode="after")
-    def apply_provider_input_projection(self) -> AIRequest:
-        projected = project_ai_input(self.task_type.value, self.input)
-        if projected is self.input:
-            return self
-
-        metadata = dict(self.metadata)
-        current_version = metadata.get("input_projection_version")
-        if current_version not in {None, AI_INPUT_PROJECTION_VERSION}:
-            raise ValueError("AI input projection version conflicts with application policy")
-        metadata["input_projection_version"] = AI_INPUT_PROJECTION_VERSION
-        object.__setattr__(self, "input", projected)
-        object.__setattr__(self, "metadata", metadata)
-        return self
 
     @model_validator(mode="after")
     def validate_reasoning_provenance(self) -> AIRequest:
