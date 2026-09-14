@@ -549,6 +549,10 @@ class FactSheetGenerator:
         from .graph import EVIDENCE_GRAPH_POLICY_VERSION
 
         evidence_ids = set(evidence)
+        claim_ids_by_evidence: dict[UUID, set[UUID]] = {}
+        for link in links:
+            claim_ids_by_evidence.setdefault(link.evidence_id, set()).add(link.claim_id)
+
         graph_by_source: dict[UUID, list[EvidenceGraphRelation]] = {}
         if evidence_ids:
             for edge in session.scalars(
@@ -572,11 +576,14 @@ class FactSheetGenerator:
             for edge in graph_by_source.get(item.id, ()):
                 if edge.policy_version != EVIDENCE_GRAPH_POLICY_VERSION:
                     raise ValueError("evidence graph relation has incompatible policy")
-                if (
-                    edge.target_evidence_id is not None
-                    and edge.target_evidence_id not in evidence_ids
-                ):
-                    raise ValueError("evidence graph target is outside current Fact Sheet evidence")
+                if edge.target_evidence_id is not None:
+                    target_claim_ids = claim_ids_by_evidence.get(edge.target_evidence_id)
+                    if target_claim_ids is None:
+                        raise ValueError(
+                            "evidence graph target is outside current Fact Sheet evidence"
+                        )
+                    if link.claim_id not in target_claim_ids:
+                        raise ValueError("evidence graph target belongs to a different claim")
                 if str(edge.research_run_id) != metadata.get(
                     "research_run_id"
                 ) or edge.research_generation != metadata.get("research_generation"):

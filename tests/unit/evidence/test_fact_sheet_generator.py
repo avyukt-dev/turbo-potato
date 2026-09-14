@@ -453,3 +453,33 @@ def test_fact_sheet_rejects_stale_or_outside_graph_state(mutation) -> None:
         FactSheetGenerator().generate(session, event)
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(FactSheet)) == 0
+
+
+def test_fact_sheet_rejects_cross_claim_graph_target() -> None:
+    factory = _factory()
+    event, _, _, _ = _seed_verified_story(factory)
+
+    with factory() as session, session.begin():
+        edge = session.scalar(select(EvidenceGraphRelation))
+        contradiction_link = session.scalar(
+            select(ClaimEvidence).where(
+                ClaimEvidence.relation == EvidenceRelation.CONTRADICTS.value
+            )
+        )
+
+        assert edge is not None
+        assert contradiction_link is not None
+        assert edge.source_evidence_id != contradiction_link.evidence_id
+
+        edge.target_evidence_id = contradiction_link.evidence_id
+        edge.external_reference = None
+
+    with (
+        pytest.raises(ValueError, match="different claim"),
+        factory() as session,
+        session.begin(),
+    ):
+        FactSheetGenerator().generate(session, event)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(FactSheet)) == 0
