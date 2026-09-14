@@ -32,11 +32,6 @@ from .contracts import (
     metadata_contains_secret_key,
 )
 from .groq import GroqProvider, GroqProviderConfig
-from .input_projection import (
-    AI_INPUT_PROJECTION_VERSION,
-    AIInputProjectionError,
-    project_ai_input,
-)
 from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig
 from .provider import (
     AICapabilityError,
@@ -82,11 +77,10 @@ __all__ = [
     "AICapabilityError",
     "AIContextTooLargeError",
     "AIFailureReason",
-    "AIInputProjectionError",
-    "AIInvalidResponseError",
-    "AILocalResourceExhaustedError",
     "AIPolicyConfig",
     "AIPolicyConfigLoader",
+    "AIInvalidResponseError",
+    "AILocalResourceExhaustedError",
     "AIProvider",
     "AIProviderError",
     "AIProviderNotRegisteredError",
@@ -97,6 +91,8 @@ __all__ = [
     "AIProviderUnavailableError",
     "AIProvidersConfig",
     "AIProvidersConfigLoader",
+    "ConfiguredGroqProvider",
+    "ConfiguredLlamaCppProvider",
     "AIRequest",
     "AIReasoningEffort",
     "AIReasoningReason",
@@ -117,15 +113,12 @@ __all__ = [
     "AIStageProviderSelection",
     "AIStageRequestDefaults",
     "AITaskType",
-    "AI_INPUT_PROJECTION_VERSION",
     "ClaimExtractionExecution",
     "ClaimExtractionItem",
     "ClaimExtractionOutput",
     "ClaimExtractionPrompt",
     "ClaimExtractionResult",
     "ClaimExtractionService",
-    "ConfiguredGroqProvider",
-    "ConfiguredLlamaCppProvider",
     "GroqProvider",
     "GroqProviderConfig",
     "LlamaCppProvider",
@@ -139,10 +132,9 @@ __all__ = [
     "StoryArticleInput",
     "StoryClaimContext",
     "TokenUsage",
-    "build_ai_router",
     "escalate_reasoning_for_validation",
     "metadata_contains_secret_key",
-    "project_ai_input",
+    "build_ai_router",
     "require_provider_compatibility",
     "select_reasoning_effort",
 ]
