@@ -84,9 +84,9 @@ def test_production_research_stack_uses_production_boundaries() -> None:
     assert stack.evidence_engine.source_resolver is stack.source_resolver
     assert stack.claim_worker.service.router is stack.ai_router
     assert stack.claim_worker.service.prompt.prompt_id == "claim-extraction"
-    assert stack.claim_worker.service.prompt.version == "v3"
+    assert stack.claim_worker.service.prompt.version == "v4"
     assert stack.claim_worker.service.prompt.checksum == _prompt_checksum(
-        "prompts/claim-extraction/v3.txt"
+        "prompts/claim-extraction/v4.txt"
     )
     assert stack.evidence_engine.assessor.prompt.prompt_id == "evidence-assessment"
     assert stack.evidence_engine.assessor.prompt.version == "v2"
