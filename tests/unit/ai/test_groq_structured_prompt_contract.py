@@ -30,9 +30,7 @@ def test_production_structured_prompt_satisfies_groq_json_mode(stage_id: AIStage
         async def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
             assert payload["response_format"] == {"type": "json_object"}
-            assert any(
-                "json" in message["content"].lower() for message in payload["messages"]
-            )
+            assert any("json" in message["content"].lower() for message in payload["messages"])
             return httpx.Response(
                 200,
                 json={
