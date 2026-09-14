@@ -75,7 +75,5 @@ def select_reasoning_effort(
 def escalate_reasoning_for_validation(decision: ReasoningDecision) -> ReasoningDecision:
     """Raise a deterministic decision to HIGH after semantic/contract validation fails."""
 
-    reasons = tuple(
-        dict.fromkeys((*decision.reasons, AIReasoningReason.VALIDATION_FAILURE))
-    )
+    reasons = tuple(dict.fromkeys((*decision.reasons, AIReasoningReason.VALIDATION_FAILURE)))
     return ReasoningDecision(effort=AIReasoningEffort.HIGH, reasons=reasons)
