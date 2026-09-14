@@ -137,8 +137,7 @@ def test_claim_v4_prompt_matches_output_contract() -> None:
     assert '{"kind":"EXACT_COPY_ONLY","value_kind":"<underlying kind>"}' in prompt
     assert (
         '{"source_text":"4.82%","value":{"kind":"PERCENT","quantity":{"relation":"EXACT",'
-        '"amount":"4.82","upper":null}}}'
-        in prompt
+        '"amount":"4.82","upper":null}}}' in prompt
     )
     assert (
         '{"source_text":"$5 million","value":{"kind":"EXACT_COPY_ONLY","value_kind":"CURRENCY"}}'
