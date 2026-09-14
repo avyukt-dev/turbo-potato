@@ -47,17 +47,17 @@ from news_ai_events import (
 )
 from news_ai_events.outbox import build_outbox_record
 from news_ai_events.reliability import DeferredWorkError
-from news_ai_evidence import FactSheetGenerator
+from news_ai_evidence import FactSheetArtifact, FactSheetGenerator
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
+from .semantic import SemanticValidationReport, SemanticValidator, fabricated_quotes
 
-# v3 binds ordered durable media provenance. Historical v1/v2 checks stay immutable.
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v3"
-_QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
+# v4 adds semantic validation; historical checks remain immutable.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v4"
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
     AIFailureReason.UNAVAILABLE,
@@ -79,6 +79,7 @@ class QualityVariantContext:
     artifact: dict[str, Any]
     artifact_hash: str
     deterministic_fabricated_quotes: tuple[str, ...]
+    semantic_report: SemanticValidationReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +141,7 @@ class QualityAssessmentService:
         self.style = style
         self.publishing_policy = publishing_policy
         self.review_required = publishing_policy.mvp.external_publication_requires_human_approval
+        self.semantic_validator = SemanticValidator()
 
     def load_context(
         self, session: Session, event: EventEnvelope, *, lock_media: bool = False
@@ -175,7 +177,10 @@ class QualityAssessmentService:
             raise StaleWorkError("content quality references a superseded Fact Sheet")
         if session.get(Story, sheet.story_id) is None:
             raise PermanentEventError("content Fact Sheet story no longer exists")
-        artifact = FactSheetGenerator.artifact_from_row(sheet)
+        try:
+            artifact = FactSheetGenerator.artifact_from_row(sheet)
+        except (ValidationError, ValueError, TypeError, KeyError):
+            raise PermanentEventError("content Fact Sheet artifact is malformed") from None
         fact_sheet_topics = _sensitive_topics(artifact.sensitive_topics, owner="Fact Sheet")
         draft_topics = _sensitive_topics(draft.sensitive_topics, owner="ContentDraft")
         if draft.risk_level != artifact.risk_level or draft_topics != fact_sheet_topics:
@@ -298,25 +303,11 @@ class QualityAssessmentService:
             raise DeferredWorkError("required caller media attachment is pending") from None
         except MediaValidationError:
             raise _InvalidQualityMedia("content variant caller media is invalid") from None
-        factual_text = "\n".join(
-            [
-                fact_sheet["headline"],
-                fact_sheet["summary"],
-                *(item["claim_text"] for item in fact_sheet["claims"]),
-                *(item["excerpt"] for item in fact_sheet["evidence"] if item.get("excerpt")),
-            ]
-        )
-        generated_text = "\n".join(
-            (
-                variant.title,
-                *(item for slide in carousel.slides for item in (slide.heading, slide.body)),
-                variant.caption,
-            )
-        )
-        fabricated_quotes = tuple(
-            quote
-            for quote in _QUOTED_SPAN.findall(generated_text)
-            if _normalize(quote) not in _normalize(factual_text)
+        semantic_report = self.semantic_validator.validate(
+            FactSheetArtifact.model_validate(fact_sheet),
+            carousel,
+            source_ids_used=tuple(UUID(item) for item in sources),
+            editorial_brief=EditorialBrief.model_validate(brief),
         )
         semantic_key = _hash(
             {
@@ -328,6 +319,8 @@ class QualityAssessmentService:
                 "editorial_brief": brief,
                 "style": self.style.model_dump(mode="json"),
                 "methodology_version": QUALITY_METHODOLOGY_VERSION,
+                "semantic_methodology_version": semantic_report.methodology_version,
+                "semantic_inputs": fact_sheet,
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
                 "prompt_checksum": self.prompt.checksum,
@@ -339,7 +332,8 @@ class QualityAssessmentService:
             semantic_key,
             artifact,
             content_artifact_hash(artifact),
-            fabricated_quotes,
+            fabricated_quotes(carousel, semantic_report),
+            semantic_report,
         )
 
     def existing_result(self, session: Session, context: QualityContext) -> QualityResult | None:
@@ -362,6 +356,9 @@ class QualityAssessmentService:
             or any(
                 check.methodology_version != QUALITY_METHODOLOGY_VERSION
                 or check.content_artifact_hash != variant.artifact_hash
+                or check.semantic_methodology_version != variant.semantic_report.methodology_version
+                or check.semantic_validation_passed != variant.semantic_report.passed
+                or check.semantic_findings != variant.semantic_report.model_dump(mode="json")
                 for variant in context.variants
                 if (check := checks_by_key.get(variant.semantic_key)) is not None
             )
@@ -446,6 +443,7 @@ class QualityAssessmentService:
                         parsed,
                         deterministic_quotes=variant.deterministic_fabricated_quotes,
                         review_required=self.review_required,
+                        semantic_report=variant.semantic_report,
                     ),
                 )
             )
@@ -497,6 +495,9 @@ class QualityAssessmentService:
             item.variant_id for item in current.variants
         }:
             raise StaleWorkError("quality execution no longer matches current variants")
+        current_variants = {item.variant_id: item for item in current.variants}
+        if any(item.variant != current_variants[item.variant.variant_id] for item in executions):
+            raise StaleWorkError("quality execution inputs no longer match current variants")
         checks: list[ContentQualityCheck] = []
         for execution in executions:
             if len(execution.variant.artifact_hash) != 64:
@@ -515,6 +516,9 @@ class QualityAssessmentService:
                 content_artifact_hash=execution.variant.artifact_hash,
                 ai_run_id=run.id,
                 semantic_key=execution.variant.semantic_key,
+                semantic_validation_passed=execution.variant.semantic_report.passed,
+                semantic_methodology_version=execution.variant.semantic_report.methodology_version,
+                semantic_findings=execution.variant.semantic_report.model_dump(mode="json"),
                 **decision.model_dump(exclude={"content_variant_id"}),
             )
             session.add(check)
@@ -529,6 +533,7 @@ class QualityAssessmentService:
         draft.review_state = ReviewState.READY_FOR_REVIEW if passed else ReviewState.NOT_READY
         fact_passed = all(
             item.factual_accuracy_passed
+            and item.semantic_validation_passed is True
             and not any(
                 (
                     item.unsupported_claims,
@@ -636,10 +641,6 @@ def _quality_request(event: EventEnvelope) -> ContentGeneratedV1:
     if event.aggregate_type != "content_draft" or event.aggregate_id != payload.content_draft_id:
         raise PermanentEventError("content.generated must use its ContentDraft aggregate")
     return payload
-
-
-def _normalize(value: str) -> str:
-    return " ".join(value.split()).casefold()
 
 
 def _sensitive_topics(value: Any, *, owner: str) -> tuple[str, ...]:

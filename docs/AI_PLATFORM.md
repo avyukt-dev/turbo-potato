@@ -721,6 +721,13 @@ defamation risk
 
 A quality pass does not authorize external publication in the MVP.
 
+The application also runs deterministic quality-domain semantic validation. It
+uses scoped canonical claim/evidence spans and explicit artifact relationships,
+not another AI call or provider-specific self-grading prompt. AI assessment still
+runs for diagnosis but cannot override deterministic ERROR findings. The existing
+quality prompt is unchanged; this does not add certainty escalation or AI evidence
+authority.
+
 ---
 
 # 32. Historical Research Boundary

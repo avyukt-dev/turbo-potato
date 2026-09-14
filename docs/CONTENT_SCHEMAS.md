@@ -575,6 +575,19 @@ class QualityCheck(BaseModel):
 
 For the MVP, `review_required` remains true for any content intended for external publication. A quality pass does not authorize publication.
 
+Application-owned deterministic quality uses frozen `SemanticFinding` and
+`SemanticValidationReport` contracts in `news_ai_quality.semantic`. Findings have
+closed code/category/severity enums, bounded diagnostic locations and canonical
+claim/evidence/source IDs; arbitrary provider metadata is not accepted. Categories
+are QUOTE_INTEGRITY, REFERENCE_INTEGRITY, STANCE_CONSISTENCY, CHRONOLOGY, DEPENDENCY,
+DUPLICATE, and CATEGORICAL_ASSERTION. ERROR findings fail semantic validation;
+warnings are auditable without independently failing otherwise-valid quality.
+Stable ordering and deduplication make report serialization deterministic.
+
+Quote matches record generated offsets and mechanically normalized source offsets
+with claim/evidence/source identity, without copying source text into diagnostics.
+Dependency checks remain empty until a canonical explicit dependency input exists.
+
 ---
 
 # 25. Review Decision

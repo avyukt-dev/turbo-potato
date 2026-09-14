@@ -236,6 +236,12 @@ This applies even to low-risk content.
 
 Passing automated quality checks does not authorize publication.
 
+Quality includes application-owned deterministic semantic validation over exact
+persisted content and Fact Sheet artifacts. AI cannot override a deterministic
+ERROR finding. WARNING findings alone do not fail quality. This validation never
+changes factual status, grants AI evidence authority, or implements certainty
+escalation. Unknown or unrepresented semantics are not guessed.
+
 ## 8.2 Future low-risk automation
 
 A future release MAY allow automatic approval for low-risk content only if all of the following are true:

@@ -1,5 +1,15 @@
 # News AI Social Media Manager
 
+Deterministic quality semantic regressions cover scoped quotes and mechanical
+normalization, reference ownership, duplicate IDs, relation-role consistency,
+explicit temporal ranges, warning-only reports, and unknown optional metadata.
+AI-pass/semantic-error tests must prove NOT_READY state and durable typed reports;
+exact replay and methodology invalidation must preserve idempotency. PostgreSQL
+tests cover report persistence and `0013 -> 0012 -> 0013` migration parity, including
+honest NULL semantics for legacy checks. Unrepresented dependencies, timeline
+ordering, prose certainty, and generalized numeric/date interpretation are not
+guessed by this validator.
+
 # TESTING_AND_EVALUATION.md
 
 **Status:** Canonical

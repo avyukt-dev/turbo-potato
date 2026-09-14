@@ -590,6 +590,25 @@ sensitive-topic errors
 
 Quality pass does not equal publication approval in the MVP.
 
+The quality-domain `semantic-validator-v1` checks explicit reference ownership,
+relation roles, duplicate references, claim temporal bounds, and quoted spans.
+EditorialBrief claim/FactCheck references and copied factual status/label/text must
+agree with the exact Fact Sheet; this is structured-copy integrity, not analysis of
+prose certainty or stronger/weaker wording.
+Slide quotes are scoped to that slide's declared claims; title/caption quotes use
+the artifact's selected claims. Only mechanically normalized claim text or linked
+evidence excerpts can supply a quote (evidence provenance is preferred). Headline,
+summary, unrelated claims, and unrelated evidence cannot launder a quotation.
+Case and punctuation remain significant; paraphrases in quotation marks fail.
+
+Quality methodology v4 includes this report alongside the existing AIRouter
+assessment. Semantic ERROR findings cannot be overridden by AI and leave content
+NOT_READY. Findings, source-span matches, and check counts are durable and typed.
+The report does not infer prose stance, independent sources, dependencies, or
+chronology from text. Heterogeneous timeline metadata has no canonical ordering
+declaration; only supported explicit reference fields are checked. A future typed
+dependency/ordering contract is required before those checks can be implemented.
+
 ---
 
 # 28. Review Integrity
