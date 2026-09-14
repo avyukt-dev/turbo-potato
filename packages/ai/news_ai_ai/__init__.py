@@ -49,6 +49,7 @@ from .provider import (
 from .reasoning import (
     REASONING_ROUTING_POLICY_VERSION,
     ReasoningDecision,
+    escalate_reasoning_for_validation,
     select_reasoning_effort,
 )
 from .registry import AIProviderNotRegisteredError, AIProviderRegistry
@@ -131,6 +132,7 @@ __all__ = [
     "StoryArticleInput",
     "StoryClaimContext",
     "TokenUsage",
+    "escalate_reasoning_for_validation",
     "metadata_contains_secret_key",
     "build_ai_router",
     "require_provider_compatibility",
