@@ -1,5 +1,11 @@
 """Stage-21 factual-boundary content generation package."""
 
+from .ai_projection import (
+    AI_INPUT_PROJECTION_VERSION,
+    AIInputProjectionError,
+    project_content_generation_input,
+    project_quality_assessment_input,
+)
 from .attachment import (
     ContentMediaAttachmentService,
     MediaAttachmentConflict,
@@ -48,6 +54,8 @@ from .integrity import content_artifact_hash
 from .values import ClaimValueOccurrence, ClaimValuePresentation
 
 __all__ = [
+    "AI_INPUT_PROJECTION_VERSION",
+    "AIInputProjectionError",
     "ClaimValuePresentation",
     "ClaimValueOccurrence",
     "ClaimSemanticPresentation",
@@ -83,4 +91,6 @@ __all__ = [
     "InstagramCarouselContent",
     "build_editorial_brief",
     "content_artifact_hash",
+    "project_content_generation_input",
+    "project_quality_assessment_input",
 ]
