@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from news_ai_ai import REASONING_ROUTING_POLICY_VERSION
 from news_ai_database import (
     AIModel,
     AIRun,
@@ -336,6 +337,7 @@ class EvidenceEngine:
             {
                 "methodology_version": self.methodology_version,
                 "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "story_id": story.id,
                 "claim_ids": sorted(payload.claim_ids, key=str),
                 "ai_run_id": payload.ai_run_id,
@@ -376,6 +378,7 @@ class EvidenceEngine:
                 "plan": plan.model_dump(mode="json"),
                 "methodology_version": self.methodology_version,
                 "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "triggering_event_id": str(triggering_event.event_id),
             },
             semantic_key=operation_key,
@@ -481,6 +484,8 @@ class EvidenceEngine:
             raise ValueError(f"research run is not collectible from status {job.status!r}")
         if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
             raise ValueError("research run requires replanning under current evidence semantics")
+        if job.payload.get("reasoning_policy_version") != REASONING_ROUTING_POLICY_VERSION:
+            raise ValueError("research run requires replanning under current reasoning policy")
         raw_plan = job.payload.get("plan")
         if raw_plan is None:
             raise ValueError("research job is missing persisted plan")
@@ -713,6 +718,8 @@ class EvidenceEngine:
             raise ValueError(f"research run cannot complete from status {job.status!r}")
         if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
             raise ValueError("research run requires replanning under current evidence semantics")
+        if job.payload.get("reasoning_policy_version") != REASONING_ROUTING_POLICY_VERSION:
+            raise ValueError("research run requires replanning under current reasoning policy")
         self._validate_event_against_plan(event, task.plan)
         currency = self.collection_currency(session, task, lock=True)
         current_claim_ids = currency.current_claim_ids
@@ -915,6 +922,7 @@ class EvidenceEngine:
         job.status = "COMPLETED"
         job.result = {
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
+            "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
             "evidence_ids": [str(item) for item in evidence_ids],
             "claim_evidence_count": relation_count,
             "candidate_count": len(collection.candidates),
