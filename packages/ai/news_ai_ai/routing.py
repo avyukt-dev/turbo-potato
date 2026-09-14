@@ -440,6 +440,11 @@ class AIRouter:
                 ),
             }
         )
+        if (
+            attempt.reasoning_policy_version is not None
+            and attempt.reasoning_policy_version != REASONING_ROUTING_POLICY_VERSION
+        ):
+            raise AIRoutingPolicyError("reasoning policy version is not current")
         if attempt.reasoning_effort is AIReasoningEffort.HIGH and (
             not attempt.reasoning_reasons or attempt.reasoning_policy_version is None
         ):
