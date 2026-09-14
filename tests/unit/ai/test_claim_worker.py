@@ -65,7 +65,8 @@ class CountingProvider:
                 "claims": [
                     {
                         "claim_text": "The government announced a policy.",
-                        "claim_type": "POLICY_ACTION",
+                        "semantic_type": "POLICY_COMMITMENT",
+                        "semantic_state": "ANNOUNCED",
                         "importance_score": 0.7,
                         "risk_level": "LOW",
                         "sensitive_topics": [],

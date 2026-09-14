@@ -210,7 +210,8 @@ def _story_event(story_id, *, event_type: EventType = EventType.STORY_CREATED) -
 def _claim(text: str = "The government announced a new policy.") -> dict[str, object]:
     return {
         "claim_text": text,
-        "claim_type": "POLICY_ACTION",
+        "semantic_type": "POLICY_COMMITMENT",
+        "semantic_state": "ANNOUNCED",
         "importance_score": 0.8,
         "risk_level": "LOW",
         "sensitive_topics": [],
@@ -326,7 +327,9 @@ def test_persist_creates_unassessed_claim_ai_provenance_and_event(tmp_path: Path
     assert claim.confidence_score is None
     assert claim.created_by_ai_run_id == result.ai_run_id
     assert claim.claim_metadata["extraction_context_hash"] == context.context_hash
-    assert ai_run is not None and ai_run.input_hash == context.context_hash
+    assert ai_run is not None and ai_run.input_hash == service.operation_identity(
+        context.context_hash
+    )
     assert f"article_version:{version.id}" in ai_run.input_artifact_ids
     assert ai_run.validation_status == "VALIDATED"
     assert model is not None and model.provider == "local-a"

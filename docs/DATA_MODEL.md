@@ -404,6 +404,15 @@ These values do not by themselves establish source independence.
 
 # 13. Claims
 
+Migration `0015_claim_semantics` adds nullable semantic_type (VARCHAR32),
+semantic_state (VARCHAR16), semantic_policy_version (VARCHAR64), semantic_ai_run_id
+(indexed FK to ai_runs). Closed CHECK vocabularies enforce non-null type/state, and
+an all-null/all-present CHECK prevents partial provenance. Historical legacy
+claim_type remains unconstrained/readable; no classification backfill is performed.
+New extraction attaches actual AI classification provenance without changing status.
+Immutable Fact Sheet claim snapshots copy these semantics; historical versions are
+not rewritten.
+
 ```text
 claims
 ------
@@ -737,6 +746,13 @@ and semantic methodology identities. Historical checks remain immutable.
 ---
 
 # 25. Media Assets
+
+`0015_claim_semantics` also adds nullable JSONB
+`content_quality_checks.claim_semantic_escalations`. New v6 assessments store typed
+prose findings ([] means evaluated, none found); historical NULL means not evaluated.
+Deterministic CLAIM_SEMANTICS findings remain in semantic_findings, alongside PR1/PR2
+reports. ClaimSemanticPresentation is inside immutable ContentVariant structured_payload,
+not a second truth table. Review detail exposes exact rows without recomputation.
 
 Recommended fields:
 

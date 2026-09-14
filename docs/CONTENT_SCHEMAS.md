@@ -200,6 +200,27 @@ A citation/reference must actually support the associated proposition.
 
 # 7. Claim Contract
 
+Current Claim snapshots add optional frozen `semantics`: policy_version,
+semantic_type (closed eight-type vocabulary), semantic_state (closed five-state
+vocabulary), and optional ai_run_id. Absent means historical/unclassified, not a
+default state. Current Fact Sheets and briefs require current-policy semantics.
+BriefClaim copies this exact immutable block without classification.
+
+Content-generation v3 adds required frozen `ClaimSemanticPresentation` entries:
+claim_id, source_semantic_type, source_semantic_state, presented_semantic_type,
+presented_semantic_state. Exactly one per used claim; the claim union still equals
+slides and PR2 claim_presentations. Policy v1 requires both source copies and both
+presented values to match the exact immutable block. These declarations live inside
+structured_payload and the reviewed content hash. Historical artifacts may omit them
+for reading, but cannot receive a fabricated current quality pass.
+
+Quality prompt v3 additionally requires bounded `claim_semantic_escalations`,
+separate from certainty_escalations: claim_id, artifact_path (title/caption/zero-based
+slide heading/body), closed reason_code: ANNOUNCEMENT_AS_COMPLETED, PLAN_AS_COMPLETED,
+EXPECTATION_AS_OBSERVED, PREDICTION_AS_OUTCOME, ATTRIBUTION_DROPPED, SEMANTIC_TYPE_RECAST.
+Unknown IDs/paths/codes and duplicates are invalid AI output. Any valid escalation
+fails application quality, without changing source semantics or truth.
+
 ```python
 class Claim(BaseModel):
     claim_id: UUID
@@ -410,8 +431,9 @@ class ContentVariant(BaseModel):
     claim_ids_used: list[UUID] = Field(default_factory=list)
     source_ids_used: list[UUID] = Field(default_factory=list)
 
-    # Required on new content-generation v2 output; stored in structured_payload.
+    # Required on new content-generation v3 output; stored in structured_payload.
     claim_presentations: list[ClaimPresentation]
+    claim_semantic_presentations: list[ClaimSemanticPresentation]
 
     risk_level: RiskLevel
     sensitive_topics: list[str] = Field(default_factory=list)
@@ -592,7 +614,7 @@ Quote matches record generated offsets and mechanically normalized source offset
 with claim/evidence/source identity, without copying source text into diagnostics.
 Dependency checks remain empty until a canonical explicit dependency input exists.
 
-Content-generation v2 requires frozen `ClaimPresentation` records, exactly one per
+Content-generation v3 requires frozen `ClaimPresentation` records, exactly one per
 `claim_ids_used`: claim_id, source_status, source_fact_check_label,
 assertion_strength (HIGH/MEDIUM/LOW/NONE), frame
 (DIRECT/QUALIFIED/DISPUTED/UNCERTAIN/REFUTATION). They are stored inside the immutable

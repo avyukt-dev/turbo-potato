@@ -409,6 +409,17 @@ NOT 10 independent confirmations
 
 # 11. Claim Extraction Tests
 
+PR3 regressions cover closed classification vocabulary, actual extraction provenance,
+historical NULL, matching reuse/conflict rollback, operation identity version/checksum
+invalidation, exact Fact Sheet/Brief copies, per-claim semantic presentation coverage,
+generation invalid-response fallback, independent quality revalidation, metadata ERROR
+overriding AI pass, typed prose escalation validation/persistence/review visibility,
+multi-claim isolation and methodology separation. PostgreSQL verifies
+`0015 -> 0014 -> 0015` schema parity, vocabulary/FK/coherence constraints and honest
+historical NULL. Existing PR1 quote/reference/warning and PR2 certainty tests remain
+binding. These tests prove typed preservation, not deterministic prose understanding.
+Zero-claim cardinality (AI-CLAIM-01) and numerical/unit comparisons remain separate.
+
 Claim extraction must distinguish:
 
 ```text

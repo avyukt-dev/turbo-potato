@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from helpers.claim_semantics import classification_run
 from news_ai_database import (
     Base,
     Claim,
@@ -70,7 +71,12 @@ def _verified_event(factory: sessionmaker[Session]) -> EventEnvelope:
         )
         session.add(story)
         session.flush()
+        semantic_run = classification_run(session)
         claim = Claim(
+            semantic_type="EVENT",
+            semantic_state="OBSERVED",
+            semantic_policy_version="claim-semantics-policy-v1",
+            semantic_ai_run_id=semantic_run,
             story_id=story.id,
             claim_text="A verified claim.",
             claim_type="EVENT",

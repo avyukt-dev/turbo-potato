@@ -35,7 +35,7 @@ from news_ai_database import (
     FactSheet,
     Story,
 )
-from news_ai_domain import ReviewState
+from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ReviewState
 from news_ai_editorial import ContentStyleConfig, PublishingPolicyConfig
 from news_ai_events import (
     ContentGeneratedV1,
@@ -57,8 +57,8 @@ from .contracts import QualityAssessmentOutput, QualityDecision, decide_quality
 from .prompt import QualityPrompt
 from .semantic import SemanticValidationReport, SemanticValidator, fabricated_quotes
 
-# v5 adds structured/prose certainty validation; historical checks remain immutable.
-QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v5"
+# v6 adds statement type/state preservation; historical checks remain immutable.
+QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v6"
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 _TRANSIENT_FAILURES = {
     AIFailureReason.UNAVAILABLE,
@@ -183,6 +183,14 @@ class QualityAssessmentService:
         except (ValidationError, ValueError, TypeError, KeyError):
             raise PermanentEventError("content Fact Sheet artifact is malformed") from None
         fact_sheet_topics = _sensitive_topics(artifact.sensitive_topics, owner="Fact Sheet")
+        if any(
+            claim.semantics is None
+            or claim.semantics.policy_version != CLAIM_SEMANTICS_POLICY_VERSION
+            for claim in artifact.claims
+        ):
+            raise PermanentEventError(
+                "CLAIM_SEMANTICS_MISSING: re-extraction/regeneration required"
+            )
         draft_topics = _sensitive_topics(draft.sensitive_topics, owner="ContentDraft")
         if draft.risk_level != artifact.risk_level or draft_topics != fact_sheet_topics:
             raise PermanentEventError("draft risk/sensitivity conflicts with its Fact Sheet")
@@ -193,6 +201,10 @@ class QualityAssessmentService:
         except ValidationError as exc:
             raise PermanentEventError("content draft has an invalid Editorial Brief") from exc
         brief_topics = _sensitive_topics(brief_model.sensitive_topics, owner="EditorialBrief")
+        if any(claim.semantics is None for claim in brief_model.claims):
+            raise PermanentEventError(
+                "CLAIM_SEMANTICS_MISSING: Editorial Brief requires regeneration"
+            )
         if (
             brief_model.story_id != draft.story_id
             or brief_model.story_id != artifact.story_id
@@ -273,7 +285,13 @@ class QualityAssessmentService:
             )
         try:
             structured = dict(variant.structured_payload)
-            if set(structured) != {"slides", "hashtags", "claim_ids_used", "claim_presentations"}:
+            if set(structured) != {
+                "slides",
+                "hashtags",
+                "claim_ids_used",
+                "claim_presentations",
+                "claim_semantic_presentations",
+            }:
                 raise ValueError("carousel structured payload has unexpected fields")
             carousel = ContentGenerationOutput.model_validate(
                 {
@@ -289,6 +307,7 @@ class QualityAssessmentService:
                     "hashtags": structured["hashtags"],
                     "claim_ids_used": structured["claim_ids_used"],
                     "claim_presentations": structured["claim_presentations"],
+                    "claim_semantic_presentations": structured["claim_semantic_presentations"],
                 }
             )
         except (KeyError, TypeError, ValidationError, ValueError) as exc:
@@ -323,6 +342,7 @@ class QualityAssessmentService:
                 "methodology_version": QUALITY_METHODOLOGY_VERSION,
                 "semantic_methodology_version": semantic_report.methodology_version,
                 "certainty_policy_version": CERTAINTY_POLICY_VERSION,
+                "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "semantic_inputs": fact_sheet,
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -395,7 +415,10 @@ class QualityAssessmentService:
                         for i in range(len(slides))
                         for field in ("heading", "body")
                     }
-                    for escalation in output.certainty_escalations:
+                    for escalation in (
+                        *output.certainty_escalations,
+                        *output.claim_semantic_escalations,
+                    ):
                         if (
                             str(escalation.claim_id) not in used_claims
                             or escalation.artifact_path not in allowed_paths
@@ -433,6 +456,7 @@ class QualityAssessmentService:
                     "content_style": context.style,
                     "quality_methodology_version": QUALITY_METHODOLOGY_VERSION,
                     "certainty_policy_version": CERTAINTY_POLICY_VERSION,
+                    "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 },
                 prompt=PromptReference(
                     prompt_id=self.prompt.prompt_id,
@@ -570,6 +594,7 @@ class QualityAssessmentService:
                     item.incorrect_numbers,
                     item.missing_context,
                     item.certainty_escalations,
+                    item.claim_semantic_escalations,
                 )
             )
             and not item.defamation_risk

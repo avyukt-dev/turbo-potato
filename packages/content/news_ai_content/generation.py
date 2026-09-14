@@ -31,7 +31,7 @@ from news_ai_database import (
     FactSheet,
     Story,
 )
-from news_ai_domain import ReviewState
+from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ReviewState
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_events import (
     ContentRequestedV1,
@@ -55,6 +55,7 @@ from .certainty import (
     certainty_ceiling,
     presentation_violations,
 )
+from .claim_semantics import ClaimSemanticPresentation, semantic_presentation_violations
 from .configuration import ContentStyleConfig
 from .contracts import (
     CarouselSlide,
@@ -176,11 +177,18 @@ class ContentGenerationService:
             story.language, self.style.default_generation_language
         )
         artifact = FactSheetGenerator.artifact_from_row(row)
-        brief = build_editorial_brief(
-            artifact,
-            style=self.style,
-            publishing_policy=self.publishing_policy,
-        )
+        if any(claim.status.value == "UNASSESSED" for claim in artifact.claims):
+            raise PermanentEventError("UNASSESSED Fact Sheet claim cannot generate content")
+        try:
+            brief = build_editorial_brief(
+                artifact,
+                style=self.style,
+                publishing_policy=self.publishing_policy,
+            )
+        except ValueError as exc:
+            raise PermanentEventError(
+                "content Fact Sheet has invalid current claim metadata"
+            ) from exc
         if brief.target != target:
             raise PermanentEventError("requested target does not match configured Stage-21 target")
         for claim in brief.claims:
@@ -197,6 +205,7 @@ class ContentGenerationService:
                 "target": target.model_dump(mode="json"),
                 "methodology_version": self.style.methodology_version,
                 "certainty_policy_version": CERTAINTY_POLICY_VERSION,
+                "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "style": self.style.model_dump(mode="json"),
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -251,6 +260,12 @@ class ContentGenerationService:
                 )
                 if "claim_presentations" in variant.structured_payload
                 else None,
+                claim_semantic_presentations=tuple(
+                    ClaimSemanticPresentation.model_validate(item)
+                    for item in variant.structured_payload["claim_semantic_presentations"]
+                )
+                if "claim_semantic_presentations" in variant.structured_payload
+                else None,
                 risk_level=draft.risk_level,
                 sensitive_topics=tuple(draft.sensitive_topics),
                 review_state=variant.review_state,
@@ -294,6 +309,7 @@ class ContentGenerationService:
                 "immutable_fact_sheet": context.fact_sheet.model_dump(mode="json"),
                 "editorial_brief": context.brief.model_dump(mode="json"),
                 "generation_language": context.generation_language,
+                "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "certainty_ceilings": {
                     str(claim.claim_id): certainty_ceiling(claim.status, claim.label).model_dump(
                         mode="json"
@@ -526,6 +542,14 @@ def _validate_output(
     if not referenced <= known_claims:
         raise ValueError("content output references an unknown claim")
     claims = {claim.claim_id: claim for claim in context.brief.claims}
+    for presentation in output.claim_semantic_presentations:
+        claim = claims[presentation.claim_id]
+        if claim.semantics is None or semantic_presentation_violations(
+            presentation, claim.semantics
+        ):
+            raise ValueError(
+                "content claim semantic presentation violates immutable source semantics"
+            )
     for presentation in output.claim_presentations:
         claim = claims[presentation.claim_id]
         if presentation_violations(presentation, claim.status, claim.label):

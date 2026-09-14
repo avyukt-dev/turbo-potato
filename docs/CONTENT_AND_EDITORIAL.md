@@ -574,6 +574,17 @@ Each variant may change length and presentation, but not factual status.
 
 # 27. Quality Gate
 
+Current content methodology v3/prompt v3 carries exact immutable claim semantics
+through BriefClaim and a separate ClaimSemanticPresentation per used claim.
+`claim-semantics-policy-v1` forbids type/state reinterpretation: a supported
+POLICY_COMMITMENT/ANNOUNCED is confidently an announcement, not an implemented EVENT.
+Quality methodology v6/prompt v3 and semantic-validator-v3 revalidate metadata and
+record separate prose claim_semantic_escalations. Any deterministic ERROR or valid
+AI escalation fails quality. No deterministic prose-state understanding is claimed.
+Historical snapshots remain readable; absent current semantics require regeneration
+or re-extraction, never automatic classification or approval bypass. Review exposes
+the exact persisted semantics, presentations and both kinds of findings.
+
 Quality checking should detect:
 
 ```text
@@ -590,14 +601,14 @@ sensitive-topic errors
 
 Quality pass does not equal publication approval in the MVP.
 
-The quality-domain `semantic-validator-v2` checks explicit reference ownership,
+The quality-domain `semantic-validator-v3` checks explicit reference ownership,
 relation roles, duplicate references, claim temporal bounds, and quoted spans.
 EditorialBrief claim/FactCheck references and copied factual status/label/text must
 agree with the exact Fact Sheet; this is structured-copy integrity, not analysis of
 prose certainty or stronger/weaker wording. It also revalidates typed claim
 presentations against the exact Fact Sheet using `certainty-policy-v1`.
 
-Content generation methodology v2 uses content prompt v2 and requires one typed
+Content generation methodology v3 uses content prompt v3 and requires one typed
 presentation per used claim. Accepted status/label pairs and ceilings are:
 
 | Status | Label | Maximum strength | Frames |
@@ -612,8 +623,8 @@ All other pairs, including every UNASSESSED pair, fail closed under `certainty-p
 Canonical enum values not emitted by the current deterministic FactCheckEngine receive no
 downstream certainty semantics until an explicitly versioned producer/policy change.
 Enum membership is not authorization to upgrade status. No prose classifier or new claim
-taxonomy is implied. Quality methodology v5 independently checks these immutable
-inputs and uses quality prompt v2 to report typed prose `certainty_escalations`.
+taxonomy is inferred by the certainty firewall. Quality methodology v6 independently
+checks these immutable inputs and uses quality prompt v3 for typed prose `certainty_escalations`.
 Any escalation or deterministic ERROR fails quality; AI cannot override it.
 Historical artifacts remain unchanged; missing presentation metadata requires
 regeneration before a new current quality assessment can proceed.
@@ -623,7 +634,7 @@ evidence excerpts can supply a quote (evidence provenance is preferred). Headlin
 summary, unrelated claims, and unrelated evidence cannot launder a quotation.
 Case and punctuation remain significant; paraphrases in quotation marks fail.
 
-Quality methodology v4 includes this report alongside the existing AIRouter
+Quality methodology v6 includes this report alongside the existing AIRouter
 assessment. Semantic ERROR findings cannot be overridden by AI and leave content
 NOT_READY. Findings, source-span matches, and check counts are durable and typed.
 The report does not infer prose stance, independent sources, dependencies, or

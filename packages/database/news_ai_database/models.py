@@ -6,7 +6,14 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from news_ai_domain import ClaimVerificationStatus, FactCheckLabel, ReviewState, RiskLevel
+from news_ai_domain import (
+    ClaimSemanticState,
+    ClaimSemanticType,
+    ClaimVerificationStatus,
+    FactCheckLabel,
+    ReviewState,
+    RiskLevel,
+)
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -246,12 +253,36 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             name="ck_claims_risk_level",
         ),
         CheckConstraint("research_generation >= 0", name="ck_claims_research_generation"),
+        CheckConstraint(
+            "semantic_type IN ('GENERAL_FACT', 'EVENT', 'QUANTITATIVE', 'ATTRIBUTION', "
+            "'LEGAL_PROCEDURAL', 'CAUSAL', 'PREDICTION_FORECAST', 'POLICY_COMMITMENT')",
+            name="ck_claims_semantic_type",
+        ),
+        CheckConstraint(
+            "semantic_state IN ('OBSERVED', 'ANNOUNCED', 'PLANNED', 'EXPECTED', 'PREDICTED')",
+            name="ck_claims_semantic_state",
+        ),
+        CheckConstraint(
+            "(semantic_type IS NULL AND semantic_state IS NULL AND "
+            "semantic_policy_version IS NULL AND semantic_ai_run_id IS NULL) OR "
+            "(semantic_type IS NOT NULL AND semantic_state IS NOT NULL AND "
+            "semantic_policy_version IS NOT NULL AND semantic_ai_run_id IS NOT NULL)",
+            name="ck_claims_semantics_complete",
+        ),
     )
 
     story_id: Mapped[UUID] = mapped_column(ForeignKey("stories.id"), nullable=False, index=True)
     claim_text: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_claim: Mapped[str | None] = mapped_column(Text)
     claim_type: Mapped[str | None] = mapped_column(String(64))
+    semantic_type: Mapped[ClaimSemanticType | None] = mapped_column(
+        SAEnum(ClaimSemanticType, native_enum=False, length=32, validate_strings=True)
+    )
+    semantic_state: Mapped[ClaimSemanticState | None] = mapped_column(
+        SAEnum(ClaimSemanticState, native_enum=False, length=16, validate_strings=True)
+    )
+    semantic_policy_version: Mapped[str | None] = mapped_column(String(64))
+    semantic_ai_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("ai_runs.id"), index=True)
     status: Mapped[ClaimVerificationStatus] = mapped_column(
         SAEnum(
             ClaimVerificationStatus,
@@ -549,6 +580,9 @@ class ContentQualityCheck(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     semantic_methodology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     semantic_findings: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE, nullable=True)
     certainty_escalations: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON_TYPE, nullable=True
+    )
+    claim_semantic_escalations: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSON_TYPE, nullable=True
     )
     factual_accuracy_passed: Mapped[bool] = mapped_column(Boolean, nullable=False)

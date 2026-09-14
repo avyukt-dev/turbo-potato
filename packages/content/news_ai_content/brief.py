@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from news_ai_domain import ClaimVerificationStatus
+from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ClaimVerificationStatus
 from news_ai_editorial import PublishingPolicyConfig
 from news_ai_evidence import FactSheetArtifact
 
@@ -22,6 +22,11 @@ def build_editorial_brief(
     evidence = {item.evidence_id: item for item in fact_sheet.evidence}
     claims: list[BriefClaim] = []
     for claim in fact_sheet.claims:
+        if (
+            claim.semantics is None
+            or claim.semantics.policy_version != CLAIM_SEMANTICS_POLICY_VERSION
+        ):
+            raise ValueError("CLAIM_SEMANTICS_MISSING")
         check = checks.get(claim.claim_id)
         if check is None:
             raise ValueError("Fact Sheet claim is missing its FactCheck snapshot")
@@ -37,6 +42,7 @@ def build_editorial_brief(
                 status=claim.status,
                 fact_check_id=check.fact_check_id,
                 label=check.label,
+                semantics=claim.semantics,
                 confidence_score=check.confidence_score,
                 evidence_ids=claim.evidence_ids,
                 evidence_excerpts=excerpts,

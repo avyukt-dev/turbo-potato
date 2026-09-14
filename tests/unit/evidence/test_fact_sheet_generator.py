@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
+from helpers.claim_semantics import classification_run
 from news_ai_database import (
     Article,
     Base,
@@ -99,12 +100,17 @@ def _seed_verified_story(
         )
 
         claims: list[Claim] = []
+        semantic_run_id = classification_run(session)
         checks: list[FactCheck] = []
         for index, (status, label) in enumerate(_STATUS_LABELS):
             claim = Claim(
                 story_id=story.id,
                 claim_text=f"Verified claim {index}.",
                 claim_type="EVENT",
+                semantic_type="EVENT",
+                semantic_state="OBSERVED",
+                semantic_policy_version="claim-semantics-policy-v1",
+                semantic_ai_run_id=semantic_run_id,
                 status=status,
                 confidence_score=Decimal("0.80"),
                 importance_score=Decimal("0.70"),
