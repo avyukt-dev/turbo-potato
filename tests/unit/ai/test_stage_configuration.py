@@ -25,7 +25,7 @@ EXPECTED = {
     AIStageId.CLAIM_EXTRACTION: (
         AITaskType.CLAIM_EXTRACTION,
         "claim-extraction",
-        "prompts/claim-extraction/v3.txt",
+        "prompts/claim-extraction/v4.txt",
     ),
     AIStageId.EVIDENCE_ASSESSMENT: (
         AITaskType.EVIDENCE_ASSESSMENT,
@@ -83,9 +83,12 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
         assert stage.prompt.prompt_id == prompt_id
         assert stage.prompt.version == (
             "v4"
-            if stage.stage_id in (AIStageId.CONTENT_GENERATION, AIStageId.QUALITY_CHECKING)
-            else "v3"
-            if stage.stage_id is AIStageId.CLAIM_EXTRACTION
+            if stage.stage_id
+            in (
+                AIStageId.CLAIM_EXTRACTION,
+                AIStageId.CONTENT_GENERATION,
+                AIStageId.QUALITY_CHECKING,
+            )
             else "v2"
             if stage.stage_id is AIStageId.EVIDENCE_ASSESSMENT
             else "v1"
@@ -117,6 +120,25 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
             response_format=AIResponseFormat.STRUCTURED,
         )
         assert router.candidate_provider_ids(request) == ("groq", "local-llama")
+
+
+def test_claim_v4_prompt_matches_output_contract() -> None:
+    loader = ConfigLoader("config")
+    stage_loader = AIStageConfigLoader(loader)
+    stage = stage_loader.load(AIStageId.CLAIM_EXTRACTION)
+    prompt = stage_loader.resolve_prompt(stage).read_text(encoding="utf-8")
+
+    assert stage.prompt.version == "v4"
+    assert stage.prompt.path == "prompts/claim-extraction/v4.txt"
+    assert "A successful output requires at least one independently researchable claim." in prompt
+    assert 'If there are no independently verifiable claims, return {"claims":[]}.' not in prompt
+    assert "Every value object MUST contain kind." in prompt
+    assert "value_kind never replaces kind." in prompt
+    assert '{"kind":"EXACT_COPY_ONLY","value_kind":"<underlying kind>"}' in prompt
+    assert (
+        '{"source_text":"$5 million","value":{"kind":"EXACT_COPY_ONLY","value_kind":"CURRENCY"}}'
+        in prompt
+    )
 
 
 def test_provider_configuration_is_closed_and_secret_is_only_an_environment_reference() -> None:
