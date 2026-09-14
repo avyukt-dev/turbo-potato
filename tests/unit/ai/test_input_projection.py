@@ -237,9 +237,7 @@ def _payload(claim_count: int = 6) -> dict[str, Any]:
         "generation_language": "en",
         "value_integrity_policy_version": "value-integrity-policy-v1",
         "claim_semantics_policy_version": "claim-semantics-policy-v1",
-        "certainty_ceilings": {
-            item["claim_id"]: {"maximum_strength": "HIGH"} for item in claims
-        },
+        "certainty_ceilings": {item["claim_id"]: {"maximum_strength": "HIGH"} for item in claims},
     }
 
 
@@ -247,9 +245,7 @@ def _quality_payload(*, include_media_provenance: bool = False) -> dict[str, Any
     payload = _payload()
     selected_claim_ids = {"claim-1", "claim-4"}
     evidence = payload["immutable_fact_sheet"]["evidence"]
-    source_ids = [
-        item["source_id"] for item in evidence if item["claim_id"] in selected_claim_ids
-    ]
+    source_ids = [item["source_id"] for item in evidence if item["claim_id"] in selected_claim_ids]
     artifact = {
         "content_variant_id": "variant-1",
         "content_variant_version": 2,
@@ -321,15 +317,14 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
     assert [item["claim_id"] for item in brief["claims"]] == [
         f"claim-{index}" for index in range(6)
     ]
-    assert fact_sheet["claims"][0]["semantics"] == snapshot["immutable_fact_sheet"][
-        "claims"
-    ][0]["semantics"]
-    assert fact_sheet["claims"][0]["values"] == snapshot["immutable_fact_sheet"][
-        "claims"
-    ][0]["values"]
-    assert fact_sheet["claims"][0]["contradictory_evidence_ids"] == [
-        "evidence-0-contradict"
-    ]
+    assert (
+        fact_sheet["claims"][0]["semantics"]
+        == snapshot["immutable_fact_sheet"]["claims"][0]["semantics"]
+    )
+    assert (
+        fact_sheet["claims"][0]["values"] == snapshot["immutable_fact_sheet"]["claims"][0]["values"]
+    )
+    assert fact_sheet["claims"][0]["contradictory_evidence_ids"] == ["evidence-0-contradict"]
     assert {item["relation"] for item in fact_sheet["evidence"]} == {
         "DIRECT_SUPPORT",
         "CONTRADICTS",
