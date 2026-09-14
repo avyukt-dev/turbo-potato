@@ -321,6 +321,7 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
     assert brief["claims"][0]["values"] == snapshot["editorial_brief"]["claims"][0]["values"]
     assert brief["claims"][0]["status"] == "SUPPORTED"
     assert brief["claims"][0]["label"] == "TRUE"
+    assert brief["unresolved_questions"] == snapshot["editorial_brief"]["unresolved_questions"]
     assert fact_sheet["claims"][0]["contradictory_evidence_ids"] == ["evidence-0-contradict"]
     assert not {
         "claim_text",
@@ -342,7 +343,6 @@ def test_content_projection_keeps_all_claims_semantics_values_and_contradictions
         "key_points",
         "risk_level",
         "sensitive_topics",
-        "unresolved_questions",
         "human_review_required",
     } & set(brief)
     first_relation = fact_sheet["evidence"][0]["graph_relations"][0]
