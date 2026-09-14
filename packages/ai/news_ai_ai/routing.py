@@ -106,7 +106,9 @@ class AIStageRequestDefaults(BaseModel):
         cls, value: AIReasoningEffort | None
     ) -> AIReasoningEffort | None:
         if value is AIReasoningEffort.HIGH:
-            raise ValueError("stage default HIGH reasoning requires deterministic runtime escalation")
+            raise ValueError(
+                "stage default HIGH reasoning requires deterministic runtime escalation"
+            )
         return value
 
 
