@@ -227,6 +227,61 @@ def test_http_failures_map_to_normalized_types(status: int, error_type: type[Exc
         assert type(caught.value) is AIProviderError
 
 
+@pytest.mark.parametrize("signal_field", ["code", "type"])
+def test_413_rate_limit_signal_maps_to_rate_limit_without_provider_body(
+    signal_field: str,
+) -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            error = {
+                "message": "secret-provider-body requested 9266 tokens against an 8000 TPM limit",
+                signal_field: "rate_limit_exceeded",
+            }
+            return httpx.Response(413, json={"error": error})
+
+        async with _client(handler) as client:
+            await GroqProvider(_config(), api_key="test-secret", client=client).execute(_request())
+
+    with pytest.raises(AIProviderRateLimitError, match="Groq request was rate limited") as caught:
+        asyncio.run(run())
+
+    error = str(caught.value)
+    assert type(caught.value) is AIProviderRateLimitError
+    assert "secret-provider-body" not in error
+    assert "9266" not in error
+    assert "8000" not in error
+    assert "test-secret" not in error
+
+
+def test_413_non_rate_limit_code_remains_context_too_large_without_provider_body() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                413,
+                json={
+                    "error": {
+                        "message": "secret-provider-body",
+                        "type": "invalid_request_error",
+                        "code": "request_too_large",
+                    }
+                },
+            )
+
+        async with _client(handler) as client:
+            await GroqProvider(_config(), api_key="test-secret", client=client).execute(_request())
+
+    with pytest.raises(
+        AIContextTooLargeError,
+        match="Groq request exceeded the accepted context size",
+    ) as caught:
+        asyncio.run(run())
+
+    error = str(caught.value)
+    assert type(caught.value) is AIContextTooLargeError
+    assert "secret-provider-body" not in error
+    assert "test-secret" not in error
+
+
 def test_json_validation_failure_maps_to_invalid_response_without_provider_body() -> None:
     async def run() -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
