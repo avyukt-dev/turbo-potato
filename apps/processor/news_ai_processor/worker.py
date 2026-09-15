@@ -128,13 +128,13 @@ class ProcessorEventWorker:
         min_idle_ms: int,
         start_id: str = "0-0",
     ) -> tuple[str, ProcessorBatchResult]:
-        """Claim and process one batch of stale pending messages."""
+        """Recover stale work and retries whose durable schedule is due."""
 
-        next_start, messages = await self.consumer.claim_stale(
+        return await self.reliability.recover(
+            self._handle_event,
             min_idle_ms=min_idle_ms,
             start_id=start_id,
         )
-        return next_start, await self._process_messages(messages)
 
     async def _process_messages(self, messages: Sequence[StreamMessage]) -> ProcessorBatchResult:
         return await self.reliability.process(messages, self._handle_event)
@@ -217,11 +217,11 @@ class NormalizerEventWorker:
         min_idle_ms: int,
         start_id: str = "0-0",
     ) -> tuple[str, ProcessorBatchResult]:
-        next_start, messages = await self.consumer.claim_stale(
+        return await self.reliability.recover(
+            self._handle_event,
             min_idle_ms=min_idle_ms,
             start_id=start_id,
         )
-        return next_start, await self._process_messages(messages)
 
     async def _process_messages(self, messages: Sequence[StreamMessage]) -> ProcessorBatchResult:
         return await self.reliability.process(messages, self._handle_event)
