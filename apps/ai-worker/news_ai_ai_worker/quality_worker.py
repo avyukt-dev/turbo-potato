@@ -55,10 +55,11 @@ class QualityWorker:
     async def recover_once(
         self, *, min_idle_ms: int, start_id: str = "0-0"
     ) -> tuple[str, WorkerBatchResult]:
-        cursor, messages = await self.consumer.claim_stale(
-            min_idle_ms=min_idle_ms, start_id=start_id
+        return await self.reliability.recover(
+            self._handle_event,
+            min_idle_ms=min_idle_ms,
+            start_id=start_id,
         )
-        return cursor, await self._process(messages)
 
     async def _process(self, messages: Sequence[StreamMessage]) -> WorkerBatchResult:
         return await self.reliability.process(messages, self._handle_event)
