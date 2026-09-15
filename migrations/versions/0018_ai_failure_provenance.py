@@ -1,16 +1,14 @@
 """Persist sanitized AI routing failure provenance on worker failures."""
 
-from collections.abc import Sequence
-
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "0018_ai_failure_provenance"
-down_revision: str | None = "0017_evidence_graph_enrichment"
-branch_labels: str | Sequence[str] | None = None
-depends_on: str | Sequence[str] | None = None
+revision = "0018_ai_failure_provenance"
+down_revision = "0017_evidence_graph_enrichment"
+branch_labels = None
+depends_on = None
 
 JSONB = postgresql.JSONB(astext_type=sa.Text())
 

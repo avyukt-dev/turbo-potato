@@ -10,9 +10,9 @@ from uuid import uuid4
 import pytest
 from news_ai_ai import (
     AIFallbackDecision,
+    AIRequest,
     AIRouteAttempt,
     AIRoutingExecutionError,
-    AIRequest,
     PromptReference,
 )
 from news_ai_database import (
@@ -30,6 +30,7 @@ from news_ai_events import (
     ReliableMessageProcessor,
     StaleWorkError,
     StreamMessage,
+    TransientEventError,
     WorkerRetryPolicy,
     load_worker_retry_policy,
 )

@@ -8,9 +8,9 @@ from uuid import uuid4
 import pytest
 from news_ai_ai import (
     AIFallbackDecision,
+    AIRequest,
     AIRouteAttempt,
     AIRoutingExecutionError,
-    AIRequest,
     PromptReference,
 )
 from news_ai_database import EventDeadLetter, EventProcessingAttempt, ProcessedEvent

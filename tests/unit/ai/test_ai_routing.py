@@ -8,8 +8,8 @@ from uuid import uuid4
 import pytest
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
-    AIFallbackDecision,
     AIFailureReason,
+    AIFallbackDecision,
     AIInvalidResponseError,
     AIPolicyConfig,
     AIPolicyConfigLoader,
