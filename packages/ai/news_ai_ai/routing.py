@@ -518,3 +518,80 @@ class AIRouter:
                         raise AIRoutingPolicyError(
                             f"AI stage model is not exposed by provider {provider_id!r}"
                         )
+
+    @staticmethod
+    def _reject_conflicting_model(request: AIRequest, stage: AIStageConfig) -> None:
+        if request.model is not None and request.model != stage.providers[0].model:
+            raise AIRoutingPolicyError("request model conflicts with stage-owned configuration")
+
+    @staticmethod
+    def _attempt_request(
+        request: AIRequest,
+        stage: AIStageConfig,
+        selection: AIStageProviderSelection,
+    ) -> AIRequest:
+        uses_stage_reasoning_default = (
+            request.reasoning_effort is None and stage.request_defaults.reasoning_effort is not None
+        )
+        attempt = _validated_request_update(
+            request,
+            model=selection.model,
+            reasoning_effort=(
+                request.reasoning_effort
+                if request.reasoning_effort is not None
+                else stage.request_defaults.reasoning_effort
+            ),
+            reasoning_policy_version=(
+                REASONING_ROUTING_POLICY_VERSION
+                if uses_stage_reasoning_default and request.reasoning_policy_version is None
+                else request.reasoning_policy_version
+            ),
+        )
+        if (
+            attempt.reasoning_policy_version is not None
+            and attempt.reasoning_policy_version != REASONING_ROUTING_POLICY_VERSION
+        ):
+            raise AIRoutingPolicyError("reasoning policy version is not current")
+        return attempt
+
+    def _mode_allows(self, locality: ProviderLocality) -> bool:
+        if self.policy.mode is AIRoutingMode.HYBRID:
+            return True
+        if self.policy.mode is AIRoutingMode.LOCAL:
+            return locality is ProviderLocality.LOCAL
+        return locality is ProviderLocality.CLOUD
+
+    def _require_sensitivity_policy(self, request: AIRequest) -> None:
+        missing = sorted(
+            item
+            for item in request.sensitivity
+            if item not in self.policy.sensitivity_provider_allowlists
+        )
+        if missing:
+            raise AIRoutingPolicyError(
+                f"no AI provider allowlist configured for sensitivity: {', '.join(missing)}"
+            )
+
+    def _sensitivity_allows(self, provider_id: str, sensitivities: tuple[str, ...]) -> bool:
+        return all(
+            provider_id in self.policy.sensitivity_provider_allowlists[item]
+            for item in sensitivities
+        )
+
+
+def _failure_reason(error: AIProviderError) -> AIFailureReason:
+    if isinstance(error, AIProviderPolicyError):
+        return AIFailureReason.POLICY_REJECTION
+    if isinstance(error, AIProviderTimeoutError):
+        return AIFailureReason.TIMEOUT
+    if isinstance(error, AIProviderRateLimitError):
+        return AIFailureReason.RATE_LIMIT
+    if isinstance(error, AIContextTooLargeError):
+        return AIFailureReason.CONTEXT_TOO_LARGE
+    if isinstance(error, AILocalResourceExhaustedError):
+        return AIFailureReason.LOCAL_RESOURCE_EXHAUSTED
+    if isinstance(error, AIInvalidResponseError):
+        return AIFailureReason.INVALID_RESPONSE
+    if isinstance(error, AIProviderUnavailableError):
+        return AIFailureReason.UNAVAILABLE
+    return AIFailureReason.OTHER
