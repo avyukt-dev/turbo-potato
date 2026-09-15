@@ -37,6 +37,7 @@ _SECRET_RE = re.compile(
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]+")
 _TOKEN_PATTERN_RE = re.compile(r"\b(?:(?:sk|pk|rk)[_-]|(?:ghp|github_pat)_)[A-Za-z0-9_-]{12,}\b")
 _DIAGNOSTIC_LIMIT = 16_384
+_AI_FAILURE_PROVENANCE_LIMIT = 65_536
 _SENSITIVE_KEYS = {
     "authorization",
     "apikey",
@@ -49,20 +50,37 @@ _SENSITIVE_KEYS = {
     "credential",
     "credentials",
 }
-_AI_FAILURE_PROVENANCE_KEYS = frozenset(
-    {
-        "task_type",
-        "prompt_id",
-        "prompt_version",
-        "prompt_checksum",
-        "input_artifact_ids",
-        "input_hash",
-        "correlation_id",
-        "attempts",
-        "final_failure_reason",
-        "fallback_decision",
-    }
-)
+
+
+class _AIFailureAttemptDiagnostic(BaseModel):
+    """Closed provider-attempt shape accepted by the generic reliability boundary."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    provider_id: str = Field(min_length=1, max_length=128)
+    model: str | None = Field(default=None, max_length=255)
+    reasoning_effort: str | None = Field(default=None, max_length=32)
+    reasoning_policy_version: str | None = Field(default=None, max_length=128)
+    reasoning_reasons: tuple[str, ...] = Field(default=(), max_length=16)
+    outcome: str = Field(min_length=1, max_length=32)
+    failure_reason: str | None = Field(default=None, max_length=64)
+
+
+class _AIFailureProvenanceDiagnostic(BaseModel):
+    """Provider-neutral, bounded AI failure provenance persisted by event reliability."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    task_type: str = Field(min_length=1, max_length=64)
+    prompt_id: str | None = Field(default=None, max_length=128)
+    prompt_version: str | None = Field(default=None, max_length=64)
+    prompt_checksum: str | None = Field(default=None, max_length=128)
+    input_artifact_ids: tuple[str, ...] = Field(default=(), max_length=512)
+    input_hash: str | None = Field(default=None, max_length=128)
+    correlation_id: str | None = Field(default=None, max_length=64)
+    attempts: tuple[_AIFailureAttemptDiagnostic, ...] = Field(min_length=1, max_length=64)
+    final_failure_reason: str = Field(min_length=1, max_length=64)
+    fallback_decision: str = Field(min_length=1, max_length=64)
 
 
 class ProcessingOutcome(StrEnum):
@@ -570,13 +588,8 @@ def _extract_ai_failure_provenance(
             payload = None
 
         if isinstance(payload, Mapping):
-            safe_payload = {
-                key: _redact_value(payload[key])
-                for key in _AI_FAILURE_PROVENANCE_KEYS
-                if key in payload
-            }
-            attempts = safe_payload.get("attempts")
-            if isinstance(attempts, list) and attempts:
+            safe_payload = _validated_ai_failure_provenance(payload)
+            if safe_payload is not None:
                 return safe_payload
 
         previous = current
@@ -585,6 +598,19 @@ def _extract_ai_failure_provenance(
             current = previous.__context__
 
     return None
+
+
+def _validated_ai_failure_provenance(payload: Mapping[Any, Any]) -> dict[str, Any] | None:
+    try:
+        diagnostic = _AIFailureProvenanceDiagnostic.model_validate(payload)
+    except (TypeError, ValueError, ValidationError):
+        return None
+
+    safe_payload = _redact_value(diagnostic.model_dump(mode="json"))
+    serialized = json.dumps(safe_payload, separators=(",", ":"), sort_keys=True)
+    if len(serialized.encode("utf-8")) > _AI_FAILURE_PROVENANCE_LIMIT:
+        return None
+    return safe_payload
 
 
 def _redact_string(value: str) -> str:
