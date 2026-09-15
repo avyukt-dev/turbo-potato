@@ -4,11 +4,14 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from news_ai_database import (
     Base,
+    EventAttemptStatus,
     EventDeadLetter,
+    EventFailureClass,
     EventProcessingAttempt,
     ProcessedEvent,
 )
@@ -336,6 +339,53 @@ def test_recovery_does_not_process_same_message_twice_in_one_cycle() -> None:
     assert recovered.retrying == 1
     assert calls == 1
     assert consumer.owned_claims == []
+
+
+def test_recovery_does_not_starve_owned_retry_behind_peer_due_retries() -> None:
+    factory = _factory()
+    consumer = FakeConsumer(count=10)
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock)
+    owned = _message(message_id="11-0")
+    consumer.owned_pending[owned.message_id] = owned
+
+    with factory() as session, session.begin():
+        for index in range(10):
+            session.add(
+                EventProcessingAttempt(
+                    delivery_key=f"peer-{index}",
+                    event_id=uuid4(),
+                    event_type=EventType.ARTICLE_NORMALIZED.value,
+                    consumer_group=consumer.group,
+                    source_stream=consumer.stream,
+                    message_id=f"{index + 1}-0",
+                    attempt_number=1,
+                    failure_class=EventFailureClass.TRANSIENT,
+                    status=EventAttemptStatus.RETRY_PENDING,
+                    error_code="RuntimeError",
+                    error_message="peer retry",
+                    next_retry_at=clock.value - timedelta(minutes=1),
+                )
+            )
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([owned], fail)).retrying == 1
+    clock.value += timedelta(seconds=11)
+    _, recovered = asyncio.run(
+        runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+    )
+
+    assert recovered.received == 1
+    assert recovered.processed == 1
+    assert len(consumer.owned_claims) == 1
+    assert len(consumer.owned_claims[0]) == 11
+    assert owned.message_id in consumer.owned_claims[0]
+    assert consumer.acked == [owned.message_id]
 
 
 def test_permanent_invalid_event_is_persisted_before_ack() -> None:

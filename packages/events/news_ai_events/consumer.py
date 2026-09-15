@@ -206,6 +206,8 @@ class RedisStreamConsumer:
                 decode_stream_message(self.stream, claimed_id, fields)
                 for claimed_id, fields in claimed or []
             )
+            if len(messages) >= self.count:
+                break
         return messages
 
     async def claim_stale(

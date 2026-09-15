@@ -324,7 +324,6 @@ class ReliableMessageProcessor:
                 EventProcessingAttempt.created_at.asc(),
                 EventProcessingAttempt.id.asc(),
             )
-            .limit(max(1, int(getattr(self.consumer, "count", 10))))
         )
         if exclude_message_ids:
             statement = statement.where(
