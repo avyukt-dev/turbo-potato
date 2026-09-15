@@ -4,7 +4,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-
 revision = "0018_ai_failure_provenance"
 down_revision = "0017_evidence_graph_enrichment"
 branch_labels = None
