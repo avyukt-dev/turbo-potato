@@ -13,7 +13,6 @@ from news_ai_database import (
     ProcessedEvent,
 )
 from news_ai_events import (
-    DeferredWorkError,
     EventEnvelope,
     EventType,
     ProcessingOutcome,
@@ -23,6 +22,7 @@ from news_ai_events import (
     WorkerRetryPolicy,
     load_worker_retry_policy,
 )
+from news_ai_events.reliability import DeferredWorkError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
