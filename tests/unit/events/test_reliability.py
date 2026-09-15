@@ -4,12 +4,16 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from news_ai_database import (
     Base,
+    EventAttemptStatus,
     EventDeadLetter,
+    EventFailureClass,
     EventProcessingAttempt,
+    ProcessedEvent,
 )
 from news_ai_events import (
     EventEnvelope,
@@ -21,6 +25,7 @@ from news_ai_events import (
     WorkerRetryPolicy,
     load_worker_retry_policy,
 )
+from news_ai_events.reliability import DeferredWorkError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -29,8 +34,27 @@ from sqlalchemy.orm import Session, sessionmaker
 class FakeConsumer:
     stream: str = "news:articles"
     group: str = "reliability-test"
+    consumer: str = "worker-1"
+    count: int = 10
     acked: list[str] = field(default_factory=list)
     before_ack: object | None = None
+    stale_messages: list[StreamMessage] = field(default_factory=list)
+    owned_pending: dict[str, StreamMessage] = field(default_factory=dict)
+    stale_claims: list[tuple[int, str]] = field(default_factory=list)
+    owned_claims: list[tuple[str, ...]] = field(default_factory=list)
+
+    async def claim_stale(
+        self, *, min_idle_ms: int, start_id: str = "0-0"
+    ) -> tuple[str, list[StreamMessage]]:
+        self.stale_claims.append((min_idle_ms, start_id))
+        return "0-0", list(self.stale_messages)
+
+    async def claim_owned_pending(self, message_ids) -> list[StreamMessage]:
+        ids = tuple(message_ids)
+        self.owned_claims.append(ids)
+        return [
+            self.owned_pending[message_id] for message_id in ids if message_id in self.owned_pending
+        ]
 
     async def ack(self, message: StreamMessage) -> None:
         if callable(self.before_ack):
@@ -52,7 +76,7 @@ def _factory() -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 
 
-def _message() -> StreamMessage:
+def _message(*, message_id: str = "1-0") -> StreamMessage:
     article_id = "76edbfab-6b2e-47eb-b16f-091734035728"
     event = EventEnvelope(
         event_type=EventType.ARTICLE_NORMALIZED,
@@ -69,7 +93,7 @@ def _message() -> StreamMessage:
             "title": "Headline",
         },
     )
-    return StreamMessage("news:articles", "1-0", event)
+    return StreamMessage("news:articles", message_id, event)
 
 
 def _runner(factory, consumer, clock, *, delays=(10, 20)):
@@ -174,6 +198,194 @@ def test_transient_failure_remains_pending_below_budget_then_dead_letters_once()
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 1
         assert session.scalar(select(func.count()).select_from(EventProcessingAttempt)) == 3
+
+
+def test_recovery_does_not_redeliver_before_durable_retry_time() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock)
+    message = _message()
+    consumer.owned_pending[message.message_id] = message
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([message], fail)).retrying == 1
+    _, recovered = asyncio.run(
+        runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+    )
+
+    assert recovered.received == 0
+    assert consumer.owned_claims == []
+    assert consumer.acked == []
+
+
+def test_recovery_claims_same_owner_retry_when_durable_schedule_is_due() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock)
+    message = _message()
+    consumer.owned_pending[message.message_id] = message
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([message], fail)).retrying == 1
+    clock.value += timedelta(seconds=11)
+    cursor, recovered = asyncio.run(
+        runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+    )
+
+    assert cursor == "0-0"
+    assert recovered.received == 1
+    assert recovered.processed == 1
+    assert consumer.stale_claims == [(900_000, "0-0")]
+    assert consumer.owned_claims == [(message.message_id,)]
+    assert consumer.acked == [message.message_id]
+
+
+def test_recovery_uses_only_latest_attempt_schedule() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock, delays=(10, 20))
+    message = _message()
+    consumer.owned_pending[message.message_id] = message
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([message], fail)).retrying == 1
+    clock.value += timedelta(seconds=11)
+    assert asyncio.run(runner.process([message], fail)).retrying == 1
+    clock.value += timedelta(seconds=10)
+
+    _, recovered = asyncio.run(
+        runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+    )
+
+    assert recovered.received == 0
+    assert consumer.owned_claims == []
+
+
+def test_recovery_excludes_completed_events_even_if_retry_attempt_remains() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock)
+    message = _message()
+    consumer.owned_pending[message.message_id] = message
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([message], fail)).retrying == 1
+    with factory() as session, session.begin():
+        session.add(
+            ProcessedEvent(
+                event_id=message.event.event_id,
+                consumer_group=consumer.group,
+                result={"completed": True},
+            )
+        )
+    clock.value += timedelta(seconds=11)
+
+    _, recovered = asyncio.run(
+        runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+    )
+
+    assert recovered.received == 0
+    assert consumer.owned_claims == []
+
+
+def test_recovery_does_not_process_same_message_twice_in_one_cycle() -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock)
+    message = _message()
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([message], fail)).retrying == 1
+    clock.value += timedelta(seconds=11)
+    consumer.stale_messages = [message]
+    consumer.owned_pending[message.message_id] = message
+    calls = 0
+
+    def defer(_event):
+        nonlocal calls
+        calls += 1
+        raise DeferredWorkError("not yet executable")
+
+    _, recovered = asyncio.run(runner.recover(defer, min_idle_ms=900_000))
+
+    assert recovered.received == 1
+    assert recovered.retrying == 1
+    assert calls == 1
+    assert consumer.owned_claims == []
+
+
+def test_recovery_does_not_starve_owned_retry_behind_peer_due_retries() -> None:
+    factory = _factory()
+    consumer = FakeConsumer(count=10)
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock)
+    owned = _message(message_id="11-0")
+    consumer.owned_pending[owned.message_id] = owned
+
+    with factory() as session, session.begin():
+        for index in range(10):
+            session.add(
+                EventProcessingAttempt(
+                    delivery_key=f"peer-{index}",
+                    event_id=uuid4(),
+                    event_type=EventType.ARTICLE_NORMALIZED.value,
+                    consumer_group=consumer.group,
+                    source_stream=consumer.stream,
+                    message_id=f"{index + 1}-0",
+                    attempt_number=1,
+                    failure_class=EventFailureClass.TRANSIENT,
+                    status=EventAttemptStatus.RETRY_PENDING,
+                    error_code="RuntimeError",
+                    error_message="peer retry",
+                    next_retry_at=clock.value - timedelta(minutes=1),
+                )
+            )
+
+    def fail(_event):
+        raise RuntimeError("temporary failure")
+
+    assert asyncio.run(runner.process([owned], fail)).retrying == 1
+    clock.value += timedelta(seconds=11)
+    _, recovered = asyncio.run(
+        runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+    )
+
+    assert recovered.received == 1
+    assert recovered.processed == 1
+    assert len(consumer.owned_claims) == 1
+    assert len(consumer.owned_claims[0]) == 11
+    assert owned.message_id in consumer.owned_claims[0]
+    assert consumer.acked == [owned.message_id]
 
 
 def test_permanent_invalid_event_is_persisted_before_ack() -> None:

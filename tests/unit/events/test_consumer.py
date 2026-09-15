@@ -145,6 +145,104 @@ def test_stale_pending_messages_can_be_claimed() -> None:
     assert client.claim_calls == [("news:articles", "processor", "worker-1", 60_000, "0-0", 5)]
 
 
+def test_exact_retry_claim_requires_current_owner_and_uses_idle_as_race_fence() -> None:
+    event = _event()
+    pending_calls = []
+    claim_calls = []
+
+    class Client:
+        async def xpending_range(self, *args, **kwargs):
+            pending_calls.append((args, kwargs))
+            return [
+                {
+                    "message_id": "7-0",
+                    "consumer": "worker-1",
+                    "time_since_delivered": 37,
+                    "times_delivered": 1,
+                }
+            ]
+
+        async def xclaim(self, *args, **kwargs):
+            claim_calls.append((args, kwargs))
+            return [(b"7-0", {b"event": event.model_dump_json().encode()})]
+
+    consumer = RedisStreamConsumer(
+        Client(), stream="news:articles", group="processor", consumer="worker-1", count=5
+    )
+    messages = asyncio.run(consumer.claim_owned_pending(["7-0", "7-0"]))
+
+    assert [message.message_id for message in messages] == ["7-0"]
+    assert pending_calls == [
+        (("news:articles", "processor", "7-0", "7-0", 1), {"consumername": "worker-1"})
+    ]
+    assert claim_calls == [
+        (("news:articles", "processor", "worker-1", 37, ["7-0"]), {"force": False})
+    ]
+
+
+@pytest.mark.parametrize(
+    ("owner", "idle_ms"),
+    [("worker-2", 50), ("worker-1", 0)],
+)
+def test_exact_retry_claim_never_steals_peer_or_zero_idle_work(owner, idle_ms) -> None:
+    claim_calls = []
+
+    class Client:
+        async def xpending_range(self, *args, **kwargs):
+            return [
+                {
+                    "message_id": "8-0",
+                    "consumer": owner,
+                    "time_since_delivered": idle_ms,
+                    "times_delivered": 1,
+                }
+            ]
+
+        async def xclaim(self, *args, **kwargs):
+            claim_calls.append((args, kwargs))
+            return []
+
+    consumer = RedisStreamConsumer(
+        Client(), stream="news:articles", group="processor", consumer="worker-1"
+    )
+    assert asyncio.run(consumer.claim_owned_pending(["8-0"])) == []
+    assert claim_calls == []
+
+
+def test_exact_retry_claim_bounds_after_current_owner_matches() -> None:
+    event = _event()
+    pending_ids = []
+    claim_ids = []
+
+    class Client:
+        async def xpending_range(self, _stream, _group, minimum, _maximum, _count, **_kwargs):
+            pending_ids.append(minimum)
+            if minimum == "1-0":
+                return []
+            return [
+                {
+                    "message_id": minimum,
+                    "consumer": "worker-1",
+                    "time_since_delivered": 50,
+                    "times_delivered": 1,
+                }
+            ]
+
+        async def xclaim(self, _stream, _group, _consumer, _idle, message_ids, **_kwargs):
+            message_id = message_ids[0]
+            claim_ids.append(message_id)
+            return [(message_id.encode(), {b"event": event.model_dump_json().encode()})]
+
+    consumer = RedisStreamConsumer(
+        Client(), stream="news:articles", group="processor", consumer="worker-1", count=1
+    )
+    messages = asyncio.run(consumer.claim_owned_pending(["1-0", "2-0", "3-0"]))
+
+    assert [message.message_id for message in messages] == ["2-0"]
+    assert pending_ids == ["1-0", "2-0"]
+    assert claim_ids == ["2-0"]
+
+
 @pytest.mark.parametrize("payload", [_event().model_dump_json(), "invalid", None])
 def test_own_pending_read_is_scoped_bounded_nonblocking_and_uses_decoder(payload):
     calls = []

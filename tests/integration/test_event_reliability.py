@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from news_ai_database import EventDeadLetter, EventProcessingAttempt
+from news_ai_database import EventDeadLetter, EventProcessingAttempt, ProcessedEvent
 from news_ai_events import (
     EventEnvelope,
     EventType,
@@ -15,6 +15,7 @@ from news_ai_events import (
     ReliableMessageProcessor,
     WorkerRetryPolicy,
 )
+from news_ai_events.idempotency import mark_processed
 from redis.asyncio import Redis
 from sqlalchemy import create_engine, delete
 from sqlalchemy.orm import sessionmaker
@@ -136,5 +137,99 @@ async def _scenario(database_url: str, redis_url: str) -> None:
                 delete(EventProcessingAttempt).where(EventProcessingAttempt.consumer_group == group)
             )
             session.execute(delete(EventDeadLetter).where(EventDeadLetter.consumer_group == group))
+            session.execute(delete(ProcessedEvent).where(ProcessedEvent.consumer_group == group))
+        await client.delete(stream)
+        await client.aclose()
+
+
+def test_due_retry_uses_durable_schedule_without_lowering_stale_reclaim_threshold() -> None:
+    assert DATABASE_URL is not None and REDIS_URL is not None
+    asyncio.run(_scheduled_retry_scenario(DATABASE_URL, REDIS_URL))
+
+
+async def _scheduled_retry_scenario(database_url: str, redis_url: str) -> None:
+    factory = sessionmaker(create_engine(database_url), expire_on_commit=False)
+    client = Redis.from_url(redis_url, decode_responses=True)
+    suffix = uuid4().hex
+    stream = f"test:scheduled-retry:{suffix}"
+    group = f"scheduled-retry-{suffix}"
+    consumer = RedisStreamConsumer(
+        client,
+        stream=stream,
+        group=group,
+        consumer="owner",
+        block_ms=50,
+    )
+    event = _event()
+    now = datetime(2026, 9, 15, tzinfo=UTC)
+
+    def clock():
+        return now_holder[0]
+
+    now_holder = [now]
+    runner = ReliableMessageProcessor(
+        consumer,
+        factory,
+        consumer_group=group,
+        handled_event_types=frozenset({EventType.ARTICLE_NORMALIZED}),
+        retry_policy=WorkerRetryPolicy(delays_seconds=(1,), jitter_ratio=0),
+        clock=clock,
+    )
+    try:
+        await consumer.ensure_group()
+        await client.xadd(stream, {"event": event.model_dump_json()})
+        messages = await consumer.read()
+        assert len(messages) == 1
+        message_id = messages[0].message_id
+
+        def fail(_event):
+            raise RuntimeError("transient integration failure")
+
+        first = await runner.process(messages, fail)
+        assert first.retrying == 1 and first.dead_lettered == 0
+        before = await client.xpending_range(
+            stream, group, message_id, message_id, 1, consumername="owner"
+        )
+        assert len(before) == 1 and before[0]["times_delivered"] == 1
+
+        _, early = await runner.recover(
+            lambda _event: ProcessingOutcome.PROCESSED,
+            min_idle_ms=900_000,
+        )
+        assert early.received == 0
+        unchanged = await client.xpending_range(
+            stream, group, message_id, message_id, 1, consumername="owner"
+        )
+        assert len(unchanged) == 1 and unchanged[0]["times_delivered"] == 1
+
+        now_holder[0] += timedelta(seconds=2)
+        await asyncio.sleep(0.01)
+
+        def succeed(current_event):
+            with factory() as session, session.begin():
+                mark_processed(
+                    session,
+                    event_id=current_event.event_id,
+                    consumer_group=group,
+                    result={"recovered": True},
+                )
+            return ProcessingOutcome.PROCESSED
+
+        _, recovered = await runner.recover(succeed, min_idle_ms=900_000)
+        assert recovered.received == 1
+        assert recovered.processed == 1
+        assert recovered.failed == 0
+        assert (await client.xpending(stream, group))["pending"] == 0
+        with factory() as session:
+            assert session.get(ProcessedEvent, (event.event_id, group)) is not None
+            attempts = session.query(EventProcessingAttempt).filter_by(consumer_group=group).all()
+            assert len(attempts) == 1
+    finally:
+        with factory() as session, session.begin():
+            session.execute(
+                delete(EventProcessingAttempt).where(EventProcessingAttempt.consumer_group == group)
+            )
+            session.execute(delete(EventDeadLetter).where(EventDeadLetter.consumer_group == group))
+            session.execute(delete(ProcessedEvent).where(ProcessedEvent.consumer_group == group))
         await client.delete(stream)
         await client.aclose()

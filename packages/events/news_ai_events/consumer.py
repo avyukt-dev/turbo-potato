@@ -4,7 +4,7 @@ This layer deliberately does not own domain transactions. A worker handler must 
 state change idempotently; the transport ACK occurs only after the handler returns successfully.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -31,6 +31,27 @@ class AsyncConsumerClient(Protocol):
         consumername: str,
         min_idle_time: int,
         start_id: str = "0-0",
+        **kwargs: Any,
+    ) -> Any: ...
+
+    async def xpending_range(
+        self,
+        name: str,
+        groupname: str,
+        min: str,
+        max: str,
+        count: int,
+        consumername: str | None = None,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    async def xclaim(
+        self,
+        name: str,
+        groupname: str,
+        consumername: str,
+        min_idle_time: int,
+        message_ids: Sequence[str],
         **kwargs: Any,
     ) -> Any: ...
 
@@ -137,6 +158,57 @@ class RedisStreamConsumer:
             for stream, entries in response or []
             for message_id, fields in entries
         ]
+
+    async def claim_owned_pending(self, message_ids: Sequence[str]) -> list[StreamMessage]:
+        """Claim exact pending IDs only when this consumer still owns them.
+
+        Scheduled retries use PostgreSQL as the retry clock. XPENDING is a read-only
+        ownership check; XCLAIM uses the observed idle time as a race fence so a
+        concurrent peer claim cannot be stolen back immediately. FORCE is never used.
+        """
+        messages: list[StreamMessage] = []
+        seen: set[str] = set()
+        for value in message_ids:
+            message_id = _text(value)
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+            pending = await self.client.xpending_range(
+                self.stream,
+                self.group,
+                message_id,
+                message_id,
+                1,
+                consumername=self.consumer,
+            )
+            if not pending:
+                continue
+            entry = pending[0]
+            if not isinstance(entry, dict):
+                raise ValueError("Redis pending entry is invalid")
+            normalized = {_text(key): item for key, item in entry.items()}
+            if _text(normalized.get("message_id", "")) != message_id:
+                continue
+            if _text(normalized.get("consumer", "")) != self.consumer:
+                continue
+            idle_ms = int(normalized.get("time_since_delivered", 0))
+            if idle_ms < 1:
+                continue
+            claimed = await self.client.xclaim(
+                self.stream,
+                self.group,
+                self.consumer,
+                idle_ms,
+                [message_id],
+                force=False,
+            )
+            messages.extend(
+                decode_stream_message(self.stream, claimed_id, fields)
+                for claimed_id, fields in claimed or []
+            )
+            if len(messages) >= self.count:
+                break
+        return messages
 
     async def claim_stale(
         self,
