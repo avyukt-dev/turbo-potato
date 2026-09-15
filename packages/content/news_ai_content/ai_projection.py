@@ -359,9 +359,7 @@ def _unique_ids(values: list[Any], *, owner: str) -> frozenset[str]:
 def _pick_required(value: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     missing = [key for key in keys if key not in value]
     if missing:
-        raise AIInputProjectionError(
-            "AI input projection requires " + ", ".join(sorted(missing))
-        )
+        raise AIInputProjectionError("AI input projection requires " + ", ".join(sorted(missing)))
     return {key: deepcopy(value[key]) for key in keys}
 
 
