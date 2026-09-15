@@ -64,11 +64,11 @@ class FactCheckWorker:
         min_idle_ms: int,
         start_id: str = "0-0",
     ) -> tuple[str, ResearchWorkerBatchResult]:
-        next_start, messages = await self.consumer.claim_stale(
+        return await self.reliability.recover(
+            self._handle_event,
             min_idle_ms=min_idle_ms,
             start_id=start_id,
         )
-        return next_start, await self._process_messages(messages)
 
     async def _process_messages(
         self,
@@ -139,11 +139,11 @@ class StoryVerificationWorker:
         min_idle_ms: int,
         start_id: str = "0-0",
     ) -> tuple[str, ResearchWorkerBatchResult]:
-        next_start, messages = await self.consumer.claim_stale(
+        return await self.reliability.recover(
+            self._handle_event,
             min_idle_ms=min_idle_ms,
             start_id=start_id,
         )
-        return next_start, await self._process_messages(messages)
 
     async def _process_messages(
         self,
