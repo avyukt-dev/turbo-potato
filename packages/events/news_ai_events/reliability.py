@@ -6,7 +6,7 @@ import hashlib
 import inspect
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -49,6 +49,20 @@ _SENSITIVE_KEYS = {
     "credential",
     "credentials",
 }
+_AI_FAILURE_PROVENANCE_KEYS = frozenset(
+    {
+        "task_type",
+        "prompt_id",
+        "prompt_version",
+        "prompt_checksum",
+        "input_artifact_ids",
+        "input_hash",
+        "correlation_id",
+        "attempts",
+        "final_failure_reason",
+        "fallback_decision",
+    }
+)
 
 
 class ProcessingOutcome(StrEnum):
@@ -373,6 +387,7 @@ class ReliableMessageProcessor:
         failure_class = _classify(exc, message)
         error_code = type(exc).__name__[:128]
         error_message = _safe_message(exc)
+        ai_failure_provenance = _extract_ai_failure_provenance(exc)
         with self.session_factory() as session, session.begin():
             existing_dead_letter = session.scalar(
                 select(EventDeadLetter).where(EventDeadLetter.delivery_key == delivery_key)
@@ -422,6 +437,7 @@ class ReliableMessageProcessor:
                 ),
                 error_code=error_code,
                 error_message=error_message,
+                ai_failure_provenance=ai_failure_provenance,
                 next_retry_at=next_retry_at,
             )
             job_id = None
@@ -458,6 +474,7 @@ class ReliableMessageProcessor:
                         failure_class=failure_class,
                         error_code=error_code,
                         error_message=error_message,
+                        ai_failure_provenance=ai_failure_provenance,
                         raw_event=_safe_raw_event(message),
                         raw_event_hash=_raw_event_hash(message),
                         event_payload=_safe_payload(event_payload),
@@ -537,6 +554,37 @@ def _classify(exc: Exception, message: StreamMessage) -> EventFailureClass:
 def _safe_message(exc: Exception) -> str:
     value = _redact_string(str(exc))
     return value[:1000] or type(exc).__name__
+
+
+def _extract_ai_failure_provenance(
+    exc: BaseException,
+) -> dict[str, Any] | None:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            payload = getattr(current, "failure_provenance_payload", None)
+        except Exception:
+            payload = None
+
+        if isinstance(payload, Mapping):
+            safe_payload = {
+                key: _redact_value(payload[key])
+                for key in _AI_FAILURE_PROVENANCE_KEYS
+                if key in payload
+            }
+            attempts = safe_payload.get("attempts")
+            if isinstance(attempts, list) and attempts:
+                return safe_payload
+
+        previous = current
+        current = previous.__cause__
+        if current is None and not previous.__suppress_context__:
+            current = previous.__context__
+
+    return None
 
 
 def _redact_string(value: str) -> str:

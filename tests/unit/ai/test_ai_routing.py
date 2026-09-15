@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
+    AIFallbackDecision,
     AIFailureReason,
     AIInvalidResponseError,
     AIPolicyConfig,
@@ -35,6 +37,7 @@ from news_ai_ai import (
     AIStageProviderSelection,
     AIStageRequestDefaults,
     AITaskType,
+    PromptReference,
     ProviderCapabilities,
     ProviderLocality,
 )
@@ -393,9 +396,14 @@ def test_safe_groq_failures_fallback_to_llama_with_model_and_reasoning_provenanc
 @pytest.mark.parametrize("failure", [AIProviderPolicyError("denied"), AIProviderError("other")])
 def test_groq_policy_and_unknown_failures_do_not_fallback(failure: Exception) -> None:
     router, _, local = _groq_router(failure)
-    with pytest.raises(AIRoutingExecutionError):
+    with pytest.raises(AIRoutingExecutionError) as caught:
         asyncio.run(router.execute(_request()))
     assert not local.requests
+    assert caught.value.provenance is not None
+    assert (
+        caught.value.provenance.fallback_decision
+        is AIFallbackDecision.NOT_AUTHORIZED
+    )
 
 
 def test_allowed_provider_can_select_local_without_losing_reasoning_preference() -> None:
@@ -434,3 +442,43 @@ def test_groq_context_overflow_does_not_fallback_to_smaller_local_model() -> Non
         asyncio.run(router.execute(_request()))
     assert caught.value.attempts[0].failure_reason is AIFailureReason.CONTEXT_TOO_LARGE
     assert not local.requests
+
+
+def test_terminal_route_error_preserves_full_ordered_failure_provenance() -> None:
+    router, _, _ = _groq_router(
+        AIProviderTimeoutError("timeout"),
+        AIProviderUnavailableError("unavailable"),
+    )
+    correlation_id = uuid4()
+    request = _request(
+        prompt=PromptReference(
+            prompt_id="claim-extraction",
+            version="v1",
+            checksum="sha256:test",
+        ),
+        input_artifact_ids=("article:1",),
+        input_hash="sha256:input",
+        correlation_id=correlation_id,
+    )
+
+    with pytest.raises(AIRoutingExecutionError) as caught:
+        asyncio.run(router.execute(request))
+
+    provenance = caught.value.provenance
+    assert provenance is not None
+    assert provenance.task_type is AITaskType.CLAIM_EXTRACTION
+    assert provenance.prompt_id == "claim-extraction"
+    assert provenance.prompt_version == "v1"
+    assert provenance.prompt_checksum == "sha256:test"
+    assert provenance.input_artifact_ids == ("article:1",)
+    assert provenance.input_hash == "sha256:input"
+    assert provenance.correlation_id == correlation_id
+    assert [
+        (attempt.provider_id, attempt.model, attempt.failure_reason)
+        for attempt in provenance.attempts
+    ] == [
+        ("groq", "openai/gpt-oss-120b", AIFailureReason.TIMEOUT),
+        ("local-llama", "local-news-ai", AIFailureReason.UNAVAILABLE),
+    ]
+    assert provenance.final_failure_reason is AIFailureReason.UNAVAILABLE
+    assert provenance.fallback_decision is AIFallbackDecision.EXHAUSTED

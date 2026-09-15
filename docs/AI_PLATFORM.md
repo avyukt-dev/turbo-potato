@@ -222,6 +222,44 @@ timestamp
 This allows the system to reconstruct which model/prompt/reasoning policy produced a Fact Sheet,
 content variant, or quality assessment.
 
+When an AI route exhausts or is denied fallback, the worker reliability records also preserve a
+sanitized `ai_failure_provenance` object on the processing attempt and, when terminal, the dead
+letter. The object contains the original task/prompt/input identity, every ordered provider/model
+attempt, the final typed failure reason, and the fallback decision:
+
+```json
+{
+  "task_type": "CLAIM_EXTRACTION",
+  "prompt_id": "claim-extraction",
+  "prompt_version": "v1",
+  "prompt_checksum": "sha256:...",
+  "input_artifact_ids": ["article:..."],
+  "input_hash": "sha256:...",
+  "correlation_id": "uuid",
+  "attempts": [
+    {
+      "provider_id": "local-a",
+      "model": "local-model",
+      "outcome": "FAILED",
+      "failure_reason": "TIMEOUT",
+      "reasoning_effort": "MEDIUM"
+    },
+    {
+      "provider_id": "groq",
+      "model": "openai/gpt-oss-120b",
+      "outcome": "FAILED",
+      "failure_reason": "UNAVAILABLE"
+    }
+  ],
+  "final_failure_reason": "UNAVAILABLE",
+  "fallback_decision": "EXHAUSTED"
+}
+```
+
+Raw system prompts, raw AI inputs, request metadata, provider exception text, and provider response
+bodies are not persisted in this diagnostic object. The processing-attempt and dead-letter
+timestamps remain the authoritative failure timestamps.
+
 ---
 
 # 9. Model Registry

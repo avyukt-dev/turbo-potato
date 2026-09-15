@@ -54,6 +54,7 @@ from .reasoning import (
 )
 from .registry import AIProviderNotRegisteredError, AIProviderRegistry
 from .routing import (
+    AIFallbackDecision,
     AIFailureReason,
     AIPolicyConfig,
     AIPolicyConfigLoader,
@@ -63,6 +64,7 @@ from .routing import (
     AIRouter,
     AIRoutingError,
     AIRoutingExecutionError,
+    AIRoutingFailureProvenance,
     AIRoutingMode,
     AIRoutingPolicyError,
     AIStageConfig,
@@ -76,6 +78,7 @@ from .routing import (
 __all__ = [
     "AICapabilityError",
     "AIContextTooLargeError",
+    "AIFallbackDecision",
     "AIFailureReason",
     "AIPolicyConfig",
     "AIPolicyConfigLoader",
@@ -104,6 +107,7 @@ __all__ = [
     "AIRouter",
     "AIRoutingError",
     "AIRoutingExecutionError",
+    "AIRoutingFailureProvenance",
     "AIRoutingMode",
     "AIRoutingPolicyError",
     "AIStageConfig",

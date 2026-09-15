@@ -613,6 +613,14 @@ Do not store provider credentials here.
 
 `ai_runs` should identify model/provider/task/prompt version/input/output references/latency/status.
 
+Operational AI route failures are preserved on the existing event reliability records rather than
+inventing a single model for a failed multi-provider invocation. Both
+`event_processing_attempts.ai_failure_provenance` and
+`event_dead_letters.ai_failure_provenance` are nullable JSONB fields containing the sanitized
+task/input identity, complete ordered route attempts, final failure reason, and fallback decision.
+They are added by migration `0018_ai_failure_provenance` with no default and no historical backfill;
+successful `ai_runs` persistence is unchanged.
+
 ---
 
 # 21. Fact Checks
