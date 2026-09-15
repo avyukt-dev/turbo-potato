@@ -400,10 +400,7 @@ def test_groq_policy_and_unknown_failures_do_not_fallback(failure: Exception) ->
         asyncio.run(router.execute(_request()))
     assert not local.requests
     assert caught.value.provenance is not None
-    assert (
-        caught.value.provenance.fallback_decision
-        is AIFallbackDecision.NOT_AUTHORIZED
-    )
+    assert caught.value.provenance.fallback_decision is AIFallbackDecision.NOT_AUTHORIZED
 
 
 def test_allowed_provider_can_select_local_without_losing_reasoning_preference() -> None:
