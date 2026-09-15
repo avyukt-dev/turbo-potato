@@ -256,9 +256,10 @@ def test_content_projection_preserves_factual_contract_and_removes_operational_b
     assert first["label"] == "TRUE"
     assert first["semantics"] == snapshot["editorial_brief"]["claims"][0]["semantics"]
     assert first["values"] == snapshot["editorial_brief"]["claims"][0]["values"]
-    assert projected["editorial_brief"]["unresolved_questions"] == snapshot["editorial_brief"][
-        "unresolved_questions"
-    ]
+    assert (
+        projected["editorial_brief"]["unresolved_questions"]
+        == snapshot["editorial_brief"]["unresolved_questions"]
+    )
     projected_evidence = projected["immutable_fact_sheet"]["evidence"][0]
     assert projected_evidence["excerpt"] == "Evidence excerpt 0."
     assert projected_evidence["graph_relations"][0]["policy_version"] == "evidence-graph-policy-v1"
