@@ -278,9 +278,7 @@ class ReliableMessageProcessor:
         stale_result = await self.process(stale_messages, handler)
         seen = {message.message_id for message in stale_messages}
         due_ids = self._due_retry_message_ids(now=self.clock(), exclude_message_ids=seen)
-        retry_messages = (
-            await self.consumer.claim_owned_pending(due_ids) if due_ids else []
-        )
+        retry_messages = await self.consumer.claim_owned_pending(due_ids) if due_ids else []
         retry_result = await self.process(retry_messages, handler)
         return next_start, _merge_batch_results(stale_result, retry_result)
 
