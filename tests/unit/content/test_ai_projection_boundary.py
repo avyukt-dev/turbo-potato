@@ -21,8 +21,8 @@ from news_ai_content import (
     ContentTarget,
     EditorialBrief,
 )
-from news_ai_evidence import FactSheetArtifact
 from news_ai_events import EventEnvelope, EventType
+from news_ai_evidence import FactSheetArtifact
 from news_ai_quality.contracts import QualityAssessmentOutput
 from news_ai_quality.semantic import SemanticValidationReport
 from news_ai_quality.service import (
