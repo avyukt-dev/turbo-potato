@@ -50,9 +50,7 @@ class FakeConsumer:
         ids = tuple(message_ids)
         self.owned_claims.append(ids)
         return [
-            self.owned_pending[message_id]
-            for message_id in ids
-            if message_id in self.owned_pending
+            self.owned_pending[message_id] for message_id in ids if message_id in self.owned_pending
         ]
 
     async def ack(self, message: StreamMessage) -> None:
