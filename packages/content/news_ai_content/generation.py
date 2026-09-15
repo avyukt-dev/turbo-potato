@@ -50,6 +50,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .ai_projection import (
+    AI_INPUT_PROJECTION_VERSION,
+    project_content_generation_input,
+)
 from .brief import build_editorial_brief
 from .certainty import (
     CERTAINTY_POLICY_VERSION,
@@ -315,10 +319,8 @@ class ContentGenerationService:
             parsed = output
 
         reasoning = editorial_reasoning_decision(context.brief)
-        request = AIRequest(
-            task_type=AITaskType.CONTENT_GENERATION,
-            system_prompt=self.prompt.system_prompt,
-            input={
+        provider_input = project_content_generation_input(
+            {
                 "immutable_fact_sheet": context.fact_sheet.model_dump(mode="json"),
                 "editorial_brief": context.brief.model_dump(mode="json"),
                 "generation_language": context.generation_language,
@@ -330,7 +332,12 @@ class ContentGenerationService:
                     )
                     for claim in context.brief.claims
                 },
-            },
+            }
+        )
+        request = AIRequest(
+            task_type=AITaskType.CONTENT_GENERATION,
+            system_prompt=self.prompt.system_prompt,
+            input=provider_input,
             prompt=PromptReference(
                 prompt_id=self.prompt.prompt_id,
                 version=self.prompt.version,
@@ -347,6 +354,7 @@ class ContentGenerationService:
                 f"fact_sheet:{context.fact_sheet.fact_sheet_id}:v{context.fact_sheet.version}",
             ),
             input_hash=context.semantic_key,
+            metadata={"input_projection_version": AI_INPUT_PROJECTION_VERSION},
         )
         try:
             routed = await self.router.execute(request, response_validator=validate)
