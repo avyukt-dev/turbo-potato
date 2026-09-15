@@ -312,9 +312,7 @@ class AIRoutingExecutionError(AIRoutingError):
     ) -> None:
         self.attempts = attempts
         self.provenance = provenance
-        self.fallback_decision = (
-            provenance.fallback_decision if provenance else None
-        )
+        self.fallback_decision = provenance.fallback_decision if provenance else None
         last = attempts[-1] if attempts else None
         reason = last.failure_reason.value if last and last.failure_reason else "UNKNOWN"
         super().__init__(f"AI routing execution failed: {reason}")
