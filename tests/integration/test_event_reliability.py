@@ -67,7 +67,7 @@ def _routing_failure() -> AIRoutingExecutionError:
         input_artifact_ids=("article:1",),
         input_hash="sha256:input",
         correlation_id=uuid4(),
-        response_format="STRUCTURED",
+        response_format="structured",
     )
     return AIRoutingExecutionError.from_request(
         request,
