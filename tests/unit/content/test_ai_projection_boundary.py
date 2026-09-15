@@ -436,9 +436,7 @@ def test_quality_service_projects_exact_used_claim_and_source_after_validation()
     assert router.request.input_hash == variant.semantic_key
     assert router.request.metadata == {"input_projection_version": AI_INPUT_PROJECTION_VERSION}
     request_sheet = router.request.input["immutable_fact_sheet"]
-    assert {item["claim_id"] for item in request_sheet["claims"]} == {
-        str(selected_claim.claim_id)
-    }
+    assert {item["claim_id"] for item in request_sheet["claims"]} == {str(selected_claim.claim_id)}
     assert {item["source_id"] for item in request_sheet["sources"]} == {
         str(selected_source.source_id)
     }
