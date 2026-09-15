@@ -207,7 +207,9 @@ def _project_brief(brief: dict[str, Any], *, selected_claim_ids: frozenset[str])
         in selected_claim_ids
     ]
     if {str(item["claim_id"]) for item in claims} != selected_claim_ids:
-        raise AIInputProjectionError("projected Editorial Brief claims do not cover selected claims")
+        raise AIInputProjectionError(
+            "projected Editorial Brief claims do not cover selected claims"
+        )
 
     projected = _pick_required(
         brief,
