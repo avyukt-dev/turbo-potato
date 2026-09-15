@@ -20,9 +20,10 @@ from news_ai_database import (
     EventFailureClass,
     EventProcessingAttempt,
     Job,
+    ProcessedEvent,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from .consumer import RedisStreamConsumer, StreamMessage
@@ -262,6 +263,78 @@ class ReliableMessageProcessor:
             failed_message_ids=tuple(failed_ids),
         )
 
+    async def recover(
+        self,
+        handler: Handler,
+        *,
+        min_idle_ms: int,
+        start_id: str = "0-0",
+    ) -> tuple[str, WorkerBatchResult]:
+        """Recover crashed work plus durably scheduled retries without stealing peers' work."""
+        next_start, stale_messages = await self.consumer.claim_stale(
+            min_idle_ms=min_idle_ms,
+            start_id=start_id,
+        )
+        stale_result = await self.process(stale_messages, handler)
+        seen = {message.message_id for message in stale_messages}
+        due_ids = self._due_retry_message_ids(now=self.clock(), exclude_message_ids=seen)
+        retry_messages = (
+            await self.consumer.claim_owned_pending(due_ids) if due_ids else []
+        )
+        retry_result = await self.process(retry_messages, handler)
+        return next_start, _merge_batch_results(stale_result, retry_result)
+
+    def _due_retry_message_ids(
+        self,
+        *,
+        now: datetime,
+        exclude_message_ids: set[str] | None = None,
+    ) -> tuple[str, ...]:
+        latest = (
+            select(
+                EventProcessingAttempt.delivery_key.label("delivery_key"),
+                func.max(EventProcessingAttempt.attempt_number).label("attempt_number"),
+            )
+            .where(
+                EventProcessingAttempt.consumer_group == self.consumer_group,
+                EventProcessingAttempt.source_stream == self.consumer.stream,
+            )
+            .group_by(EventProcessingAttempt.delivery_key)
+            .subquery()
+        )
+        statement = (
+            select(EventProcessingAttempt.message_id)
+            .join(
+                latest,
+                (EventProcessingAttempt.delivery_key == latest.c.delivery_key)
+                & (EventProcessingAttempt.attempt_number == latest.c.attempt_number),
+            )
+            .where(
+                EventProcessingAttempt.consumer_group == self.consumer_group,
+                EventProcessingAttempt.source_stream == self.consumer.stream,
+                EventProcessingAttempt.status == EventAttemptStatus.RETRY_PENDING,
+                EventProcessingAttempt.next_retry_at.is_not(None),
+                EventProcessingAttempt.next_retry_at <= _as_utc(now),
+                EventProcessingAttempt.event_id.is_not(None),
+                ~exists().where(
+                    ProcessedEvent.event_id == EventProcessingAttempt.event_id,
+                    ProcessedEvent.consumer_group == self.consumer_group,
+                ),
+            )
+            .order_by(
+                EventProcessingAttempt.next_retry_at.asc(),
+                EventProcessingAttempt.created_at.asc(),
+                EventProcessingAttempt.id.asc(),
+            )
+            .limit(max(1, int(getattr(self.consumer, "count", 10))))
+        )
+        if exclude_message_ids:
+            statement = statement.where(
+                EventProcessingAttempt.message_id.notin_(tuple(exclude_message_ids))
+            )
+        with self.session_factory() as session:
+            return tuple(session.scalars(statement))
+
     def _preflight(self, message: StreamMessage, *, now: datetime) -> str:
         delivery_key = _delivery_key(message, self.consumer_group)
         with self.session_factory() as session:
@@ -402,6 +475,22 @@ class ReliableMessageProcessor:
             ),
             attempt_number,
         )
+
+
+def _merge_batch_results(*results: WorkerBatchResult) -> WorkerBatchResult:
+    return WorkerBatchResult(
+        received=sum(result.received for result in results),
+        processed=sum(result.processed for result in results),
+        duplicates=sum(result.duplicates for result in results),
+        ignored=sum(result.ignored for result in results),
+        stale=sum(result.stale for result in results),
+        retrying=sum(result.retrying for result in results),
+        dead_lettered=sum(result.dead_lettered for result in results),
+        failed=sum(result.failed for result in results),
+        failed_message_ids=tuple(
+            message_id for result in results for message_id in result.failed_message_ids
+        ),
+    )
 
 
 def _delivery_key(message: StreamMessage, consumer_group: str) -> str:
