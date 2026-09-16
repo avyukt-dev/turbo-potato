@@ -19,6 +19,14 @@ def _ci_skip_policy_violations(
     return unexpected, missing
 
 
+def _record_skipped_report(
+    report: pytest.CollectReport | pytest.TestReport,
+    observed: set[str],
+) -> None:
+    if report.skipped and not getattr(report, "wasxfail", None):
+        observed.add(report.nodeid)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("news-ai-ci")
     group.addoption(
@@ -35,9 +43,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     _OBSERVED_SKIPS.clear()
 
 
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    _record_skipped_report(report, _OBSERVED_SKIPS)
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    if report.skipped and not getattr(report, "wasxfail", None):
-        _OBSERVED_SKIPS.add(report.nodeid)
+    _record_skipped_report(report, _OBSERVED_SKIPS)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

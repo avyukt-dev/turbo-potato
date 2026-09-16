@@ -43,6 +43,11 @@ def test_setup_covers_common_host_families() -> None:
         assert capability in script
 
 
+def test_setup_only_records_sysv_autostart_when_missing() -> None:
+    script = (ROOT / "setup.sh").read_text(encoding="utf-8")
+    assert "compgen -G '/etc/rc?.d/S??docker'" in script
+
+
 def test_clean_is_sourceable_from_posix_shells() -> None:
     script = (ROOT / "clean.sh").read_text(encoding="utf-8")
     assert script.startswith("#!/bin/sh\n")

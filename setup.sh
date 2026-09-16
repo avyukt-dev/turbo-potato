@@ -474,9 +474,11 @@ configure_linux_docker_service() {
     run_as_root chkconfig docker on
     run_as_root service docker start
   elif have update-rc.d && have service; then
-    STATE_DOCKER_AUTOSTART_BY_SETUP=1
-    STATE_DOCKER_AUTOSTART_KIND=sysv
-    save_state
+    if ! compgen -G '/etc/rc?.d/S??docker' >/dev/null; then
+      STATE_DOCKER_AUTOSTART_BY_SETUP=1
+      STATE_DOCKER_AUTOSTART_KIND=sysv
+      save_state
+    fi
     run_as_root update-rc.d docker defaults
     run_as_root service docker start
   elif have service; then
