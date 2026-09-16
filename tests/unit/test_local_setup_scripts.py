@@ -19,7 +19,7 @@ def test_setup_contract_is_restartable_and_non_live() -> None:
     assert "-p 127.0.0.1::5432" in script
     assert "-p 127.0.0.1::6379" in script
     assert "unset NEWS_AI_PUBLISHING_PAUSED" in script
-    assert 'printf \'export NEWS_AI_RUN_LIVE_GROQ=%q\\n\' "0"' in script
+    assert "printf 'export NEWS_AI_RUN_LIVE_GROQ=%q\\n' \"0\"" in script
     assert "unset GROQ_API_KEY" in script
 
 

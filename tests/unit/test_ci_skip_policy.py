@@ -4,9 +4,7 @@ import conftest
 
 
 def test_ci_skip_policy_accepts_exact_live_groq_skip() -> None:
-    unexpected, missing = conftest._ci_skip_policy_violations(
-        set(conftest._ALLOWED_CI_SKIPS)
-    )
+    unexpected, missing = conftest._ci_skip_policy_violations(set(conftest._ALLOWED_CI_SKIPS))
     assert unexpected == frozenset()
     assert missing == frozenset()
 
