@@ -51,6 +51,7 @@ jobs:
       NEWS_AI_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/news_ai
       NEWS_AI_REDIS_URL: redis://127.0.0.1:6379/0
       NEWS_AI_READINESS_TIMEOUT_SECONDS: "5"
+      NEWS_AI_RUN_LIVE_GROQ: "0"
 
     steps:
       - name: Checkout
@@ -81,7 +82,7 @@ jobs:
         run: alembic check
 
       - name: Test
-        run: pytest
+        run: pytest --enforce-ci-skip-policy
 
       - name: Downgrade database
         run: alembic downgrade base
