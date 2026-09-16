@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from news_ai_ai import (
+    AIFallbackDecision,
+    AIRequest,
+    AIRouteAttempt,
+    AIRoutingExecutionError,
+    PromptReference,
+)
 from news_ai_database import (
     Base,
     EventAttemptStatus,
@@ -22,6 +30,7 @@ from news_ai_events import (
     ReliableMessageProcessor,
     StaleWorkError,
     StreamMessage,
+    TransientEventError,
     WorkerRetryPolicy,
     load_worker_retry_policy,
 )
@@ -94,6 +103,42 @@ def _message(*, message_id: str = "1-0") -> StreamMessage:
         },
     )
     return StreamMessage("news:articles", message_id, event)
+
+
+def _routing_failure() -> AIRoutingExecutionError:
+    request = AIRequest(
+        task_type="CLAIM_EXTRACTION",
+        system_prompt="raw-system-prompt-must-not-be-persisted",
+        input={"raw": "raw-input-must-not-be-persisted"},
+        prompt=PromptReference(
+            prompt_id="claim-extraction",
+            version="v1",
+            checksum="sha256:prompt",
+        ),
+        input_artifact_ids=("article:1",),
+        input_hash="sha256:input",
+        correlation_id=uuid4(),
+        response_format="structured",
+    )
+    attempts = (
+        AIRouteAttempt(
+            provider_id="local-a",
+            model="local-model",
+            outcome="FAILED",
+            failure_reason="TIMEOUT",
+        ),
+        AIRouteAttempt(
+            provider_id="groq",
+            model="openai/gpt-oss-120b",
+            outcome="FAILED",
+            failure_reason="UNAVAILABLE",
+        ),
+    )
+    return AIRoutingExecutionError.from_request(
+        request,
+        attempts,
+        AIFallbackDecision.EXHAUSTED,
+    )
 
 
 def _runner(factory, consumer, clock, *, delays=(10, 20)):
@@ -198,6 +243,39 @@ def test_transient_failure_remains_pending_below_budget_then_dead_letters_once()
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 1
         assert session.scalar(select(func.count()).select_from(EventProcessingAttempt)) == 3
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_ai_failure_provenance_survives_retry_and_dead_letter(wrapped: bool) -> None:
+    factory = _factory()
+    consumer = FakeConsumer()
+    clock = MutableClock()
+    runner = _runner(factory, consumer, clock, delays=(1,))
+    message = _message()
+    route_error = _routing_failure()
+
+    def fail(_event):
+        if wrapped:
+            raise TransientEventError("generic wrapper") from route_error
+        raise route_error
+
+    first = asyncio.run(runner.process([message], fail))
+    assert first.retrying == 1
+    with factory() as session:
+        attempt = session.scalar(select(EventProcessingAttempt))
+        assert attempt is not None
+        assert attempt.ai_failure_provenance == route_error.failure_provenance_payload
+
+    clock.value += timedelta(seconds=2)
+    second = asyncio.run(runner.process([message], fail))
+    assert second.dead_lettered == 1
+    with factory() as session:
+        dead = session.scalar(select(EventDeadLetter))
+        assert dead is not None
+        assert dead.ai_failure_provenance == route_error.failure_provenance_payload
+        serialized = json.dumps(dead.ai_failure_provenance)
+        assert "raw-system-prompt-must-not-be-persisted" not in serialized
+        assert "raw-input-must-not-be-persisted" not in serialized
 
 
 def test_recovery_does_not_redeliver_before_durable_retry_time() -> None:

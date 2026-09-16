@@ -925,6 +925,10 @@ class EventProcessingAttempt(UUIDPrimaryKeyMixin, Base):
     )
     error_code: Mapped[str] = mapped_column(String(128), nullable=False)
     error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    ai_failure_provenance: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON_TYPE,
+        nullable=True,
+    )
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -962,6 +966,10 @@ class EventDeadLetter(UUIDPrimaryKeyMixin, Base):
     )
     error_code: Mapped[str] = mapped_column(String(128), nullable=False)
     error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    ai_failure_provenance: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON_TYPE,
+        nullable=True,
+    )
     raw_event: Mapped[str | None] = mapped_column(Text)
     raw_event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     event_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)

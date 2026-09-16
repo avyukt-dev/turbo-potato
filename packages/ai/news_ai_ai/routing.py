@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
+from uuid import UUID
 
 from news_ai_common.config import ConfigError, ConfigLoader
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -232,6 +234,61 @@ class AIRouteAttempt(BaseModel):
         return self
 
 
+class AIFallbackDecision(StrEnum):
+    EXHAUSTED = "EXHAUSTED"
+    NOT_AUTHORIZED = "NOT_AUTHORIZED"
+
+
+class AIRoutingFailureProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_type: AITaskType
+    prompt_id: str | None = None
+    prompt_version: str | None = None
+    prompt_checksum: str | None = None
+    input_artifact_ids: tuple[str, ...] = ()
+    input_hash: str | None = None
+    correlation_id: UUID | None = None
+    attempts: tuple[AIRouteAttempt, ...] = Field(min_length=1)
+    final_failure_reason: AIFailureReason
+    fallback_decision: AIFallbackDecision
+
+    @model_validator(mode="after")
+    def validate_terminal_failure(self) -> AIRoutingFailureProvenance:
+        last = self.attempts[-1]
+        if last.outcome is not AIRouteAttemptOutcome.FAILED or last.failure_reason is None:
+            raise ValueError("AI routing failure provenance must end with a failed attempt")
+        if last.failure_reason is not self.final_failure_reason:
+            raise ValueError("final failure reason must match the last route attempt")
+        return self
+
+    @classmethod
+    def from_request(
+        cls,
+        request: AIRequest,
+        attempts: tuple[AIRouteAttempt, ...],
+        fallback_decision: AIFallbackDecision,
+    ) -> AIRoutingFailureProvenance:
+        if not attempts:
+            raise ValueError("AI routing failure provenance requires at least one attempt")
+        prompt = request.prompt
+        final_failure_reason = attempts[-1].failure_reason
+        if final_failure_reason is None:
+            raise ValueError("AI routing failure provenance requires a failed final attempt")
+        return cls(
+            task_type=request.task_type,
+            prompt_id=prompt.prompt_id if prompt else None,
+            prompt_version=prompt.version if prompt else None,
+            prompt_checksum=prompt.checksum if prompt else None,
+            input_artifact_ids=request.input_artifact_ids,
+            input_hash=request.input_hash,
+            correlation_id=request.correlation_id,
+            attempts=attempts,
+            final_failure_reason=final_failure_reason,
+            fallback_decision=fallback_decision,
+        )
+
+
 class AIRoutedResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     response: AIResponse
@@ -247,11 +304,38 @@ class AIRoutingPolicyError(AIRoutingError):
 
 
 class AIRoutingExecutionError(AIRoutingError):
-    def __init__(self, attempts: tuple[AIRouteAttempt, ...]) -> None:
+    def __init__(
+        self,
+        attempts: tuple[AIRouteAttempt, ...],
+        *,
+        provenance: AIRoutingFailureProvenance | None = None,
+    ) -> None:
         self.attempts = attempts
+        self.provenance = provenance
+        self.fallback_decision = provenance.fallback_decision if provenance else None
         last = attempts[-1] if attempts else None
         reason = last.failure_reason.value if last and last.failure_reason else "UNKNOWN"
         super().__init__(f"AI routing execution failed: {reason}")
+
+    @classmethod
+    def from_request(
+        cls,
+        request: AIRequest,
+        attempts: tuple[AIRouteAttempt, ...],
+        fallback_decision: AIFallbackDecision,
+    ) -> AIRoutingExecutionError:
+        provenance = AIRoutingFailureProvenance.from_request(
+            request,
+            attempts,
+            fallback_decision,
+        )
+        return cls(attempts, provenance=provenance)
+
+    @property
+    def failure_provenance_payload(self) -> dict[str, Any] | None:
+        if self.provenance is None:
+            return None
+        return self.provenance.model_dump(mode="json")
 
 
 def _validated_request_update(request: AIRequest, **updates: object) -> AIRequest:
@@ -338,13 +422,26 @@ class AIRouter:
                             attempt_request = self._attempt_request(route_request, stage, selection)
                             continue
                     if index + 1 >= len(candidates) or reason not in stage.fallback_on:
-                        raise AIRoutingExecutionError(tuple(attempts)) from exc
+                        fallback_decision = (
+                            AIFallbackDecision.NOT_AUTHORIZED
+                            if reason not in stage.fallback_on
+                            else AIFallbackDecision.EXHAUSTED
+                        )
+                        raise AIRoutingExecutionError.from_request(
+                            request,
+                            tuple(attempts),
+                            fallback_decision,
+                        ) from exc
                     break
 
                 attempts.append(self._attempt_record(selection, attempt_request, None))
                 return AIRoutedResponse(response=response, attempts=tuple(attempts))
 
-        raise AIRoutingExecutionError(tuple(attempts))
+        raise AIRoutingExecutionError.from_request(
+            request,
+            tuple(attempts),
+            AIFallbackDecision.EXHAUSTED,
+        )
 
     @staticmethod
     def _attempt_record(

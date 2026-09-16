@@ -6,6 +6,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from news_ai_ai import (
+    AIFallbackDecision,
+    AIRequest,
+    AIRouteAttempt,
+    AIRoutingExecutionError,
+    PromptReference,
+)
 from news_ai_database import EventDeadLetter, EventProcessingAttempt, ProcessedEvent
 from news_ai_events import (
     EventEnvelope,
@@ -44,6 +51,41 @@ def _event() -> EventEnvelope:
             "language": "en",
             "title": "Reliability integration",
         },
+    )
+
+
+def _routing_failure() -> AIRoutingExecutionError:
+    request = AIRequest(
+        task_type="CLAIM_EXTRACTION",
+        system_prompt="raw-system-prompt",
+        input={"raw": "raw-input"},
+        prompt=PromptReference(
+            prompt_id="claim-extraction",
+            version="v1",
+            checksum="sha256:prompt",
+        ),
+        input_artifact_ids=("article:1",),
+        input_hash="sha256:input",
+        correlation_id=uuid4(),
+        response_format="structured",
+    )
+    return AIRoutingExecutionError.from_request(
+        request,
+        (
+            AIRouteAttempt(
+                provider_id="local-a",
+                model="local-model",
+                outcome="FAILED",
+                failure_reason="TIMEOUT",
+            ),
+            AIRouteAttempt(
+                provider_id="groq",
+                model="openai/gpt-oss-120b",
+                outcome="FAILED",
+                failure_reason="UNAVAILABLE",
+            ),
+        ),
+        AIFallbackDecision.EXHAUSTED,
     )
 
 
@@ -87,9 +129,10 @@ async def _scenario(database_url: str, redis_url: str) -> None:
             retry_policy=WorkerRetryPolicy(delays_seconds=(1,), jitter_ratio=0),
             clock=lambda: datetime(2026, 9, 11, tzinfo=UTC),
         )
+        route_error = _routing_failure()
 
         def fail(_event):
-            raise RuntimeError("transient integration failure")
+            raise route_error
 
         result = await runner.process(messages, fail)
         assert result.retrying == 1
@@ -113,6 +156,10 @@ async def _scenario(database_url: str, redis_url: str) -> None:
             assert dead.message_id == messages[0].message_id
             assert dead.aggregate_id == dead_event.aggregate_id
             assert dead.aggregate_type == "article"
+            assert dead.ai_failure_provenance is not None
+            assert len(dead.ai_failure_provenance["attempts"]) == 2
+            assert dead.ai_failure_provenance["final_failure_reason"] == "UNAVAILABLE"
+            assert dead.ai_failure_provenance["fallback_decision"] == "EXHAUSTED"
 
         await client.xadd(stream, {"event": pending_event.model_dump_json()})
         abandoned = await first.read()
