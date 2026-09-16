@@ -6,11 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_setup_and_clean_scripts_are_valid_bash() -> None:
-    subprocess.run(
-        ["bash", "-n", str(ROOT / "setup.sh"), str(ROOT / "clean.sh")],
-        check=True,
-    )
+def test_setup_is_valid_bash_and_clean_is_valid_posix_sh() -> None:
+    subprocess.run(["bash", "-n", str(ROOT / "setup.sh")], check=True)
+    subprocess.run(["sh", "-n", str(ROOT / "clean.sh")], check=True)
 
 
 def test_setup_contract_is_restartable_and_non_live() -> None:
@@ -45,9 +43,17 @@ def test_setup_covers_common_host_families() -> None:
         assert capability in script
 
 
+def test_clean_is_sourceable_from_posix_shells() -> None:
+    script = (ROOT / "clean.sh").read_text(encoding="utf-8")
+    assert script.startswith("#!/bin/sh\n")
+    assert "BASH_SOURCE" not in script
+    assert "[[" not in script
+    assert "DOCKER_CMD=(" not in script
+
+
 def test_clean_removes_local_resources_and_test_environment() -> None:
     script = (ROOT / "clean.sh").read_text(encoding="utf-8")
-    assert 'clean_docker rm -fv "$name"' in script
+    assert 'clean_docker rm -fv "$CLEAN_CONTAINER_NAME"' in script
     assert 'rm -rf "$VENV_DIR"' in script
     assert 'rm -f "$ENV_FILE"' in script
     for variable in (

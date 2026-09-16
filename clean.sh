@@ -1,46 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 # News AI Social Media Manager - remove the local test setup created by setup.sh.
 #
-# Run with:
-#   source ./clean.sh
+# Run from the repository root with:
+#   . ./clean.sh
 #
-# Sourcing is recommended because only a sourced script can unset variables in
-# the current shell. Executing ./clean.sh still removes files/containers/host
-# setup, but cannot change its parent shell's environment.
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  NEWS_AI_CLEAN_SOURCED=0
-else
-  NEWS_AI_CLEAN_SOURCED=1
-fi
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$SCRIPT_DIR"
-VENV_DIR="$REPO_ROOT/.venv"
-ENV_FILE="$REPO_ROOT/.env.test.local"
-STATE_FILE="$REPO_ROOT/.env.setup.state"
-
-POSTGRES_CONTAINER="${NEWS_AI_TEST_POSTGRES_CONTAINER:-news-ai-test-postgres}"
-REDIS_CONTAINER="${NEWS_AI_TEST_REDIS_CONTAINER:-news-ai-test-redis}"
-POSTGRES_IMAGE="${NEWS_AI_TEST_POSTGRES_IMAGE:-postgres:16-alpine}"
-REDIS_IMAGE="${NEWS_AI_TEST_REDIS_IMAGE:-redis:7-alpine}"
-
-STATE_DOCKER_INSTALLED_BY_SETUP=0
-STATE_DOCKER_INSTALL_METHOD=none
-STATE_DOCKER_PACKAGE=none
-STATE_DOCKER_AUTOSTART_BY_SETUP=0
-STATE_DOCKER_STARTED_BY_SETUP=0
-STATE_DOCKER_AUTOSTART_KIND=none
-STATE_DESKTOP_AUTOSTART_PATH=""
-STATE_POSTGRES_IMAGE_PRESENT_BEFORE=unknown
-STATE_REDIS_IMAGE_PRESENT_BEFORE=unknown
-STATE_VENV_SUPPORT_INSTALLED_BY_SETUP=0
-STATE_VENV_SUPPORT_METHOD=none
-STATE_VENV_SUPPORT_PACKAGE=none
-
-DOCKER_CMD=()
-PLATFORM=""
+# POSIX sh compatibility is intentional so this can be sourced from BusyBox ash,
+# dash, Bash, Zsh sh-mode, Git Bash/MSYS2/Cygwin, and macOS /bin/sh.
+# Sourcing lets this script unset the test variables in the current shell.
 
 clean_log() {
   printf '\n==> %s\n' "$*"
@@ -55,7 +22,7 @@ clean_have() {
 }
 
 clean_run_as_root() {
-  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  if [ "$(id -u 2>/dev/null || printf '1')" -eq 0 ]; then
     "$@"
   elif clean_have sudo; then
     sudo "$@"
@@ -65,10 +32,29 @@ clean_run_as_root() {
   fi
 }
 
+clean_resolve_repo_root() {
+  if [ -f "./pyproject.toml" ] && [ -f "./setup.sh" ]; then
+    REPO_ROOT="$(pwd)"
+    return 0
+  fi
+
+  case "$0" in
+    */*)
+      CLEAN_SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)"
+      if [ -n "$CLEAN_SCRIPT_DIR" ] && [ -f "$CLEAN_SCRIPT_DIR/pyproject.toml" ]; then
+        REPO_ROOT="$CLEAN_SCRIPT_DIR"
+        return 0
+      fi
+      ;;
+  esac
+
+  clean_warn "Run clean.sh from the repository root. For current-shell environment cleanup use: . ./clean.sh"
+  return 1
+}
+
 clean_detect_platform() {
-  local uname_s
-  uname_s="$(uname -s 2>/dev/null || true)"
-  case "$uname_s" in
+  CLEAN_UNAME="$(uname -s 2>/dev/null || true)"
+  case "$CLEAN_UNAME" in
     Linux) PLATFORM=linux ;;
     Darwin) PLATFORM=macos ;;
     MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
@@ -77,16 +63,16 @@ clean_detect_platform() {
 }
 
 clean_load_state() {
-  if [[ -f "$STATE_FILE" ]]; then
+  if [ -f "$STATE_FILE" ]; then
     # shellcheck disable=SC1090
-    source "$STATE_FILE"
+    . "$STATE_FILE"
   fi
 }
 
 clean_windows_program_files_unix() {
-  local value="${PROGRAMFILES:-C:\\Program Files}"
+  CLEAN_PROGRAM_FILES="${PROGRAMFILES:-C:\\Program Files}"
   if clean_have cygpath; then
-    cygpath -u "$value"
+    cygpath -u "$CLEAN_PROGRAM_FILES"
   else
     printf '%s\n' "/c/Program Files"
   fi
@@ -109,70 +95,85 @@ clean_try_start_docker() {
       open -a Docker >/dev/null 2>&1 || true
       ;;
     windows)
-      local pf app
-      pf="$(clean_windows_program_files_unix)"
-      app="$pf/Docker/Docker/Docker Desktop.exe"
-      [[ -x "$app" ]] && "$app" >/dev/null 2>&1 &
+      CLEAN_PF="$(clean_windows_program_files_unix)"
+      CLEAN_APP="$CLEAN_PF/Docker/Docker/Docker Desktop.exe"
+      if [ -x "$CLEAN_APP" ]; then
+        "$CLEAN_APP" >/dev/null 2>&1 &
+      fi
       ;;
   esac
 }
 
 clean_select_docker() {
-  local attempt direct_cli=""
-  if [[ "$PLATFORM" == "macos" ]] && ! clean_have docker \
-    && [[ -x /Applications/Docker.app/Contents/Resources/bin/docker ]]; then
-    direct_cli="/Applications/Docker.app/Contents/Resources/bin/docker"
-  elif [[ "$PLATFORM" == "windows" ]] && ! clean_have docker && ! clean_have docker.exe; then
-    local pf
-    pf="$(clean_windows_program_files_unix)"
-    if [[ -x "$pf/Docker/Docker/resources/bin/docker.exe" ]]; then
-      direct_cli="$pf/Docker/Docker/resources/bin/docker.exe"
+  DOCKER_MODE=
+  DOCKER_BIN=
+
+  if [ "$PLATFORM" = "macos" ] && ! clean_have docker \
+    && [ -x /Applications/Docker.app/Contents/Resources/bin/docker ]; then
+    CLEAN_DIRECT_CLI="/Applications/Docker.app/Contents/Resources/bin/docker"
+  elif [ "$PLATFORM" = "windows" ] && ! clean_have docker && ! clean_have docker.exe; then
+    CLEAN_PF="$(clean_windows_program_files_unix)"
+    if [ -x "$CLEAN_PF/Docker/Docker/resources/bin/docker.exe" ]; then
+      CLEAN_DIRECT_CLI="$CLEAN_PF/Docker/Docker/resources/bin/docker.exe"
+    else
+      CLEAN_DIRECT_CLI=
     fi
+  else
+    CLEAN_DIRECT_CLI=
   fi
 
   clean_try_start_docker
-  for ((attempt = 1; attempt <= 60; attempt++)); do
+  CLEAN_ATTEMPT=1
+  while [ "$CLEAN_ATTEMPT" -le 60 ]; do
     if clean_have docker && docker info >/dev/null 2>&1; then
-      DOCKER_CMD=(docker)
+      DOCKER_MODE=direct
+      DOCKER_BIN=docker
       return 0
     fi
     if clean_have docker.exe && docker.exe info >/dev/null 2>&1; then
-      DOCKER_CMD=(docker.exe)
+      DOCKER_MODE=direct
+      DOCKER_BIN=docker.exe
       return 0
     fi
-    if [[ -n "$direct_cli" ]] && "$direct_cli" info >/dev/null 2>&1; then
-      DOCKER_CMD=("$direct_cli")
+    if [ -n "$CLEAN_DIRECT_CLI" ] && "$CLEAN_DIRECT_CLI" info >/dev/null 2>&1; then
+      DOCKER_MODE=direct
+      DOCKER_BIN="$CLEAN_DIRECT_CLI"
       return 0
     fi
-    if [[ "$PLATFORM" == "linux" ]] && clean_have sudo \
+    if [ "$PLATFORM" = "linux" ] && clean_have sudo \
       && sudo docker info >/dev/null 2>&1; then
-      DOCKER_CMD=(sudo docker)
+      DOCKER_MODE=sudo
+      DOCKER_BIN=docker
       return 0
     fi
     sleep 1
+    CLEAN_ATTEMPT=$((CLEAN_ATTEMPT + 1))
   done
   return 1
 }
 
 clean_docker() {
-  "${DOCKER_CMD[@]}" "$@"
+  case "$DOCKER_MODE" in
+    sudo) sudo "$DOCKER_BIN" "$@" ;;
+    direct) "$DOCKER_BIN" "$@" ;;
+    *) return 1 ;;
+  esac
 }
 
 clean_remove_container() {
-  local name="$1"
-  if ! clean_docker container inspect "$name" >/dev/null 2>&1; then
+  CLEAN_CONTAINER_NAME="$1"
+  if ! clean_docker container inspect "$CLEAN_CONTAINER_NAME" >/dev/null 2>&1; then
     return 0
   fi
 
-  local label
-  label="$(clean_docker inspect -f '{{index .Config.Labels "news-ai.local-test"}}' "$name" 2>/dev/null || true)"
-  if [[ "$label" != "true" ]]; then
-    clean_warn "Refusing to remove '$name': it does not carry the news-ai.local-test ownership label."
+  CLEAN_CONTAINER_LABEL="$(clean_docker inspect -f '{{index .Config.Labels "news-ai.local-test"}}' "$CLEAN_CONTAINER_NAME" 2>/dev/null || true)"
+  if [ "$CLEAN_CONTAINER_LABEL" != "true" ]; then
+    clean_warn "Refusing to remove '$CLEAN_CONTAINER_NAME': it does not carry the news-ai.local-test ownership label."
     return 1
   fi
 
-  clean_log "Removing $name and its anonymous volumes"
-  clean_docker rm -fv "$name" >/dev/null || return 1
+  clean_log "Removing $CLEAN_CONTAINER_NAME and its anonymous volumes"
+  clean_docker rm -fv "$CLEAN_CONTAINER_NAME" >/dev/null || return 1
 }
 
 clean_remove_test_resources() {
@@ -184,12 +185,12 @@ clean_remove_test_resources() {
   clean_remove_container "$POSTGRES_CONTAINER" || true
   clean_remove_container "$REDIS_CONTAINER" || true
 
-  if [[ "$STATE_POSTGRES_IMAGE_PRESENT_BEFORE" == "0" ]]; then
+  if [ "$STATE_POSTGRES_IMAGE_PRESENT_BEFORE" = "0" ]; then
     clean_log "Removing setup-pulled image $POSTGRES_IMAGE"
     clean_docker image rm "$POSTGRES_IMAGE" >/dev/null 2>&1 \
       || clean_warn "Could not remove $POSTGRES_IMAGE; another container may still use it."
   fi
-  if [[ "$STATE_REDIS_IMAGE_PRESENT_BEFORE" == "0" ]]; then
+  if [ "$STATE_REDIS_IMAGE_PRESENT_BEFORE" = "0" ]; then
     clean_log "Removing setup-pulled image $REDIS_IMAGE"
     clean_docker image rm "$REDIS_IMAGE" >/dev/null 2>&1 \
       || clean_warn "Could not remove $REDIS_IMAGE; another container may still use it."
@@ -197,7 +198,7 @@ clean_remove_test_resources() {
 }
 
 clean_stop_docker_if_started() {
-  [[ "$STATE_DOCKER_STARTED_BY_SETUP" == "1" ]] || return 0
+  [ "$STATE_DOCKER_STARTED_BY_SETUP" = "1" ] || return 0
 
   clean_log "Stopping Docker because setup.sh started it"
   case "$PLATFORM" in
@@ -226,7 +227,7 @@ clean_stop_docker_if_started() {
 }
 
 clean_remove_autostart() {
-  [[ "$STATE_DOCKER_AUTOSTART_BY_SETUP" == "1" ]] || return 0
+  [ "$STATE_DOCKER_AUTOSTART_BY_SETUP" = "1" ] || return 0
 
   clean_log "Reversing Docker autostart added by setup.sh"
   case "$STATE_DOCKER_AUTOSTART_KIND" in
@@ -239,7 +240,9 @@ clean_remove_autostart() {
       ;;
     runit)
       clean_run_as_root sv down docker >/dev/null 2>&1 || true
-      [[ -L /var/service/docker ]] && clean_run_as_root rm -f /var/service/docker
+      if [ -L /var/service/docker ]; then
+        clean_run_as_root rm -f /var/service/docker
+      fi
       ;;
     sysv)
       if clean_have chkconfig; then
@@ -247,75 +250,50 @@ clean_remove_autostart() {
       elif clean_have update-rc.d; then
         clean_run_as_root update-rc.d -f docker remove >/dev/null 2>&1 || true
       fi
-      clean_have service && clean_run_as_root service docker stop >/dev/null 2>&1 || true
+      if clean_have service; then
+        clean_run_as_root service docker stop >/dev/null 2>&1 || true
+      fi
       ;;
     launchd)
-      if [[ -n "$STATE_DESKTOP_AUTOSTART_PATH" ]]; then
+      if [ -n "$STATE_DESKTOP_AUTOSTART_PATH" ]; then
         launchctl unload "$STATE_DESKTOP_AUTOSTART_PATH" >/dev/null 2>&1 || true
         rm -f "$STATE_DESKTOP_AUTOSTART_PATH"
       fi
       ;;
     windows-startup|windows-startup-wsl)
-      [[ -n "$STATE_DESKTOP_AUTOSTART_PATH" ]] && rm -f "$STATE_DESKTOP_AUTOSTART_PATH"
+      if [ -n "$STATE_DESKTOP_AUTOSTART_PATH" ]; then
+        rm -f "$STATE_DESKTOP_AUTOSTART_PATH"
+      fi
       ;;
   esac
 }
 
 clean_uninstall_docker() {
-  [[ "$STATE_DOCKER_INSTALLED_BY_SETUP" == "1" ]] || return 0
+  [ "$STATE_DOCKER_INSTALLED_BY_SETUP" = "1" ] || return 0
 
   clean_log "Uninstalling Docker because setup.sh installed it"
   case "$STATE_DOCKER_INSTALL_METHOD" in
-    apt)
-      clean_run_as_root apt-get remove -y "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    apk)
-      clean_run_as_root apk del "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    dnf)
-      clean_run_as_root dnf remove -y "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    yum)
-      clean_run_as_root yum remove -y "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    pacman)
-      clean_run_as_root pacman -Rns --noconfirm "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    zypper)
-      clean_run_as_root zypper --non-interactive remove "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    xbps)
-      clean_run_as_root xbps-remove -Ry "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    eopkg)
-      clean_run_as_root eopkg remove -y "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    swupd)
-      clean_run_as_root swupd bundle-remove "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    emerge)
-      clean_run_as_root emerge --depclean "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    brew-cask)
-      brew uninstall --cask "$STATE_DOCKER_PACKAGE" || true
-      ;;
-    mac-dmg)
-      clean_run_as_root rm -rf /Applications/Docker.app || true
-      ;;
-    winget)
-      winget.exe uninstall --exact --id "$STATE_DOCKER_PACKAGE" --silent || true
-      ;;
-    choco)
-      choco.exe uninstall "$STATE_DOCKER_PACKAGE" -y || true
-      ;;
+    apt) clean_run_as_root apt-get remove -y "$STATE_DOCKER_PACKAGE" || true ;;
+    apk) clean_run_as_root apk del "$STATE_DOCKER_PACKAGE" || true ;;
+    dnf) clean_run_as_root dnf remove -y "$STATE_DOCKER_PACKAGE" || true ;;
+    yum) clean_run_as_root yum remove -y "$STATE_DOCKER_PACKAGE" || true ;;
+    pacman) clean_run_as_root pacman -Rns --noconfirm "$STATE_DOCKER_PACKAGE" || true ;;
+    zypper) clean_run_as_root zypper --non-interactive remove "$STATE_DOCKER_PACKAGE" || true ;;
+    xbps) clean_run_as_root xbps-remove -Ry "$STATE_DOCKER_PACKAGE" || true ;;
+    eopkg) clean_run_as_root eopkg remove -y "$STATE_DOCKER_PACKAGE" || true ;;
+    swupd) clean_run_as_root swupd bundle-remove "$STATE_DOCKER_PACKAGE" || true ;;
+    emerge) clean_run_as_root emerge --depclean "$STATE_DOCKER_PACKAGE" || true ;;
+    brew-cask) brew uninstall --cask "$STATE_DOCKER_PACKAGE" || true ;;
+    mac-dmg) clean_run_as_root rm -rf /Applications/Docker.app || true ;;
+    winget) winget.exe uninstall --exact --id "$STATE_DOCKER_PACKAGE" --silent || true ;;
+    choco) choco.exe uninstall "$STATE_DOCKER_PACKAGE" -y || true ;;
     windows-direct)
-      local pf installer installer_win
-      pf="$(clean_windows_program_files_unix)"
-      installer="$pf/Docker/Docker/Docker Desktop Installer.exe"
-      if [[ -x "$installer" && $(command -v cygpath 2>/dev/null) ]]; then
-        installer_win="$(cygpath -w "$installer")"
+      CLEAN_PF="$(clean_windows_program_files_unix)"
+      CLEAN_INSTALLER="$CLEAN_PF/Docker/Docker/Docker Desktop Installer.exe"
+      if [ -x "$CLEAN_INSTALLER" ] && clean_have cygpath; then
+        CLEAN_INSTALLER_WIN="$(cygpath -w "$CLEAN_INSTALLER")"
         powershell.exe -NoProfile -Command \
-          "Start-Process -FilePath '$installer_win' -ArgumentList 'uninstall','--quiet' -Wait -Verb RunAs" \
+          "Start-Process -FilePath '$CLEAN_INSTALLER_WIN' -ArgumentList 'uninstall','--quiet' -Wait -Verb RunAs" \
           || true
       else
         clean_warn "Docker Desktop was installed directly, but its uninstaller could not be located."
@@ -325,7 +303,7 @@ clean_uninstall_docker() {
 }
 
 clean_uninstall_venv_support() {
-  [[ "$STATE_VENV_SUPPORT_INSTALLED_BY_SETUP" == "1" ]] || return 0
+  [ "$STATE_VENV_SUPPORT_INSTALLED_BY_SETUP" = "1" ] || return 0
 
   clean_log "Removing virtualenv support package installed by setup.sh"
   case "$STATE_VENV_SUPPORT_METHOD" in
@@ -359,6 +337,30 @@ clean_unset_environment() {
 }
 
 news_ai_clean_main() {
+  clean_resolve_repo_root || return 1
+
+  VENV_DIR="$REPO_ROOT/.venv"
+  ENV_FILE="$REPO_ROOT/.env.test.local"
+  STATE_FILE="$REPO_ROOT/.env.setup.state"
+
+  POSTGRES_CONTAINER="${NEWS_AI_TEST_POSTGRES_CONTAINER:-news-ai-test-postgres}"
+  REDIS_CONTAINER="${NEWS_AI_TEST_REDIS_CONTAINER:-news-ai-test-redis}"
+  POSTGRES_IMAGE="${NEWS_AI_TEST_POSTGRES_IMAGE:-postgres:16-alpine}"
+  REDIS_IMAGE="${NEWS_AI_TEST_REDIS_IMAGE:-redis:7-alpine}"
+
+  STATE_DOCKER_INSTALLED_BY_SETUP=0
+  STATE_DOCKER_INSTALL_METHOD=none
+  STATE_DOCKER_PACKAGE=none
+  STATE_DOCKER_AUTOSTART_BY_SETUP=0
+  STATE_DOCKER_STARTED_BY_SETUP=0
+  STATE_DOCKER_AUTOSTART_KIND=none
+  STATE_DESKTOP_AUTOSTART_PATH=
+  STATE_POSTGRES_IMAGE_PRESENT_BEFORE=unknown
+  STATE_REDIS_IMAGE_PRESENT_BEFORE=unknown
+  STATE_VENV_SUPPORT_INSTALLED_BY_SETUP=0
+  STATE_VENV_SUPPORT_METHOD=none
+  STATE_VENV_SUPPORT_PACKAGE=none
+
   clean_detect_platform
   clean_load_state
 
@@ -372,27 +374,26 @@ news_ai_clean_main() {
   clean_unset_environment
 
   clean_log "News AI local test setup cleaned."
-  if [[ "$NEWS_AI_CLEAN_SOURCED" != "1" ]]; then
-    clean_warn "Files/containers were cleaned, but an executed child script cannot unset variables in its parent shell. Run 'source ./clean.sh' to clear the current shell too."
-  fi
 }
 
 news_ai_clean_main
+CLEAN_STATUS=$?
 
-# Do not leave cleanup helper functions/variables behind when sourced.
-if [[ "$NEWS_AI_CLEAN_SOURCED" == "1" ]]; then
-  unset -f clean_log clean_warn clean_have clean_run_as_root clean_detect_platform
-  unset -f clean_load_state clean_windows_program_files_unix clean_try_start_docker
-  unset -f clean_select_docker clean_docker clean_remove_container clean_remove_test_resources
-  unset -f clean_stop_docker_if_started
-  unset -f clean_remove_autostart clean_uninstall_docker clean_uninstall_venv_support
-  unset -f clean_remove_files clean_unset_environment news_ai_clean_main
-  unset SCRIPT_DIR REPO_ROOT VENV_DIR ENV_FILE STATE_FILE
-  unset POSTGRES_CONTAINER REDIS_CONTAINER POSTGRES_IMAGE REDIS_IMAGE
-  unset STATE_DOCKER_INSTALLED_BY_SETUP STATE_DOCKER_INSTALL_METHOD STATE_DOCKER_PACKAGE
-  unset STATE_DOCKER_AUTOSTART_BY_SETUP STATE_DOCKER_STARTED_BY_SETUP STATE_DOCKER_AUTOSTART_KIND
-  unset STATE_DESKTOP_AUTOSTART_PATH STATE_POSTGRES_IMAGE_PRESENT_BEFORE
-  unset STATE_REDIS_IMAGE_PRESENT_BEFORE STATE_VENV_SUPPORT_INSTALLED_BY_SETUP
-  unset STATE_VENV_SUPPORT_METHOD STATE_VENV_SUPPORT_PACKAGE DOCKER_CMD PLATFORM
-  unset NEWS_AI_CLEAN_SOURCED
-fi
+# Do not leave cleanup helpers/state behind when sourced.
+unset -f clean_log clean_warn clean_have clean_run_as_root clean_resolve_repo_root
+unset -f clean_detect_platform clean_load_state clean_windows_program_files_unix clean_try_start_docker
+unset -f clean_select_docker clean_docker clean_remove_container clean_remove_test_resources
+unset -f clean_stop_docker_if_started clean_remove_autostart clean_uninstall_docker
+unset -f clean_uninstall_venv_support clean_remove_files clean_unset_environment news_ai_clean_main
+
+unset CLEAN_UNAME CLEAN_SCRIPT_DIR CLEAN_PROGRAM_FILES CLEAN_PF CLEAN_APP CLEAN_DIRECT_CLI
+unset CLEAN_ATTEMPT CLEAN_CONTAINER_NAME CLEAN_CONTAINER_LABEL CLEAN_INSTALLER CLEAN_INSTALLER_WIN
+unset REPO_ROOT VENV_DIR ENV_FILE STATE_FILE POSTGRES_CONTAINER REDIS_CONTAINER POSTGRES_IMAGE REDIS_IMAGE
+unset STATE_DOCKER_INSTALLED_BY_SETUP STATE_DOCKER_INSTALL_METHOD STATE_DOCKER_PACKAGE
+unset STATE_DOCKER_AUTOSTART_BY_SETUP STATE_DOCKER_STARTED_BY_SETUP STATE_DOCKER_AUTOSTART_KIND
+unset STATE_DESKTOP_AUTOSTART_PATH STATE_POSTGRES_IMAGE_PRESENT_BEFORE STATE_REDIS_IMAGE_PRESENT_BEFORE
+unset STATE_VENV_SUPPORT_INSTALLED_BY_SETUP STATE_VENV_SUPPORT_METHOD STATE_VENV_SUPPORT_PACKAGE
+unset DOCKER_MODE DOCKER_BIN PLATFORM
+
+# `return` works when sourced; fall back to `exit` when executed.
+return "$CLEAN_STATUS" 2>/dev/null || exit "$CLEAN_STATUS"
