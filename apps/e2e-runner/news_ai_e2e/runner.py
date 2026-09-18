@@ -404,7 +404,7 @@ def _review_command(base_url: str, variant: ContentVariant) -> str:
         '-H "Authorization: Bearer $NEWS_AI_REVIEW_API_TOKEN" '
         f'-H "Idempotency-Key: {key}" '
         '-H "Content-Type: application/json" '
-        f'-d \'{"artifact_version":{variant.version},"reason":null}\''
+        f'-d \'{{"artifact_version":{variant.version},"reason":null}}\''
     )
 
 
