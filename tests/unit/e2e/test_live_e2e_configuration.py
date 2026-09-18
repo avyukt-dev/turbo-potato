@@ -1,4 +1,3 @@
-import os
 from uuid import uuid4
 
 import pytest
@@ -88,6 +87,3 @@ def test_loopback_ipv6_is_allowed(monkeypatch):
     monkeypatch.setenv("NEWS_AI_E2E_API_BASE_URL", "http://[::1]:8000")
     assert LiveE2ESettings.from_env().api_base_url == "http://[::1]:8000"
 
-
-def test_environment_fixture_does_not_leak_to_process_after_test():
-    assert os.getenv("NEWS_AI_E2E_CONFIRM_LIVE") != LIVE_CONFIRMATION

@@ -16,10 +16,18 @@ from uuid import UUID, uuid4
 
 import httpx
 import yaml
-from news_ai_collector import FeedFetchResult, RSSCollector
-from news_ai_common.config import AppSettings
+from news_ai_collector import (
+    FeedFetchResult,
+    RSSCollector,
+    SourceRegistryLoader,
+    SourceRegistryService,
+)
+from news_ai_common.config import AppSettings, ConfigLoader
 from news_ai_content import ContentMediaAttachmentService, MediaAttachmentRequest
 from news_ai_database import (
+    ArticleDiscovery,
+    ArticleVersion,
+    ContentDraft,
     ContentQualityCheck,
     ContentVariant,
     EventDeadLetter,
@@ -28,6 +36,7 @@ from news_ai_database import (
     ReviewDecisionRecord,
     SocialAccount,
     SocialAccountStatus,
+    StorySource,
 )
 from news_ai_domain import PublicationStatus, ReviewState
 from news_ai_pipeline import PipelineRunner, build_production_pipeline_stack
@@ -114,35 +123,44 @@ class BoundedLiveFeedCollector:
         return result.model_copy(update={"articles": selected})
 
 
-def _source_key(host: str, index: int) -> str:
-    normalized = "".join(character if character.isalnum() else "-" for character in host.casefold())
-    normalized = "-".join(part for part in normalized.split("-") if part)
-    return f"e2e-{index}-{normalized}"[:128]
+def _stable_key(prefix: str, material: str, *, slug: str) -> str:
+    normalized = "".join(
+        character if character.isalnum() else "-" for character in slug.casefold()
+    )
+    normalized = "-".join(part for part in normalized.split("-") if part)[:80] or "source"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-{normalized}-{digest}"[:128]
 
 
-def build_live_source_documents(feed_urls: tuple[str, ...]) -> tuple[dict[str, Any], dict[str, Any]]:
-    sources = []
-    feeds = []
+def build_live_source_documents(
+    feed_urls: tuple[str, ...],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    feeds: list[dict[str, Any]] = []
+    source_keys: dict[str, str] = {}
     for index, feed_url in enumerate(feed_urls, start=1):
         parsed = urlparse(feed_url)
-        host = parsed.hostname
+        host = (parsed.hostname or "").casefold().rstrip(".")
         if not host:
             raise LiveE2EConfigurationError("feed URL has no hostname")
-        source_key = _source_key(host, index)
-        sources.append(
-            {
-                "key": source_key,
-                "name": f"Live E2E {host}",
-                "source_type": "NEWS",
-                "domain": host,
-                "base_url": f"https://{host}",
-                "enabled": True,
-                "metadata": {"live_e2e": True},
-            }
-        )
+        source_key = source_keys.get(host)
+        if source_key is None:
+            source_key = _stable_key("e2e-source", host, slug=host)
+            source_keys[host] = source_key
+            sources.append(
+                {
+                    "key": source_key,
+                    "name": f"Live E2E {host}",
+                    "source_type": "NEWS",
+                    "domain": host,
+                    "base_url": f"https://{host}",
+                    "enabled": True,
+                    "metadata": {"live_e2e": True},
+                }
+            )
         feeds.append(
             {
-                "key": f"{source_key}-feed"[:128],
+                "key": _stable_key("e2e-feed", feed_url, slug=f"{host}-{index}"),
                 "source_key": source_key,
                 "name": f"Live E2E feed {index}",
                 "url": feed_url,
@@ -193,7 +211,12 @@ async def download_media(
                     if len(data) > maximum_bytes:
                         raise LiveE2EError("MEDIA_TOO_LARGE", "E2E media exceeded the bounded size")
                 final_url = canonical_public_media_url(str(response.url))
-            if len(data) < 4 or not data.startswith(b"\xff\xd8\xff") or not data.endswith(b"\xff\xd9"):
+            ordinary_jpeg = (
+                len(data) >= 4
+                and data.startswith(b"\xff\xd8\xff")
+                and data.endswith(b"\xff\xd9")
+            )
+            if not ordinary_jpeg:
                 raise LiveE2EError("MEDIA_NOT_JPEG", "E2E media bytes are not an ordinary JPEG")
             results.append(
                 DownloadedMedia(
@@ -323,6 +346,12 @@ def _new_dead_letter(factory, baseline: set[UUID]) -> EventDeadLetter | None:
         return session.scalar(statement.limit(1))
 
 
+def restore_source_registry(factory, config_root: Path) -> None:
+    snapshot = SourceRegistryLoader(ConfigLoader(config_root)).load()
+    with factory() as session, session.begin():
+        SourceRegistryService(session).sync(snapshot)
+
+
 def _review_command(base_url: str, variant: ContentVariant) -> str:
     key = f"live-e2e-review-{variant.id}-{variant.version}"
     return (
@@ -362,6 +391,12 @@ class LiveE2ERunner:
             health = await client.get("/health")
             if health.status_code != 200:
                 raise LiveE2EError("API_UNHEALTHY", "Local API health check failed")
+            ready = await client.get("/ready")
+            if ready.status_code != 200:
+                raise LiveE2EError(
+                    "API_NOT_READY",
+                    "Local API dependencies or AI routing are not ready",
+                )
             queue = await client.get("/api/v1/review/queue", params={"limit": 1})
             if queue.status_code != 200:
                 raise LiveE2EError(
@@ -371,17 +406,54 @@ class LiveE2ERunner:
 
     async def _wait_until(self, predicate, *, timeout: float | None = None):
         deadline = timeout or self.e2e.timeout_seconds
-        async with asyncio.timeout(deadline):
-            while True:
-                value = predicate()
-                if value:
-                    return value
-                await asyncio.sleep(self.e2e.poll_interval_seconds)
+        try:
+            async with asyncio.timeout(deadline):
+                while True:
+                    value = predicate()
+                    if value:
+                        return value
+                    await asyncio.sleep(self.e2e.poll_interval_seconds)
+        except TimeoutError:
+            raise LiveE2EError(
+                "TIMEOUT",
+                "Timed out waiting for the current live E2E stage",
+            ) from None
+
+    async def _wait_discovery(
+        self,
+        factory,
+        baseline_discoveries: set[UUID],
+        baseline_dead_letters: set[UUID],
+        pipeline_task: asyncio.Task,
+    ) -> ArticleDiscovery:
+        def probe():
+            if pipeline_task.done():
+                raise LiveE2EError(
+                    "PIPELINE_STOPPED",
+                    "Production pipeline exited before collecting a new article",
+                )
+            dead = _new_dead_letter(factory, baseline_dead_letters)
+            if dead is not None:
+                raise LiveE2EError(
+                    "DEAD_LETTER",
+                    f"Pipeline dead-lettered work in consumer {dead.consumer_group}",
+                )
+            with factory() as session:
+                statement = select(ArticleDiscovery).order_by(
+                    ArticleDiscovery.created_at, ArticleDiscovery.id
+                )
+                if baseline_discoveries:
+                    statement = statement.where(
+                        ArticleDiscovery.id.not_in(baseline_discoveries)
+                    )
+                return session.scalar(statement.limit(1))
+
+        return await self._wait_until(probe)
 
     async def _wait_target(
         self,
         factory,
-        baseline_variants: set[UUID],
+        discovery_id: UUID,
         baseline_dead_letters: set[UUID],
         pipeline_task: asyncio.Task,
     ) -> ContentVariant:
@@ -395,12 +467,36 @@ class LiveE2ERunner:
                     f"Pipeline dead-lettered work in consumer {dead.consumer_group}",
                 )
             with factory() as session:
-                statement = select(ContentVariant).order_by(
-                    ContentVariant.created_at, ContentVariant.id
+                discovery = session.get(ArticleDiscovery, discovery_id)
+                if discovery is None:
+                    raise LiveE2EError(
+                        "DISCOVERY_MISSING",
+                        "Selected E2E article discovery disappeared",
+                    )
+                statement = (
+                    select(ContentVariant)
+                    .join(
+                        ContentDraft,
+                        ContentDraft.id == ContentVariant.content_draft_id,
+                    )
+                    .join(StorySource, StorySource.story_id == ContentDraft.story_id)
+                    .where(StorySource.article_id == discovery.article_id)
+                    .order_by(ContentVariant.created_at, ContentVariant.id)
                 )
-                if baseline_variants:
-                    statement = statement.where(ContentVariant.id.not_in(baseline_variants))
-                return session.scalar(statement.limit(1))
+                variant = session.scalar(statement.limit(1))
+                if variant is None:
+                    return None
+                version = (
+                    session.get(ArticleVersion, discovery.normalized_article_version_id)
+                    if discovery.normalized_article_version_id is not None
+                    else None
+                )
+                if version is None or not version.body or not version.body.strip():
+                    raise LiveE2EError(
+                        "ARTICLE_BODY_MISSING",
+                        "Target content was generated without a persisted article body",
+                    )
+                return variant
 
         return await self._wait_until(probe)
 
@@ -436,7 +532,10 @@ class LiveE2ERunner:
                     .limit(1)
                 )
                 if check is not None and not check.passed:
-                    raise LiveE2EError("QUALITY_REJECTED", "Quality Gate rejected the target variant")
+                    raise LiveE2EError(
+                        "QUALITY_REJECTED",
+                        "Quality Gate rejected the target variant",
+                    )
                 if variant.review_state is ReviewState.READY_FOR_REVIEW:
                     return variant
                 return None
@@ -482,16 +581,18 @@ class LiveE2ERunner:
             )
         assert_safe_publication_baseline(factory)
 
-        scheduler_stack = build_production_scheduler_stack(run_settings)
-        publisher_stack = build_production_publisher_stack(
-            run_settings,
-            social_settings=self.social,
-        )
+        scheduler_stack = None
+        publisher_stack = None
         publisher_stop = asyncio.Event()
         publisher_task: asyncio.Task | None = None
         unpaused = False
         publication_id: UUID | None = None
         try:
+            scheduler_stack = build_production_scheduler_stack(run_settings)
+            publisher_stack = build_production_publisher_stack(
+                run_settings,
+                social_settings=self.social,
+            )
             async with self._api_client() as client:
                 create_key = f"live-e2e-create-{variant.id}-{variant.version}"
                 response = await client.post(
@@ -548,9 +649,10 @@ class LiveE2ERunner:
                     external_post_id=row.external_post_id,
                     external_url=row.external_url,
                 )
+            reason = row.failure_reason or row.blocking_reason or "UNKNOWN"
             raise LiveE2EError(
                 f"PUBLICATION_{row.status.value}",
-                f"Publication ended in {row.status.value} ({row.failure_reason or row.blocking_reason})",
+                f"Publication ended in {row.status.value} ({reason})",
             )
         finally:
             publisher_stop.set()
@@ -560,9 +662,15 @@ class LiveE2ERunner:
             if unpaused:
                 with suppress(Exception):
                     control.set_paused(True, reason=f"Live E2E {self.run_id} safety pause")
-            engine = scheduler_stack.service.session_factory.kw.get("bind")
-            if engine is not None:
-                engine.dispose()
+            if publisher_stack is not None and publisher_task is None:
+                from news_ai_publisher.runner import close_stack
+
+                with suppress(Exception):
+                    await close_stack(publisher_stack)
+            if scheduler_stack is not None:
+                engine = scheduler_stack.service.session_factory.kw.get("bind")
+                if engine is not None:
+                    engine.dispose()
 
     @staticmethod
     def _require_api_response(response: httpx.Response, *, expected: set[int]) -> dict[str, Any]:
@@ -601,7 +709,7 @@ class LiveE2ERunner:
             )
             factory = stack.session_factory
             with factory() as session:
-                baseline_variants = set(session.scalars(select(ContentVariant.id)))
+                baseline_discoveries = set(session.scalars(select(ArticleDiscovery.id)))
                 baseline_dead_letters = set(session.scalars(select(EventDeadLetter.id)))
             control = DatabasePublishingControl(factory)
             snapshot = control.snapshot()
@@ -617,9 +725,15 @@ class LiveE2ERunner:
             pipeline_task = asyncio.create_task(pipeline.run(), name="live-e2e-pipeline")
             try:
                 await asyncio.wait_for(pipeline.ready_event.wait(), timeout=30)
+                discovery = await self._wait_discovery(
+                    factory,
+                    baseline_discoveries,
+                    baseline_dead_letters,
+                    pipeline_task,
+                )
                 target = await self._wait_target(
                     factory,
-                    baseline_variants,
+                    discovery.id,
                     baseline_dead_letters,
                     pipeline_task,
                 )
@@ -643,6 +757,13 @@ class LiveE2ERunner:
                     await asyncio.wait_for(pipeline_task, timeout=30)
                 if not stack._closed:
                     await stack.close()
+                try:
+                    restore_source_registry(
+                        factory,
+                        Path(self.app_settings.config_dir),
+                    )
+                except Exception:
+                    logger.error("live E2E source-registry restoration did not complete")
 
 
 async def run_live_e2e() -> LiveE2EResult:

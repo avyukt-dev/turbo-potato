@@ -7,6 +7,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.e2e.example
 build/
 dist/
 *.egg-info/

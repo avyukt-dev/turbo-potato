@@ -27,15 +27,18 @@ dependencies = [
 dev = [
   "pytest>=8.0,<10.0",
   "ruff>=0.6,<1.0",
+  "uvicorn>=0.30,<1.0",
 ]
 
 [project.scripts]
 newsctl = "news_ai_runtime.cli:main"
 news-pipeline = "news_ai_pipeline.__main__:main"
+news-e2e-live = "news_ai_e2e.__main__:main"
 
 [tool.setuptools.packages.find]
 where = [
   "apps/api",
+  "apps/e2e-runner",
   "apps/collector",
   "apps/processor",
   "apps/ai-worker",
@@ -59,6 +62,7 @@ where = [
 ]
 include = [
   "news_ai_api*",
+  "news_ai_e2e*",
   "news_ai_collector*",
   "news_ai_processor*",
   "news_ai_ai_worker*",
@@ -85,6 +89,7 @@ include = [
 pythonpath = [
   "tests",
   "apps/api",
+  "apps/e2e-runner",
   "apps/collector",
   "apps/processor",
   "apps/ai-worker",

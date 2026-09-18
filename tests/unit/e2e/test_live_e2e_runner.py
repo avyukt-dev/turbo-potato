@@ -6,17 +6,22 @@ from uuid import uuid4
 import httpx
 import pytest
 from news_ai_collector import CollectedArticle, FeedDefinition, FeedFetchResult
-from news_ai_database import Base, SocialAccount, SocialAccountStatus
+from news_ai_common.config import AppSettings
+from news_ai_database import Base, Publication, SocialAccount, SocialAccountStatus
+from news_ai_domain import PublicationStatus
 from news_ai_e2e.runner import (
     BoundedLiveFeedCollector,
     DownloadedMedia,
     LiveE2EError,
+    LiveE2ERunner,
     assert_safe_publication_baseline,
     build_live_source_documents,
     download_media,
     ensure_social_account,
     media_for_slides,
 )
+from news_ai_e2e.configuration import LiveE2ESettings
+from news_ai_social import SocialSettings
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -40,11 +45,18 @@ class FakeCollector:
         )
 
 
-def test_real_source_documents_are_bounded_config_not_mock_data():
+def test_real_source_documents_preserve_publisher_identity_across_same_host_feeds():
     registry, feeds = build_live_source_documents(
-        ("https://news.example.org/rss.xml", "https://second.example.net/feed")
+        (
+            "https://news.example.org/rss.xml",
+            "https://news.example.org/world.xml",
+            "https://second.example.net/feed",
+        )
     )
-    assert len(registry["sources"]) == len(feeds["feeds"]) == 2
+    assert len(registry["sources"]) == 2
+    assert len(feeds["feeds"]) == 3
+    assert feeds["feeds"][0]["source_key"] == feeds["feeds"][1]["source_key"]
+    assert feeds["feeds"][0]["source_key"] != feeds["feeds"][2]["source_key"]
     assert feeds["feeds"][0]["url"] == "https://news.example.org/rss.xml"
     assert registry["sources"][0]["source_type"] == "NEWS"
 
@@ -128,6 +140,30 @@ def test_media_download_rejects_wrong_external_media(content_type, payload, code
     assert exc.value.code == code
 
 
+def test_media_download_enforces_byte_bound():
+    payload = _jpeg() + b"x" * 64
+
+    async def scenario():
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=payload,
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            await download_media(
+                ("https://cdn.example.org/test.jpg",),
+                maximum_bytes=8,
+                client=client,
+            )
+
+    with pytest.raises(LiveE2EError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.code == "MEDIA_TOO_LARGE"
+
+
 def test_one_media_url_can_fill_carousel_but_partial_lists_are_rejected():
     item = DownloadedMedia("https://cdn.example.org/test.jpg", "a" * 64)
     assert media_for_slides((item,), 3) == (item, item, item)
@@ -142,8 +178,6 @@ def _factory():
 
 
 def test_social_account_is_created_once_and_reused():
-    from news_ai_social import SocialSettings
-
     factory = _factory()
     settings = SocialSettings(
         environment="production",
@@ -161,9 +195,14 @@ def test_social_account_is_created_once_and_reused():
         assert rows[0].credential_reference == "env:NEWS_AI_INSTAGRAM_ACCESS_TOKEN"
 
 
-def test_existing_inactive_social_account_is_never_reactivated_by_harness():
-    from news_ai_social import SocialSettings
-
+@pytest.mark.parametrize(
+    ("status", "capabilities"),
+    [
+        (SocialAccountStatus.PAUSED, {"image": True, "carousel": True}),
+        (SocialAccountStatus.ACTIVE, {"image": True, "carousel": False}),
+    ],
+)
+def test_existing_unsafe_social_account_is_never_mutated_by_harness(status, capabilities):
     factory = _factory()
     with factory() as session, session.begin():
         session.add(
@@ -171,8 +210,8 @@ def test_existing_inactive_social_account_is_never_reactivated_by_harness():
                 platform="INSTAGRAM",
                 account_name="existing",
                 account_identifier="123456",
-                status=SocialAccountStatus.PAUSED,
-                capabilities={"image": True, "carousel": True},
+                status=status,
+                capabilities=capabilities,
             )
         )
     settings = SocialSettings(
@@ -185,7 +224,62 @@ def test_existing_inactive_social_account_is_never_reactivated_by_harness():
     with pytest.raises(LiveE2EError) as exc:
         ensure_social_account(factory, settings, account_name="e2e")
     assert exc.value.code == "INSTAGRAM_ACCOUNT_UNSAFE"
+    with factory() as session:
+        account = session.scalar(select(SocialAccount))
+        assert account.status is status
+        assert account.capabilities == capabilities
 
 
 def test_empty_publication_baseline_is_safe():
     assert_safe_publication_baseline(_factory())
+
+
+def test_active_publication_baseline_is_rejected():
+    from unit.publishing.test_scheduler import Clock, request, seed_candidate, stack
+
+    factory = _factory()
+    clock = Clock()
+    variant, account, actor = seed_candidate(factory)
+    service, _ = stack(factory, clock)
+    row = service.create(request(variant, account, clock), actor)
+    assert row.status is PublicationStatus.SCHEDULED
+    with pytest.raises(LiveE2EError) as exc:
+        assert_safe_publication_baseline(factory)
+    assert exc.value.code == "ACTIVE_PUBLICATION_EXISTS"
+
+
+def test_api_error_diagnostic_never_copies_provider_or_server_message():
+    response = httpx.Response(
+        409,
+        json={
+            "error": {
+                "code": "ACCOUNT_INACTIVE",
+                "message": "SECRET_SENTINEL",
+            }
+        },
+    )
+    with pytest.raises(LiveE2EError) as exc:
+        LiveE2ERunner._require_api_response(response, expected={201})
+    assert exc.value.code == "API_REQUEST_FAILED"
+    assert "ACCOUNT_INACTIVE" in str(exc.value)
+    assert "SECRET_SENTINEL" not in str(exc.value)
+
+
+def test_wait_timeout_is_normalized():
+    runner = LiveE2ERunner(
+        AppSettings(),
+        LiveE2ESettings(
+            feed_urls=("https://example.org/feed",),
+            media_urls=("https://cdn.example.org/test.jpg",),
+            timeout_seconds=0.01,
+            poll_interval_seconds=0.001,
+        ),
+        SocialSettings(),
+    )
+
+    async def scenario():
+        await runner._wait_until(lambda: None, timeout=0.01)
+
+    with pytest.raises(LiveE2EError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.code == "TIMEOUT"
