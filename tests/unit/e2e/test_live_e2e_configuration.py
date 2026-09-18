@@ -46,6 +46,12 @@ def test_live_e2e_settings_accept_explicit_safe_configuration(monkeypatch):
         ("NEWS_AI_E2E_CONFIRM_LIVE", "yes"),
         ("NEWS_AI_E2E_FEED_URLS", "http://example.org/feed.xml"),
         ("NEWS_AI_E2E_MEDIA_URLS", "https://user:pass@example.org/a.jpg"),
+        ("NEWS_AI_E2E_FEED_URLS", "https://127.0.0.1/feed.xml"),
+        ("NEWS_AI_E2E_FEED_URLS", "https://example.org/feed.xml?access_token=secret"),
+        (
+            "NEWS_AI_E2E_FEED_URLS",
+            "https://example.org/feed.xml,https://example.org/feed.xml",
+        ),
         ("NEWS_AI_E2E_API_BASE_URL", "https://review.example.org"),
     ],
 )
@@ -64,6 +70,8 @@ def test_live_e2e_settings_fail_closed_before_side_effects(monkeypatch, name, va
         ("NEWS_AI_PUBLISHING_ENABLED", "false"),
         ("NEWS_AI_PUBLISHING_PAUSED", "true"),
         ("NEWS_AI_REVIEW_CAPABILITIES", "view,review,approve"),
+        ("NEWS_AI_REVIEW_API_TOKEN", ""),
+        ("NEWS_AI_INSTAGRAM_ACCESS_TOKEN", ""),
     ],
 )
 def test_application_live_prerequisites_are_strict(monkeypatch, name, value):

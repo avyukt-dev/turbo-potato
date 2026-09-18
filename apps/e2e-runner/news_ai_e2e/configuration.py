@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from news_ai_common.config import AppSettings
 from news_ai_social import SocialMode, SocialSettings
 
 LIVE_CONFIRMATION = "LIVE_INSTAGRAM_E2E"
 _REQUIRED_REVIEW_CAPABILITIES = frozenset({"view", "review", "approve", "publish"})
+_SENSITIVE_QUERY_KEYS = frozenset(
+    {"access_token", "api_key", "apikey", "password", "secret", "token"}
+)
 
 
 class LiveE2EConfigurationError(RuntimeError):
@@ -44,14 +48,47 @@ def _positive_float_env(name: str, default: float, *, maximum: float) -> float:
     return value
 
 
-def _require_https_urls(name: str, values: tuple[str, ...]) -> None:
+def _require_https_urls(
+    name: str,
+    values: tuple[str, ...],
+    *,
+    unique: bool = False,
+) -> None:
     if not values:
         raise LiveE2EConfigurationError(f"{name} must contain at least one URL")
+    if unique and len(values) != len(set(values)):
+        raise LiveE2EConfigurationError(f"{name} must not contain duplicate URLs")
     for value in values:
         parsed = urlparse(value)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+        ):
             raise LiveE2EConfigurationError(
                 f"{name} entries must be credential-free public HTTPS URLs"
+            )
+        host = parsed.hostname.casefold().rstrip(".")
+        if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+            raise LiveE2EConfigurationError(f"{name} entries must use a public host")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            if "." not in host:
+                raise LiveE2EConfigurationError(
+                    f"{name} entries must use a public host"
+                ) from None
+        else:
+            if not address.is_global:
+                raise LiveE2EConfigurationError(f"{name} entries must use a public host")
+        query_keys = {
+            key.casefold().replace("-", "_") for key, _ in parse_qsl(parsed.query)
+        }
+        if query_keys & _SENSITIVE_QUERY_KEYS:
+            raise LiveE2EConfigurationError(
+                f"{name} entries must not contain credential query parameters"
             )
 
 
@@ -92,7 +129,7 @@ class LiveE2ESettings:
             )
         feed_urls = _csv_env("NEWS_AI_E2E_FEED_URLS")
         media_urls = _csv_env("NEWS_AI_E2E_MEDIA_URLS")
-        _require_https_urls("NEWS_AI_E2E_FEED_URLS", feed_urls)
+        _require_https_urls("NEWS_AI_E2E_FEED_URLS", feed_urls, unique=True)
         _require_https_urls("NEWS_AI_E2E_MEDIA_URLS", media_urls)
         api_base_url = _require_loopback_api(
             os.getenv("NEWS_AI_E2E_API_BASE_URL", "http://127.0.0.1:8000")
@@ -139,7 +176,10 @@ class LiveE2ESettings:
             failures.append("NEWS_AI_DATABASE_URL is required")
         if not app.redis_url:
             failures.append("NEWS_AI_REDIS_URL is required")
-        if app.review_api_token is None:
+        if (
+            app.review_api_token is None
+            or not app.review_api_token.get_secret_value().strip()
+        ):
             failures.append("NEWS_AI_REVIEW_API_TOKEN is required")
         if app.reviewer_id is None:
             failures.append("NEWS_AI_REVIEWER_ID is required")
@@ -157,10 +197,13 @@ class LiveE2ESettings:
             failures.append("NEWS_AI_PUBLISHING_ENABLED must be true")
         if social.instagram_account_id is None:
             failures.append("NEWS_AI_INSTAGRAM_ACCOUNT_ID is required")
-        if social.instagram_access_token is None:
+        if (
+            social.instagram_access_token is None
+            or not social.instagram_access_token.get_secret_value().strip()
+        ):
             failures.append("NEWS_AI_INSTAGRAM_ACCESS_TOKEN is required")
         if groq_api_key_present is None:
-            groq_api_key_present = bool(os.getenv("GROQ_API_KEY"))
+            groq_api_key_present = bool(os.getenv("GROQ_API_KEY", "").strip())
         if not groq_api_key_present:
             failures.append("GROQ_API_KEY is required")
         if publishing_pause_value is None:

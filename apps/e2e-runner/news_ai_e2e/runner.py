@@ -324,15 +324,30 @@ def ensure_social_account(factory, social: SocialSettings, *, account_name: str)
         return account.id
 
 
-def assert_safe_publication_baseline(factory) -> None:
+def _active_publication_ids(factory) -> set[UUID]:
     with factory() as session:
-        active = session.scalar(
-            select(Publication.id).where(Publication.status.in_(tuple(_ACTIVE_PUBLICATION_STATES)))
+        return set(
+            session.scalars(
+                select(Publication.id).where(
+                    Publication.status.in_(tuple(_ACTIVE_PUBLICATION_STATES))
+                )
+            )
         )
-    if active is not None:
+
+
+def assert_safe_publication_baseline(factory) -> None:
+    if _active_publication_ids(factory):
         raise LiveE2EError(
             "ACTIVE_PUBLICATION_EXISTS",
             "Refusing to unpause publishing while a pre-existing executable publication exists",
+        )
+
+
+def assert_only_expected_publication(factory, publication_id: UUID) -> None:
+    if _active_publication_ids(factory) != {publication_id}:
+        raise LiveE2EError(
+            "PUBLICATION_SET_CHANGED",
+            "Executable publication set changed during the bounded live window",
         )
 
 
@@ -419,47 +434,20 @@ class LiveE2ERunner:
                 "Timed out waiting for the current live E2E stage",
             ) from None
 
-    async def _wait_discovery(
-        self,
-        factory,
-        baseline_discoveries: set[UUID],
-        baseline_dead_letters: set[UUID],
-        pipeline_task: asyncio.Task,
-    ) -> ArticleDiscovery:
-        def probe():
-            if pipeline_task.done():
-                raise LiveE2EError(
-                    "PIPELINE_STOPPED",
-                    "Production pipeline exited before collecting a new article",
-                )
-            dead = _new_dead_letter(factory, baseline_dead_letters)
-            if dead is not None:
-                raise LiveE2EError(
-                    "DEAD_LETTER",
-                    f"Pipeline dead-lettered work in consumer {dead.consumer_group}",
-                )
-            with factory() as session:
-                statement = select(ArticleDiscovery).order_by(
-                    ArticleDiscovery.created_at, ArticleDiscovery.id
-                )
-                if baseline_discoveries:
-                    statement = statement.where(
-                        ArticleDiscovery.id.not_in(baseline_discoveries)
-                    )
-                return session.scalar(statement.limit(1))
-
-        return await self._wait_until(probe)
-
     async def _wait_target(
         self,
         factory,
-        discovery_id: UUID,
+        baseline_discoveries: set[UUID],
+        baseline_variants: set[UUID],
         baseline_dead_letters: set[UUID],
         pipeline_task: asyncio.Task,
     ) -> ContentVariant:
         def probe():
             if pipeline_task.done():
-                raise LiveE2EError("PIPELINE_STOPPED", "Production pipeline exited before content")
+                raise LiveE2EError(
+                    "PIPELINE_STOPPED",
+                    "Production pipeline exited before producing target content",
+                )
             dead = _new_dead_letter(factory, baseline_dead_letters)
             if dead is not None:
                 raise LiveE2EError(
@@ -467,25 +455,36 @@ class LiveE2ERunner:
                     f"Pipeline dead-lettered work in consumer {dead.consumer_group}",
                 )
             with factory() as session:
-                discovery = session.get(ArticleDiscovery, discovery_id)
-                if discovery is None:
-                    raise LiveE2EError(
-                        "DISCOVERY_MISSING",
-                        "Selected E2E article discovery disappeared",
-                    )
                 statement = (
-                    select(ContentVariant)
+                    select(ContentVariant, ArticleDiscovery)
                     .join(
                         ContentDraft,
                         ContentDraft.id == ContentVariant.content_draft_id,
                     )
                     .join(StorySource, StorySource.story_id == ContentDraft.story_id)
-                    .where(StorySource.article_id == discovery.article_id)
-                    .order_by(ContentVariant.created_at, ContentVariant.id)
+                    .join(
+                        ArticleDiscovery,
+                        ArticleDiscovery.article_id == StorySource.article_id,
+                    )
+                    .order_by(
+                        ContentVariant.created_at,
+                        ContentVariant.id,
+                        ArticleDiscovery.created_at,
+                        ArticleDiscovery.id,
+                    )
                 )
-                variant = session.scalar(statement.limit(1))
-                if variant is None:
+                if baseline_variants:
+                    statement = statement.where(
+                        ContentVariant.id.not_in(baseline_variants)
+                    )
+                if baseline_discoveries:
+                    statement = statement.where(
+                        ArticleDiscovery.id.not_in(baseline_discoveries)
+                    )
+                row = session.execute(statement.limit(1)).first()
+                if row is None:
                     return None
+                variant, discovery = row
                 version = (
                     session.get(ArticleVersion, discovery.normalized_article_version_id)
                     if discovery.normalized_article_version_id is not None
@@ -607,9 +606,6 @@ class LiveE2ERunner:
                 )
                 publication = self._require_api_response(response, expected={201})
                 publication_id = UUID(publication["id"])
-
-                control.set_paused(False, reason=f"Live E2E {self.run_id} publication window")
-                unpaused = True
                 publish_key = f"live-e2e-publish-{publication_id}"
                 response = await client.post(
                     f"/api/v1/publications/{publication_id}/publish-now",
@@ -617,16 +613,29 @@ class LiveE2ERunner:
                 )
                 self._require_api_response(response, expected={200})
 
-            publisher_task = asyncio.create_task(
-                run_publisher(publisher_stack, should_stop=publisher_stop.is_set),
-                name="live-e2e-publisher",
-            )
+            assert_only_expected_publication(factory, publication_id)
+            control.set_paused(False, reason=f"Live E2E {self.run_id} publication window")
+            unpaused = True
+
             dispatched = await asyncio.to_thread(scheduler_stack.scheduler.scan)
             if dispatched != 1:
                 raise LiveE2EError(
                     "SCHEDULER_DISPATCH",
                     f"Expected exactly one publication dispatch, got {dispatched}",
                 )
+            assert_only_expected_publication(factory, publication_id)
+            with factory() as session:
+                scheduled = session.get(Publication, publication_id)
+                if scheduled is None or scheduled.scheduled_event_id is None:
+                    raise LiveE2EError(
+                        "SCHEDULER_WRONG_PUBLICATION",
+                        "Scheduler did not dispatch the selected E2E publication",
+                    )
+
+            publisher_task = asyncio.create_task(
+                run_publisher(publisher_stack, should_stop=publisher_stop.is_set),
+                name="live-e2e-publisher",
+            )
 
             def terminal():
                 with factory() as session:
@@ -710,6 +719,7 @@ class LiveE2ERunner:
             factory = stack.session_factory
             with factory() as session:
                 baseline_discoveries = set(session.scalars(select(ArticleDiscovery.id)))
+                baseline_variants = set(session.scalars(select(ContentVariant.id)))
                 baseline_dead_letters = set(session.scalars(select(EventDeadLetter.id)))
             control = DatabasePublishingControl(factory)
             snapshot = control.snapshot()
@@ -725,15 +735,10 @@ class LiveE2ERunner:
             pipeline_task = asyncio.create_task(pipeline.run(), name="live-e2e-pipeline")
             try:
                 await asyncio.wait_for(pipeline.ready_event.wait(), timeout=30)
-                discovery = await self._wait_discovery(
-                    factory,
-                    baseline_discoveries,
-                    baseline_dead_letters,
-                    pipeline_task,
-                )
                 target = await self._wait_target(
                     factory,
-                    discovery.id,
+                    baseline_discoveries,
+                    baseline_variants,
                     baseline_dead_letters,
                     pipeline_task,
                 )

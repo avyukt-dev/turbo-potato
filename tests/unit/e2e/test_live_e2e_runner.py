@@ -14,6 +14,7 @@ from news_ai_e2e.runner import (
     DownloadedMedia,
     LiveE2EError,
     LiveE2ERunner,
+    assert_only_expected_publication,
     assert_safe_publication_baseline,
     build_live_source_documents,
     download_media,
@@ -246,6 +247,10 @@ def test_active_publication_baseline_is_rejected():
     with pytest.raises(LiveE2EError) as exc:
         assert_safe_publication_baseline(factory)
     assert exc.value.code == "ACTIVE_PUBLICATION_EXISTS"
+    assert_only_expected_publication(factory, row.id)
+    with pytest.raises(LiveE2EError) as changed:
+        assert_only_expected_publication(factory, uuid4())
+    assert changed.value.code == "PUBLICATION_SET_CHANGED"
 
 
 def test_api_error_diagnostic_never_copies_provider_or_server_message():
