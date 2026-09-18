@@ -122,9 +122,7 @@ class BoundedLiveFeedCollector:
         candidates = result.articles
         if self.title_contains is not None:
             candidates = [
-                article
-                for article in candidates
-                if self.title_contains in article.title.casefold()
+                article for article in candidates if self.title_contains in article.title.casefold()
             ]
         async with self._lock:
             remaining = max(0, self.maximum_articles - self._selected)
@@ -134,9 +132,7 @@ class BoundedLiveFeedCollector:
 
 
 def _stable_key(prefix: str, material: str, *, slug: str) -> str:
-    normalized = "".join(
-        character if character.isalnum() else "-" for character in slug.casefold()
-    )
+    normalized = "".join(character if character.isalnum() else "-" for character in slug.casefold())
     normalized = "-".join(part for part in normalized.split("-") if part)[:80] or "source"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
     return f"{prefix}-{normalized}-{digest}"[:128]
@@ -222,9 +218,7 @@ async def download_media(
                         raise LiveE2EError("MEDIA_TOO_LARGE", "E2E media exceeded the bounded size")
                 final_url = canonical_public_media_url(str(response.url))
             ordinary_jpeg = (
-                len(data) >= 4
-                and data.startswith(b"\xff\xd8\xff")
-                and data.endswith(b"\xff\xd9")
+                len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9")
             )
             if not ordinary_jpeg:
                 raise LiveE2EError("MEDIA_NOT_JPEG", "E2E media bytes are not an ordinary JPEG")
@@ -377,13 +371,10 @@ def assert_groq_provenance(factory, baseline_ai_runs: set[UUID]) -> None:
     if missing:
         raise LiveE2EError(
             "GROQ_PROVENANCE_MISSING",
-            "Live E2E did not persist every required Groq-backed AI stage: "
-            + ",".join(missing),
+            "Live E2E did not persist every required Groq-backed AI stage: " + ",".join(missing),
         )
 
-    fallback = sorted(
-        {task_type for task_type, provider in rows if provider.casefold() != "groq"}
-    )
+    fallback = sorted({task_type for task_type, provider in rows if provider.casefold() != "groq"})
     if fallback:
         raise LiveE2EError(
             "GROQ_PROVENANCE_FALLBACK",
@@ -393,9 +384,7 @@ def assert_groq_provenance(factory, baseline_ai_runs: set[UUID]) -> None:
 
 def _new_dead_letter(factory, baseline: set[UUID]) -> EventDeadLetter | None:
     with factory() as session:
-        statement = select(EventDeadLetter).order_by(
-            EventDeadLetter.failed_at, EventDeadLetter.id
-        )
+        statement = select(EventDeadLetter).order_by(EventDeadLetter.failed_at, EventDeadLetter.id)
         if baseline:
             statement = statement.where(EventDeadLetter.id.not_in(baseline))
         return session.scalar(statement.limit(1))
@@ -415,7 +404,7 @@ def _review_command(base_url: str, variant: ContentVariant) -> str:
         '-H "Authorization: Bearer $NEWS_AI_REVIEW_API_TOKEN" '
         f'-H "Idempotency-Key: {key}" '
         '-H "Content-Type: application/json" '
-        f"-d '{{\"artifact_version\":{variant.version},\"reason\":null}}'"
+        f'-d \'{"artifact_version":{variant.version},"reason":null}\''
     )
 
 
@@ -541,13 +530,9 @@ class LiveE2ERunner:
                     )
                 )
                 if baseline_variants:
-                    statement = statement.where(
-                        ContentVariant.id.not_in(baseline_variants)
-                    )
+                    statement = statement.where(ContentVariant.id.not_in(baseline_variants))
                 if baseline_discoveries:
-                    statement = statement.where(
-                        ArticleDiscovery.id.not_in(baseline_discoveries)
-                    )
+                    statement = statement.where(ArticleDiscovery.id.not_in(baseline_discoveries))
                 row = session.execute(statement.limit(1)).first()
                 if row is None:
                     return None

@@ -78,15 +78,11 @@ def _require_https_urls(
             address = ipaddress.ip_address(host)
         except ValueError:
             if "." not in host:
-                raise LiveE2EConfigurationError(
-                    f"{name} entries must use a public host"
-                ) from None
+                raise LiveE2EConfigurationError(f"{name} entries must use a public host") from None
         else:
             if not address.is_global:
                 raise LiveE2EConfigurationError(f"{name} entries must use a public host")
-        query_keys = {
-            key.casefold().replace("-", "_") for key, _ in parse_qsl(parsed.query)
-        }
+        query_keys = {key.casefold().replace("-", "_") for key, _ in parse_qsl(parsed.query)}
         if query_keys & _SENSITIVE_QUERY_KEYS:
             raise LiveE2EConfigurationError(
                 f"{name} entries must not contain credential query parameters"
@@ -130,8 +126,7 @@ class LiveE2ESettings:
             )
         if os.getenv("NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE") != MEDIA_CONFIRMATION:
             raise LiveE2EConfigurationError(
-                "NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE must equal "
-                f"{MEDIA_CONFIRMATION}"
+                f"NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE must equal {MEDIA_CONFIRMATION}"
             )
         feed_urls = _csv_env("NEWS_AI_E2E_FEED_URLS")
         media_urls = _csv_env("NEWS_AI_E2E_MEDIA_URLS")
@@ -152,9 +147,7 @@ class LiveE2ESettings:
             media_urls=media_urls,
             api_base_url=api_base_url,
             article_title_contains=title_filter,
-            max_articles_total=_positive_int_env(
-                "NEWS_AI_E2E_MAX_ARTICLES_TOTAL", 3, maximum=20
-            ),
+            max_articles_total=_positive_int_env("NEWS_AI_E2E_MAX_ARTICLES_TOTAL", 3, maximum=20),
             timeout_seconds=_positive_float_env(
                 "NEWS_AI_E2E_TIMEOUT_SECONDS", 900.0, maximum=7200.0
             ),
@@ -182,21 +175,14 @@ class LiveE2ESettings:
             failures.append("NEWS_AI_DATABASE_URL is required")
         if not app.redis_url:
             failures.append("NEWS_AI_REDIS_URL is required")
-        if (
-            app.review_api_token is None
-            or not app.review_api_token.get_secret_value().strip()
-        ):
+        if app.review_api_token is None or not app.review_api_token.get_secret_value().strip():
             failures.append("NEWS_AI_REVIEW_API_TOKEN is required")
         if app.reviewer_id is None:
             failures.append("NEWS_AI_REVIEWER_ID is required")
-        capabilities = {
-            item.strip() for item in app.review_capabilities.split(",") if item.strip()
-        }
+        capabilities = {item.strip() for item in app.review_capabilities.split(",") if item.strip()}
         missing = sorted(_REQUIRED_REVIEW_CAPABILITIES - capabilities)
         if missing:
-            failures.append(
-                "NEWS_AI_REVIEW_CAPABILITIES is missing: " + ",".join(missing)
-            )
+            failures.append("NEWS_AI_REVIEW_CAPABILITIES is missing: " + ",".join(missing))
         if social.social_mode is not SocialMode.LIVE:
             failures.append("NEWS_AI_SOCIAL_MODE must be LIVE")
         if not social.publishing_enabled:

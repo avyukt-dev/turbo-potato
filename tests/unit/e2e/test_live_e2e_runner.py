@@ -254,7 +254,6 @@ def test_active_publication_baseline_is_rejected():
     assert changed.value.code == "PUBLICATION_SET_CHANGED"
 
 
-
 def _add_ai_run(session, provider: str, task_type: str):
     model = session.scalar(
         select(AIModel).where(
