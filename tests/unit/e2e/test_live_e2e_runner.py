@@ -7,8 +7,9 @@ import httpx
 import pytest
 from news_ai_collector import CollectedArticle, FeedDefinition, FeedFetchResult
 from news_ai_common.config import AppSettings
-from news_ai_database import Base, Publication, SocialAccount, SocialAccountStatus
+from news_ai_database import Base, SocialAccount, SocialAccountStatus
 from news_ai_domain import PublicationStatus
+from news_ai_e2e.configuration import LiveE2ESettings
 from news_ai_e2e.runner import (
     BoundedLiveFeedCollector,
     DownloadedMedia,
@@ -21,7 +22,6 @@ from news_ai_e2e.runner import (
     ensure_social_account,
     media_for_slides,
 )
-from news_ai_e2e.configuration import LiveE2ESettings
 from news_ai_social import SocialSettings
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
