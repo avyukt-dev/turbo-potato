@@ -11,6 +11,7 @@ from news_ai_common.config import AppSettings
 from news_ai_social import SocialMode, SocialSettings
 
 LIVE_CONFIRMATION = "LIVE_INSTAGRAM_E2E"
+MEDIA_CONFIRMATION = "PUBLISHABLE_JPEG"
 _REQUIRED_REVIEW_CAPABILITIES = frozenset({"view", "review", "approve", "publish"})
 _SENSITIVE_QUERY_KEYS = frozenset(
     {"access_token", "api_key", "apikey", "password", "secret", "token"}
@@ -126,6 +127,11 @@ class LiveE2ESettings:
         if os.getenv("NEWS_AI_E2E_CONFIRM_LIVE") != LIVE_CONFIRMATION:
             raise LiveE2EConfigurationError(
                 f"NEWS_AI_E2E_CONFIRM_LIVE must equal {LIVE_CONFIRMATION}"
+            )
+        if os.getenv("NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE") != MEDIA_CONFIRMATION:
+            raise LiveE2EConfigurationError(
+                "NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE must equal "
+                f"{MEDIA_CONFIRMATION}"
             )
         feed_urls = _csv_env("NEWS_AI_E2E_FEED_URLS")
         media_urls = _csv_env("NEWS_AI_E2E_MEDIA_URLS")

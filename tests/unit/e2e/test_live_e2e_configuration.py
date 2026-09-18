@@ -4,6 +4,7 @@ import pytest
 from news_ai_common.config import AppSettings
 from news_ai_e2e.configuration import (
     LIVE_CONFIRMATION,
+    MEDIA_CONFIRMATION,
     LiveE2EConfigurationError,
     LiveE2ESettings,
 )
@@ -13,6 +14,7 @@ from news_ai_social import SocialSettings
 def _env(monkeypatch):
     values = {
         "NEWS_AI_E2E_CONFIRM_LIVE": LIVE_CONFIRMATION,
+        "NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE": MEDIA_CONFIRMATION,
         "NEWS_AI_E2E_FEED_URLS": "https://example.org/feed.xml",
         "NEWS_AI_E2E_MEDIA_URLS": "https://cdn.example.org/test.jpg",
         "NEWS_AI_ENVIRONMENT": "production",
@@ -44,6 +46,7 @@ def test_live_e2e_settings_accept_explicit_safe_configuration(monkeypatch):
     ("name", "value"),
     [
         ("NEWS_AI_E2E_CONFIRM_LIVE", "yes"),
+        ("NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE", "no"),
         ("NEWS_AI_E2E_FEED_URLS", "http://example.org/feed.xml"),
         ("NEWS_AI_E2E_MEDIA_URLS", "https://user:pass@example.org/a.jpg"),
         ("NEWS_AI_E2E_FEED_URLS", "https://127.0.0.1/feed.xml"),

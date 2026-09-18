@@ -25,6 +25,8 @@ from news_ai_collector import (
 from news_ai_common.config import AppSettings, ConfigLoader
 from news_ai_content import ContentMediaAttachmentService, MediaAttachmentRequest
 from news_ai_database import (
+    AIModel,
+    AIRun,
     ArticleDiscovery,
     ArticleVersion,
     ContentDraft,
@@ -64,6 +66,14 @@ _ACTIVE_PUBLICATION_STATES = frozenset(
         PublicationStatus.SCHEDULED,
         PublicationStatus.PUBLISHING,
         PublicationStatus.RETRYING,
+    }
+)
+_REQUIRED_GROQ_TASKS = frozenset(
+    {
+        "CLAIM_EXTRACTION",
+        "CONTENT_GENERATION",
+        "EVIDENCE_ASSESSMENT",
+        "QUALITY_CHECKING",
     }
 )
 
@@ -351,6 +361,36 @@ def assert_only_expected_publication(factory, publication_id: UUID) -> None:
         )
 
 
+def assert_groq_provenance(factory, baseline_ai_runs: set[UUID]) -> None:
+    with factory() as session:
+        statement = (
+            select(AIRun.task_type, AIModel.provider)
+            .join(AIModel, AIModel.id == AIRun.ai_model_id)
+            .where(AIRun.task_type.in_(tuple(_REQUIRED_GROQ_TASKS)))
+        )
+        if baseline_ai_runs:
+            statement = statement.where(AIRun.id.not_in(baseline_ai_runs))
+        rows = tuple(session.execute(statement))
+
+    observed = {task_type for task_type, _ in rows}
+    missing = sorted(_REQUIRED_GROQ_TASKS - observed)
+    if missing:
+        raise LiveE2EError(
+            "GROQ_PROVENANCE_MISSING",
+            "Live E2E did not persist every required Groq-backed AI stage: "
+            + ",".join(missing),
+        )
+
+    fallback = sorted(
+        {task_type for task_type, provider in rows if provider.casefold() != "groq"}
+    )
+    if fallback:
+        raise LiveE2EError(
+            "GROQ_PROVENANCE_FALLBACK",
+            "Live E2E used a non-Groq provider for: " + ",".join(fallback),
+        )
+
+
 def _new_dead_letter(factory, baseline: set[UUID]) -> EventDeadLetter | None:
     with factory() as session:
         statement = select(EventDeadLetter).order_by(
@@ -402,22 +442,49 @@ class LiveE2ERunner:
         )
 
     async def _preflight_api(self) -> None:
-        async with self._api_client() as client:
-            health = await client.get("/health")
-            if health.status_code != 200:
-                raise LiveE2EError("API_UNHEALTHY", "Local API health check failed")
-            ready = await client.get("/ready")
-            if ready.status_code != 200:
+        try:
+            async with self._api_client() as client:
+                health = await client.get("/health")
+                if health.status_code != 200:
+                    raise LiveE2EError("API_UNHEALTHY", "Local API health check failed")
+                ready = await client.get("/ready")
+                if ready.status_code != 200:
+                    raise LiveE2EError(
+                        "API_NOT_READY",
+                        "Local API dependencies or AI routing are not ready",
+                    )
+                queue = await client.get("/api/v1/review/queue", params={"limit": 1})
+                if queue.status_code != 200:
+                    raise LiveE2EError(
+                        "REVIEW_API_UNAVAILABLE",
+                        "Local review API/authentication preflight failed",
+                    )
+        except httpx.RequestError:
+            raise LiveE2EError("API_UNAVAILABLE", "Local API is unavailable") from None
+
+    async def _wait_pipeline_ready(self, pipeline, pipeline_task: asyncio.Task) -> None:
+        ready_task = asyncio.create_task(pipeline.ready_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (ready_task, pipeline_task),
+                timeout=30,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if ready_task in done and ready_task.result():
+                return
+            if pipeline_task in done:
                 raise LiveE2EError(
-                    "API_NOT_READY",
-                    "Local API dependencies or AI routing are not ready",
+                    "PIPELINE_STARTUP_FAILED",
+                    "Production pipeline exited before becoming ready",
                 )
-            queue = await client.get("/api/v1/review/queue", params={"limit": 1})
-            if queue.status_code != 200:
-                raise LiveE2EError(
-                    "REVIEW_API_UNAVAILABLE",
-                    "Local review API/authentication preflight failed",
-                )
+            raise LiveE2EError(
+                "PIPELINE_STARTUP_TIMEOUT",
+                "Production pipeline did not become ready within 30 seconds",
+            )
+        finally:
+            if not ready_task.done():
+                ready_task.cancel()
+                await asyncio.gather(ready_task, return_exceptions=True)
 
     async def _wait_until(self, predicate, *, timeout: float | None = None):
         deadline = timeout or self.e2e.timeout_seconds
@@ -721,6 +788,7 @@ class LiveE2ERunner:
                 baseline_discoveries = set(session.scalars(select(ArticleDiscovery.id)))
                 baseline_variants = set(session.scalars(select(ContentVariant.id)))
                 baseline_dead_letters = set(session.scalars(select(EventDeadLetter.id)))
+                baseline_ai_runs = set(session.scalars(select(AIRun.id)))
             control = DatabasePublishingControl(factory)
             snapshot = control.snapshot()
             if not snapshot.available or snapshot.database_pause is not True:
@@ -734,7 +802,7 @@ class LiveE2ERunner:
             pipeline = PipelineRunner(stack)
             pipeline_task = asyncio.create_task(pipeline.run(), name="live-e2e-pipeline")
             try:
-                await asyncio.wait_for(pipeline.ready_event.wait(), timeout=30)
+                await self._wait_pipeline_ready(pipeline, pipeline_task)
                 target = await self._wait_target(
                     factory,
                     baseline_discoveries,
@@ -749,6 +817,7 @@ class LiveE2ERunner:
                     baseline_dead_letters,
                     pipeline_task,
                 )
+                assert_groq_provenance(factory, baseline_ai_runs)
                 decision = await self._wait_human_decision(factory, target)
                 if decision.decision is not ReviewState.APPROVED:
                     return LiveE2EResult(
@@ -758,10 +827,13 @@ class LiveE2ERunner:
                 return await self._create_and_publish(factory, run_settings, target)
             finally:
                 pipeline.stop_event.set()
-                with suppress(Exception):
+                try:
                     await asyncio.wait_for(pipeline_task, timeout=30)
-                if not stack._closed:
-                    await stack.close()
+                except TimeoutError:
+                    pipeline_task.cancel()
+                    await asyncio.gather(pipeline_task, return_exceptions=True)
+                except Exception:
+                    pass
                 try:
                     restore_source_registry(
                         factory,
@@ -769,6 +841,8 @@ class LiveE2ERunner:
                     )
                 except Exception:
                     logger.error("live E2E source-registry restoration did not complete")
+                finally:
+                    stack.engine.dispose()
 
 
 async def run_live_e2e() -> LiveE2EResult:

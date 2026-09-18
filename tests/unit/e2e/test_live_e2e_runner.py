@@ -7,7 +7,7 @@ import httpx
 import pytest
 from news_ai_collector import CollectedArticle, FeedDefinition, FeedFetchResult
 from news_ai_common.config import AppSettings
-from news_ai_database import Base, SocialAccount, SocialAccountStatus
+from news_ai_database import AIModel, AIRun, Base, SocialAccount, SocialAccountStatus
 from news_ai_domain import PublicationStatus
 from news_ai_e2e.configuration import LiveE2ESettings
 from news_ai_e2e.runner import (
@@ -15,6 +15,7 @@ from news_ai_e2e.runner import (
     DownloadedMedia,
     LiveE2EError,
     LiveE2ERunner,
+    assert_groq_provenance,
     assert_only_expected_publication,
     assert_safe_publication_baseline,
     build_live_source_documents,
@@ -251,6 +252,76 @@ def test_active_publication_baseline_is_rejected():
     with pytest.raises(LiveE2EError) as changed:
         assert_only_expected_publication(factory, uuid4())
     assert changed.value.code == "PUBLICATION_SET_CHANGED"
+
+
+
+def _add_ai_run(session, provider: str, task_type: str):
+    model = session.scalar(
+        select(AIModel).where(
+            AIModel.provider == provider,
+            AIModel.model_name == f"{provider}-model",
+        )
+    )
+    if model is None:
+        model = AIModel(
+            provider=provider,
+            model_name=f"{provider}-model",
+            locality="CLOUD" if provider == "groq" else "LOCAL",
+            capabilities={},
+        )
+        session.add(model)
+        session.flush()
+    run = AIRun(
+        ai_model_id=model.id,
+        task_type=task_type,
+        status="SUCCEEDED",
+        validation_status="VALIDATED",
+    )
+    session.add(run)
+    session.flush()
+    return run.id
+
+
+def test_groq_provenance_requires_every_target_stage_and_ignores_baseline():
+    factory = _factory()
+    with factory() as session, session.begin():
+        baseline = _add_ai_run(session, "local-llama", "CLAIM_EXTRACTION")
+        for task_type in (
+            "CLAIM_EXTRACTION",
+            "CONTENT_GENERATION",
+            "EVIDENCE_ASSESSMENT",
+            "QUALITY_CHECKING",
+        ):
+            _add_ai_run(session, "groq", task_type)
+
+    assert_groq_provenance(factory, {baseline})
+
+
+def test_groq_provenance_rejects_missing_stage_and_provider_fallback():
+    missing_factory = _factory()
+    with missing_factory() as session, session.begin():
+        for task_type in (
+            "CLAIM_EXTRACTION",
+            "CONTENT_GENERATION",
+            "QUALITY_CHECKING",
+        ):
+            _add_ai_run(session, "groq", task_type)
+    with pytest.raises(LiveE2EError) as missing:
+        assert_groq_provenance(missing_factory, set())
+    assert missing.value.code == "GROQ_PROVENANCE_MISSING"
+
+    fallback_factory = _factory()
+    with fallback_factory() as session, session.begin():
+        for task_type in (
+            "CLAIM_EXTRACTION",
+            "CONTENT_GENERATION",
+            "EVIDENCE_ASSESSMENT",
+        ):
+            _add_ai_run(session, "groq", task_type)
+        _add_ai_run(session, "local-llama", "QUALITY_CHECKING")
+    with pytest.raises(LiveE2EError) as fallback:
+        assert_groq_provenance(fallback_factory, set())
+    assert fallback.value.code == "GROQ_PROVENANCE_FALLBACK"
 
 
 def test_api_error_diagnostic_never_copies_provider_or_server_message():
