@@ -17,7 +17,9 @@ def main() -> None:
         logging.getLogger(__name__).error("live E2E stopped: %s", exc)
         raise SystemExit(1) from None
     except KeyboardInterrupt:
-        logging.getLogger(__name__).warning("live E2E interrupted; publishing is returned to pause")
+        logging.getLogger(__name__).warning(
+            "live E2E interrupted; verify durable publishing pause before further operation"
+        )
         raise SystemExit(130) from None
     except Exception:
         logging.getLogger(__name__).error("live E2E failed; inspect durable diagnostics")

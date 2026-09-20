@@ -9,9 +9,11 @@ from urllib.parse import parse_qsl, urlparse
 
 from news_ai_common.config import AppSettings
 from news_ai_social import SocialMode, SocialSettings
+from sqlalchemy.engine import make_url
 
 LIVE_CONFIRMATION = "LIVE_INSTAGRAM_E2E"
 MEDIA_CONFIRMATION = "PUBLISHABLE_JPEG"
+ISOLATED_DATA_CONFIRMATION = "ISOLATED_E2E_DATA"
 _REQUIRED_REVIEW_CAPABILITIES = frozenset({"view", "review", "approve", "publish"})
 _SENSITIVE_QUERY_KEYS = frozenset(
     {"access_token", "api_key", "apikey", "password", "secret", "token"}
@@ -128,6 +130,10 @@ class LiveE2ESettings:
             raise LiveE2EConfigurationError(
                 f"NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE must equal {MEDIA_CONFIRMATION}"
             )
+        if os.getenv("NEWS_AI_E2E_CONFIRM_ISOLATED_DATA") != ISOLATED_DATA_CONFIRMATION:
+            raise LiveE2EConfigurationError(
+                "NEWS_AI_E2E_CONFIRM_ISOLATED_DATA must explicitly confirm disposable E2E data"
+            )
         feed_urls = _csv_env("NEWS_AI_E2E_FEED_URLS")
         media_urls = _csv_env("NEWS_AI_E2E_MEDIA_URLS")
         _require_https_urls("NEWS_AI_E2E_FEED_URLS", feed_urls, unique=True)
@@ -173,8 +179,16 @@ class LiveE2ESettings:
             failures.append("NEWS_AI_ENVIRONMENT must be production for LIVE Instagram")
         if not app.database_url:
             failures.append("NEWS_AI_DATABASE_URL is required")
+        else:
+            database_name = (make_url(app.database_url).database or "").casefold()
+            if not any(marker in database_name for marker in ("e2e", "test", "disposable")):
+                failures.append("NEWS_AI_DATABASE_URL must name a disposable E2E/test database")
         if not app.redis_url:
             failures.append("NEWS_AI_REDIS_URL is required")
+        else:
+            redis_path = urlparse(app.redis_url).path.strip("/")
+            if not redis_path.isdigit() or int(redis_path) == 0:
+                failures.append("NEWS_AI_REDIS_URL must use a dedicated nonzero Redis database")
         if app.review_api_token is None or not app.review_api_token.get_secret_value().strip():
             failures.append("NEWS_AI_REVIEW_API_TOKEN is required")
         if app.reviewer_id is None:
@@ -189,6 +203,12 @@ class LiveE2ESettings:
             failures.append("NEWS_AI_PUBLISHING_ENABLED must be true")
         if social.instagram_account_id is None:
             failures.append("NEWS_AI_INSTAGRAM_ACCOUNT_ID is required")
+        elif os.getenv("NEWS_AI_E2E_CONFIRM_INSTAGRAM_ACCOUNT_ID") != str(
+            social.instagram_account_id
+        ):
+            failures.append(
+                "NEWS_AI_E2E_CONFIRM_INSTAGRAM_ACCOUNT_ID must match the dedicated test account"
+            )
         if (
             social.instagram_access_token is None
             or not social.instagram_access_token.get_secret_value().strip()

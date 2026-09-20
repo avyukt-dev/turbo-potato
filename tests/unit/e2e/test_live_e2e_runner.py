@@ -22,6 +22,8 @@ from news_ai_e2e.runner import (
     download_media,
     ensure_social_account,
     media_for_slides,
+    require_public_request_destination,
+    restore_publishing_pause,
 )
 from news_ai_social import SocialSettings
 from sqlalchemy import create_engine, select
@@ -87,7 +89,7 @@ def test_bounded_live_collector_filters_and_enforces_global_budget():
 
 
 def _jpeg() -> bytes:
-    return b"\xff\xd8\xff\xe0" + b"e2e-jpeg-payload" + b"\xff\xd9"
+    return b"\xff\xd8\xff\xe0\x00\x02\xff\xc0\x00\x02\xff\xda\x00\x02e2e-jpeg-payload\xff\xd9"
 
 
 def test_media_download_validates_jpeg_and_hash():
@@ -166,6 +168,43 @@ def test_media_download_enforces_byte_bound():
     assert exc.value.code == "MEDIA_TOO_LARGE"
 
 
+@pytest.mark.parametrize(
+    "extension_marker",
+    [b"\xff\xe2\x00\x06MPF\x00", b"\xff\xe3\x00\x0a_JPSJPS_"],
+)
+def test_media_download_rejects_mpo_and_jps_before_persistence(extension_marker):
+    payload = b"\xff\xd8" + extension_marker + _jpeg()[2:]
+
+    async def scenario():
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=payload,
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            await download_media(
+                ("https://cdn.example.org/test.jpg",), maximum_bytes=1024, client=client
+            )
+
+    with pytest.raises(LiveE2EError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.code == "MEDIA_NOT_JPEG"
+
+
+def test_request_destination_rejects_private_dns_resolution(monkeypatch):
+    monkeypatch.setattr(
+        "news_ai_e2e.runner.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("127.0.0.1", 443))],
+    )
+    request = httpx.Request("GET", "https://public.example/feed")
+    with pytest.raises(LiveE2EError) as exc:
+        asyncio.run(require_public_request_destination(request))
+    assert exc.value.code == "UNSAFE_EXTERNAL_URL"
+
+
 def test_one_media_url_can_fill_carousel_but_partial_lists_are_rejected():
     item = DownloadedMedia("https://cdn.example.org/test.jpg", "a" * 64)
     assert media_for_slides((item,), 3) == (item, item, item)
@@ -232,6 +271,32 @@ def test_existing_unsafe_social_account_is_never_mutated_by_harness(status, capa
         assert account.capabilities == capabilities
 
 
+def test_existing_non_e2e_account_is_rejected_even_when_active():
+    factory = _factory()
+    with factory() as session, session.begin():
+        session.add(
+            SocialAccount(
+                platform="INSTAGRAM",
+                account_name="production",
+                account_identifier="123456",
+                status=SocialAccountStatus.ACTIVE,
+                credential_reference="env:NEWS_AI_INSTAGRAM_ACCESS_TOKEN",
+                capabilities={"image": True, "carousel": True},
+                account_metadata={"managed_by": "operator"},
+            )
+        )
+    settings = SocialSettings(
+        environment="production",
+        social_mode="LIVE",
+        publishing_enabled=True,
+        instagram_account_id="123456",
+        instagram_access_token="secret",
+    )
+    with pytest.raises(LiveE2EError) as exc:
+        ensure_social_account(factory, settings, account_name="e2e")
+    assert exc.value.code == "INSTAGRAM_ACCOUNT_UNSAFE"
+
+
 def test_empty_publication_baseline_is_safe():
     assert_safe_publication_baseline(_factory())
 
@@ -252,6 +317,17 @@ def test_active_publication_baseline_is_rejected():
     with pytest.raises(LiveE2EError) as changed:
         assert_only_expected_publication(factory, uuid4())
     assert changed.value.code == "PUBLICATION_SET_CHANGED"
+
+
+def test_pause_restoration_failure_is_never_suppressed():
+    class BrokenControl:
+        def set_paused(self, paused, *, reason):
+            raise RuntimeError("SUPER_SECRET_PROVIDER_ERROR")
+
+    with pytest.raises(LiveE2EError) as exc:
+        restore_publishing_pause(BrokenControl(), "run")
+    assert exc.value.code == "PUBLISHING_REPAUSE_FAILED"
+    assert "SUPER_SECRET_PROVIDER_ERROR" not in str(exc.value)
 
 
 def _add_ai_run(session, provider: str, task_type: str):

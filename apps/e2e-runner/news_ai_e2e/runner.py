@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import shutil
+import socket
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
@@ -29,10 +31,13 @@ from news_ai_database import (
     AIRun,
     ArticleDiscovery,
     ArticleVersion,
+    Claim,
+    ClaimEvidence,
     ContentDraft,
     ContentQualityCheck,
     ContentVariant,
     EventDeadLetter,
+    EvidenceItem,
     MediaAsset,
     Publication,
     ReviewDecisionRecord,
@@ -131,6 +136,67 @@ class BoundedLiveFeedCollector:
         return result.model_copy(update={"articles": selected})
 
 
+async def require_public_request_destination(request: httpx.Request) -> None:
+    """Reject every request/redirect unless DNS resolves exclusively to public addresses."""
+
+    host = request.url.host
+    if not host:
+        raise LiveE2EError("UNSAFE_EXTERNAL_URL", "External URL has no host")
+    try:
+        addresses = await asyncio.to_thread(
+            socket.getaddrinfo, host, request.url.port or 443, type=socket.SOCK_STREAM
+        )
+    except OSError:
+        raise LiveE2EError(
+            "EXTERNAL_DNS_UNAVAILABLE", "External host could not be resolved"
+        ) from None
+    resolved = {item[4][0] for item in addresses}
+    if not resolved or any(not ipaddress.ip_address(address).is_global for address in resolved):
+        raise LiveE2EError(
+            "UNSAFE_EXTERNAL_URL", "External URL resolved to a non-public destination"
+        )
+
+
+def _is_ordinary_jpeg(data: bytes | bytearray) -> bool:
+    """Validate a baseline JPEG container and reject MPO/JPS extension markers."""
+
+    if len(data) < 8 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+        return False
+    position = 2
+    saw_frame = False
+    saw_scan = False
+    while position + 1 < len(data):
+        if data[position] != 0xFF:
+            return saw_scan
+        while position < len(data) and data[position] == 0xFF:
+            position += 1
+        if position >= len(data):
+            return False
+        marker = data[position]
+        position += 1
+        if marker == 0xD9:
+            return saw_frame and saw_scan
+        if marker == 0xDA:
+            saw_scan = True
+            return saw_frame
+        if marker in {0x01, *range(0xD0, 0xD8)}:
+            continue
+        if position + 2 > len(data):
+            return False
+        length = int.from_bytes(data[position : position + 2], "big")
+        if length < 2 or position + length > len(data):
+            return False
+        payload = bytes(data[position + 2 : position + length])
+        if marker == 0xE2 and payload.startswith(b"MPF\x00"):
+            return False
+        if marker == 0xE3 and b"_JPSJPS_" in payload:
+            return False
+        if marker in range(0xC0, 0xD0) and marker not in {0xC4, 0xC8, 0xCC}:
+            saw_frame = True
+        position += length
+    return False
+
+
 def _stable_key(prefix: str, material: str, *, slug: str) -> str:
     normalized = "".join(character if character.isalnum() else "-" for character in slug.casefold())
     normalized = "-".join(part for part in normalized.split("-") if part)[:80] or "source"
@@ -201,7 +267,11 @@ async def download_media(
     client: httpx.AsyncClient | None = None,
 ) -> tuple[DownloadedMedia, ...]:
     owned = client is None
-    client = client or httpx.AsyncClient(follow_redirects=True, timeout=30)
+    client = client or httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=30,
+        event_hooks={"request": [require_public_request_destination]},
+    )
     results: list[DownloadedMedia] = []
     try:
         for raw_url in urls:
@@ -217,10 +287,7 @@ async def download_media(
                     if len(data) > maximum_bytes:
                         raise LiveE2EError("MEDIA_TOO_LARGE", "E2E media exceeded the bounded size")
                 final_url = canonical_public_media_url(str(response.url))
-            ordinary_jpeg = (
-                len(data) >= 4 and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9")
-            )
-            if not ordinary_jpeg:
+            if not _is_ordinary_jpeg(data):
                 raise LiveE2EError("MEDIA_NOT_JPEG", "E2E media bytes are not an ordinary JPEG")
             results.append(
                 DownloadedMedia(
@@ -320,6 +387,9 @@ def ensure_social_account(factory, social: SocialSettings, *, account_name: str)
             or not isinstance(account.capabilities, dict)
             or account.capabilities.get("image") is not True
             or account.capabilities.get("carousel") is not True
+            or account.credential_reference != "env:NEWS_AI_INSTAGRAM_ACCESS_TOKEN"
+            or not isinstance(account.account_metadata, dict)
+            or account.account_metadata.get("managed_by") != "live-e2e-runner"
         ):
             raise LiveE2EError(
                 "INSTAGRAM_ACCOUNT_UNSAFE",
@@ -355,18 +425,84 @@ def assert_only_expected_publication(factory, publication_id: UUID) -> None:
         )
 
 
-def assert_groq_provenance(factory, baseline_ai_runs: set[UUID]) -> None:
+def restore_publishing_pause(control: DatabasePublishingControl, run_id: str) -> None:
+    try:
+        restored = control.set_paused(True, reason=f"Live E2E {run_id} safety pause")
+        if not restored.available or restored.database_pause is not True:
+            raise RuntimeError("pause verification failed")
+    except Exception:
+        raise LiveE2EError(
+            "PUBLISHING_REPAUSE_FAILED",
+            "CRITICAL: durable publishing pause could not be verified; "
+            "restore it immediately with newsctl publishing pause",
+        ) from None
+
+
+def assert_groq_provenance(
+    factory,
+    baseline_ai_runs: set[UUID],
+    *,
+    content_variant_id: UUID | None = None,
+) -> None:
     with factory() as session:
+        linked_run_ids: set[UUID] | None = None
+        if content_variant_id is not None:
+            variant = session.get(ContentVariant, content_variant_id)
+            if variant is None:
+                raise LiveE2EError("VARIANT_MISSING", "Selected content variant disappeared")
+            draft = session.get(ContentDraft, variant.content_draft_id)
+            if draft is None:
+                raise LiveE2EError("DRAFT_MISSING", "Selected content draft disappeared")
+            linked_run_ids = {draft.created_by_ai_run_id}
+            linked_run_ids.update(
+                run_id
+                for run_id in session.scalars(
+                    select(Claim.created_by_ai_run_id).where(
+                        Claim.story_id == draft.story_id,
+                        Claim.created_by_ai_run_id.is_not(None),
+                    )
+                )
+                if run_id is not None
+            )
+            quality_run = session.scalar(
+                select(ContentQualityCheck.ai_run_id)
+                .where(
+                    ContentQualityCheck.content_variant_id == variant.id,
+                    ContentQualityCheck.content_variant_version == variant.version,
+                )
+                .order_by(ContentQualityCheck.created_at.desc())
+                .limit(1)
+            )
+            if quality_run is not None:
+                linked_run_ids.add(quality_run)
+            metadata_rows = session.scalars(
+                select(EvidenceItem.evidence_metadata)
+                .join(ClaimEvidence, ClaimEvidence.evidence_id == EvidenceItem.id)
+                .join(Claim, Claim.id == ClaimEvidence.claim_id)
+                .where(Claim.story_id == draft.story_id)
+            )
+            for metadata in metadata_rows:
+                values = metadata.get("assessment_ai_run_ids", []) if metadata else []
+                for value in values if isinstance(values, list) else []:
+                    try:
+                        linked_run_ids.add(UUID(str(value)))
+                    except (TypeError, ValueError):
+                        raise LiveE2EError(
+                            "GROQ_PROVENANCE_INVALID",
+                            "Target evidence contains invalid AI provenance",
+                        ) from None
         statement = (
-            select(AIRun.task_type, AIModel.provider)
+            select(AIRun.id, AIRun.task_type, AIModel.provider)
             .join(AIModel, AIModel.id == AIRun.ai_model_id)
             .where(AIRun.task_type.in_(tuple(_REQUIRED_GROQ_TASKS)))
         )
-        if baseline_ai_runs:
+        if linked_run_ids is not None:
+            statement = statement.where(AIRun.id.in_(linked_run_ids))
+        elif baseline_ai_runs:
             statement = statement.where(AIRun.id.not_in(baseline_ai_runs))
         rows = tuple(session.execute(statement))
 
-    observed = {task_type for task_type, _ in rows}
+    observed = {task_type for _, task_type, _ in rows}
     missing = sorted(_REQUIRED_GROQ_TASKS - observed)
     if missing:
         raise LiveE2EError(
@@ -374,7 +510,9 @@ def assert_groq_provenance(factory, baseline_ai_runs: set[UUID]) -> None:
             "Live E2E did not persist every required Groq-backed AI stage: " + ",".join(missing),
         )
 
-    fallback = sorted({task_type for task_type, provider in rows if provider.casefold() != "groq"})
+    fallback = sorted(
+        {task_type for _, task_type, provider in rows if provider.casefold() != "groq"}
+    )
     if fallback:
         raise LiveE2EError(
             "GROQ_PROVENANCE_FALLBACK",
@@ -721,8 +859,7 @@ class LiveE2ERunner:
                 with suppress(Exception):
                     await asyncio.wait_for(publisher_task, timeout=30)
             if unpaused:
-                with suppress(Exception):
-                    control.set_paused(True, reason=f"Live E2E {self.run_id} safety pause")
+                restore_publishing_pause(control, self.run_id)
             if publisher_stack is not None and publisher_task is None:
                 from news_ai_publisher.runner import close_stack
 
@@ -760,9 +897,14 @@ class LiveE2ERunner:
                 self.e2e.feed_urls,
             )
             run_settings = self.app_settings.model_copy(update={"config_dir": config_root})
+            feed_client = httpx.AsyncClient(
+                follow_redirects=True,
+                event_hooks={"request": [require_public_request_destination]},
+            )
             collector = BoundedLiveFeedCollector(
                 maximum_articles=self.e2e.max_articles_total,
                 title_contains=self.e2e.article_title_contains,
+                collector=RSSCollector(client=feed_client),
             )
             stack = await build_production_pipeline_stack(
                 run_settings,
@@ -802,7 +944,11 @@ class LiveE2ERunner:
                     baseline_dead_letters,
                     pipeline_task,
                 )
-                assert_groq_provenance(factory, baseline_ai_runs)
+                assert_groq_provenance(
+                    factory,
+                    baseline_ai_runs,
+                    content_variant_id=target.id,
+                )
                 decision = await self._wait_human_decision(factory, target)
                 if decision.decision is not ReviewState.APPROVED:
                     return LiveE2EResult(
@@ -819,6 +965,7 @@ class LiveE2ERunner:
                     await asyncio.gather(pipeline_task, return_exceptions=True)
                 except Exception:
                     pass
+                restoration_failed = False
                 try:
                     restore_source_registry(
                         factory,
@@ -826,8 +973,15 @@ class LiveE2ERunner:
                     )
                 except Exception:
                     logger.error("live E2E source-registry restoration did not complete")
+                    restoration_failed = True
                 finally:
+                    await feed_client.aclose()
                     stack.engine.dispose()
+                if restoration_failed:
+                    raise LiveE2EError(
+                        "SOURCE_REGISTRY_RESTORE_FAILED",
+                        "Canonical source registry restoration failed in isolated E2E data",
+                    ) from None
 
 
 async def run_live_e2e() -> LiveE2EResult:

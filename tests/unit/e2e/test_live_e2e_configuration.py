@@ -15,11 +15,12 @@ def _env(monkeypatch):
     values = {
         "NEWS_AI_E2E_CONFIRM_LIVE": LIVE_CONFIRMATION,
         "NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE": MEDIA_CONFIRMATION,
+        "NEWS_AI_E2E_CONFIRM_ISOLATED_DATA": "ISOLATED_E2E_DATA",
         "NEWS_AI_E2E_FEED_URLS": "https://example.org/feed.xml",
         "NEWS_AI_E2E_MEDIA_URLS": "https://cdn.example.org/test.jpg",
         "NEWS_AI_ENVIRONMENT": "production",
-        "NEWS_AI_DATABASE_URL": "postgresql+psycopg://postgres:postgres@127.0.0.1/news_ai",
-        "NEWS_AI_REDIS_URL": "redis://127.0.0.1:6379/0",
+        "NEWS_AI_DATABASE_URL": "postgresql+psycopg://postgres:postgres@127.0.0.1/news_ai_e2e",
+        "NEWS_AI_REDIS_URL": "redis://127.0.0.1:6379/15",
         "NEWS_AI_REVIEW_API_TOKEN": "review-secret",
         "NEWS_AI_REVIEWER_ID": str(uuid4()),
         "NEWS_AI_REVIEW_CAPABILITIES": "view,review,approve,publish",
@@ -27,6 +28,7 @@ def _env(monkeypatch):
         "NEWS_AI_PUBLISHING_ENABLED": "true",
         "NEWS_AI_PUBLISHING_PAUSED": "false",
         "NEWS_AI_INSTAGRAM_ACCOUNT_ID": "123456",
+        "NEWS_AI_E2E_CONFIRM_INSTAGRAM_ACCOUNT_ID": "123456",
         "NEWS_AI_INSTAGRAM_ACCESS_TOKEN": "instagram-secret",
         "GROQ_API_KEY": "groq-secret",
     }
@@ -47,6 +49,7 @@ def test_live_e2e_settings_accept_explicit_safe_configuration(monkeypatch):
     [
         ("NEWS_AI_E2E_CONFIRM_LIVE", "yes"),
         ("NEWS_AI_E2E_CONFIRM_MEDIA_PUBLISHABLE", "no"),
+        ("NEWS_AI_E2E_CONFIRM_ISOLATED_DATA", "no"),
         ("NEWS_AI_E2E_FEED_URLS", "http://example.org/feed.xml"),
         ("NEWS_AI_E2E_MEDIA_URLS", "https://user:pass@example.org/a.jpg"),
         ("NEWS_AI_E2E_FEED_URLS", "https://127.0.0.1/feed.xml"),
@@ -75,6 +78,9 @@ def test_live_e2e_settings_fail_closed_before_side_effects(monkeypatch, name, va
         ("NEWS_AI_REVIEW_CAPABILITIES", "view,review,approve"),
         ("NEWS_AI_REVIEW_API_TOKEN", ""),
         ("NEWS_AI_INSTAGRAM_ACCESS_TOKEN", ""),
+        ("NEWS_AI_E2E_CONFIRM_INSTAGRAM_ACCOUNT_ID", "different-account"),
+        ("NEWS_AI_DATABASE_URL", "postgresql+psycopg://postgres@127.0.0.1/news_ai"),
+        ("NEWS_AI_REDIS_URL", "redis://127.0.0.1:6379/0"),
     ],
 )
 def test_application_live_prerequisites_are_strict(monkeypatch, name, value):
