@@ -478,6 +478,28 @@ POST /api/v1/review/{artifact_type}/{artifact_id}/request-research
 
 Every decision is audited with actor, artifact/version, decision, timestamp, and reason where applicable.
 
+### Telegram approval channel
+
+```text
+POST /api/v1/integrations/telegram/review/webhook
+```
+
+Telegram is an authenticated interaction channel over the same `ReviewService`; it is not a
+second approval state machine. The webhook requires Telegram's
+`X-Telegram-Bot-Api-Secret-Token`, an allowlisted chat ID, and an allowlisted Telegram user ID
+mapped by deployment configuration to the existing stable `reviewer_id` and capabilities.
+
+The `/review` command returns the next exact reviewable artifact with bounded Fact Sheet,
+claim, risk, content, and quality context. The approval button binds the content-variant UUID
+and exact artifact version. Callback replay uses a deterministic idempotency identity; stale,
+superseded, already-decided, or otherwise ineligible artifacts remain rejected by the canonical
+transactional review service. Telegram credentials, user IDs, callback identifiers, and raw
+provider failures are not approval evidence and must not appear in public diagnostics.
+
+The current Telegram channel supports exact-version approval. Decisions that require a reason
+(`REJECTED` and `CHANGES_REQUESTED`) continue through a reason-capable review client rather than
+fabricating or omitting the required human rationale.
+
 ---
 
 # 22. MVP Approval Invariant

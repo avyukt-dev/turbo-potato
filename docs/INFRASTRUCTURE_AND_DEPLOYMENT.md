@@ -530,6 +530,16 @@ Never store secrets in Git, ordinary plaintext DB fields, prompts, Redis events,
 
 Use environment secrets, encrypted credential storage, or a secret manager according to deployment maturity.
 
+For optional Telegram human approval, deployment supplies
+`NEWS_AI_TELEGRAM_BOT_TOKEN`, `NEWS_AI_TELEGRAM_WEBHOOK_SECRET`,
+`NEWS_AI_TELEGRAM_REVIEW_CHAT_ID`, and `NEWS_AI_TELEGRAM_REVIEWER_USER_ID`, then explicitly sets
+`NEWS_AI_TELEGRAM_REVIEW_ENABLED=true`. The webhook URL is
+`https://<api-host>/api/v1/integrations/telegram/review/webhook`. Configure Telegram `setWebhook`
+with that HTTPS URL, `allowed_updates=["message","callback_query"]`, and the same secret token.
+The API validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header on every update. Bot and
+webhook secrets remain environment/credential-store owned and must not appear in YAML, logs,
+metrics, audit metadata, or callback data.
+
 ---
 
 # 24. Deployment Modes

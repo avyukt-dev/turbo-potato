@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +8,7 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
+from news_ai_api.telegram_review import TelegramReviewController, TelegramUpdate
 from news_ai_database import (
     AuditLog,
     Base,
@@ -107,6 +109,71 @@ def test_concurrent_identical_ui_retries_return_one_decision(
     with postgres_factory() as session:
         assert len(tuple(session.scalars(select(ReviewDecisionRecord)))) == 1
         assert len(tuple(session.scalars(select(AuditLog)))) == 1
+
+
+def test_telegram_callback_persists_exact_version_approval_and_audit(
+    postgres_factory: sessionmaker[Session],
+) -> None:
+    variant_id = seed_reviewable(postgres_factory)[0]
+    service = ReviewService(postgres_factory, _policy())
+
+    class Transport:
+        def __init__(self) -> None:
+            self.answers: list[dict] = []
+            self.cleared: list[dict] = []
+
+        async def send_message(self, **_arguments) -> None:  # pragma: no cover - callback only
+            raise AssertionError("unexpected notification")
+
+        async def answer_callback_query(self, **arguments) -> None:
+            self.answers.append(arguments)
+
+        async def clear_reply_markup(self, **arguments) -> None:
+            self.cleared.append(arguments)
+
+    transport = Transport()
+    principal = _principal()
+    controller = TelegramReviewController(
+        service,
+        transport,
+        chat_id=-100123,
+        reviewer_user_id=456,
+        principal=principal,
+    )
+    update = TelegramUpdate.model_validate(
+        {
+            "update_id": 9,
+            "callback_query": {
+                "id": "postgres-callback",
+                "from": {"id": 456},
+                "message": {
+                    "message_id": 22,
+                    "chat": {"id": -100123, "type": "supergroup"},
+                },
+                "data": f"approve:{variant_id.hex}:1",
+            },
+        }
+    )
+
+    asyncio.run(controller.handle(update))
+    asyncio.run(controller.handle(update))
+
+    with postgres_factory() as session:
+        decision = session.scalar(select(ReviewDecisionRecord))
+        audit = session.scalar(select(AuditLog))
+        assert decision is not None
+        assert decision.artifact_id == variant_id
+        assert decision.artifact_version == 1
+        assert decision.decision is ReviewState.APPROVED
+        assert decision.reviewer_id == principal.reviewer_id
+        assert audit is not None and audit.review_decision_id == decision.id
+        assert session.get(ContentVariant, variant_id).review_state is ReviewState.APPROVED
+        assert session.scalar(select(func.count()).select_from(ReviewDecisionRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(AuditLog)) == 1
+    assert transport.cleared == [
+        {"chat_id": -100123, "message_id": 22},
+        {"chat_id": -100123, "message_id": 22},
+    ]
 
 
 def test_fact_sheet_correction_serializes_before_delayed_approval(

@@ -25,6 +25,11 @@ from .dependencies import build_production_review_stack
 from .publications import create_publication_router
 from .readiness import ReadinessProbe, run_dependency_checks
 from .review import create_review_router
+from .telegram_review import (
+    TelegramReviewController,
+    build_telegram_review_controller,
+    create_telegram_review_router,
+)
 
 
 def create_app(
@@ -34,6 +39,7 @@ def create_app(
     review_service: ReviewService | None = None,
     reviewer_authenticator: ReviewerTokenAuthenticator | None = None,
     publication_service: PublicationService | None = None,
+    telegram_review_controller: TelegramReviewController | None = None,
     metrics_probe=collect_metrics,
 ) -> FastAPI:
     resolved_settings = settings or AppSettings()
@@ -137,26 +143,34 @@ def create_app(
         )
 
     resolved_review_service = review_service
-    review_auth_configured = (
+    review_api_configured = (
         resolved_settings.review_api_token is not None and resolved_settings.reviewer_id is not None
+    )
+    telegram_review_configured = (
+        resolved_settings.telegram_review_enabled
+        and resolved_settings.telegram_bot_token is not None
+        and resolved_settings.telegram_webhook_secret is not None
+        and resolved_settings.telegram_review_chat_id is not None
+        and resolved_settings.telegram_reviewer_user_id is not None
+        and resolved_settings.reviewer_id is not None
     )
     if (
         resolved_review_service is None
         and resolved_settings.database_url
         and resolved_settings.environment != "test"
-        and not review_auth_configured
+        and not (review_api_configured or telegram_review_configured)
     ):
         raise ReviewConfigurationError("production review authentication is not configured")
     if (
         resolved_review_service is None
         and resolved_settings.database_url
-        and review_auth_configured
+        and (review_api_configured or telegram_review_configured)
     ):
         review_stack = build_production_review_stack(resolved_settings)
         application.state.review_stack = review_stack
         resolved_review_service = review_stack.service
         reviewer_authenticator = review_stack.authenticator
-        if publication_service is None:
+        if publication_service is None and review_api_configured:
             publication_service = PublicationService(
                 resolved_review_service.session_factory,
                 ApprovalEligibilityService(
@@ -165,10 +179,22 @@ def create_app(
                 ),
                 platform_config=load_instagram_config(resolved_settings.config_dir),
             )
-    if resolved_review_service is not None:
+    if resolved_review_service is not None and review_api_configured:
         authenticator = reviewer_authenticator or ReviewerTokenAuthenticator(resolved_settings)
         application.include_router(create_review_router(resolved_review_service, authenticator))
-    if publication_service is not None:
+    if resolved_review_service is not None and telegram_review_configured:
+        controller = telegram_review_controller or build_telegram_review_controller(
+            resolved_settings, resolved_review_service
+        )
+        application.include_router(
+            create_telegram_review_router(
+                controller,
+                resolved_settings.telegram_webhook_secret.get_secret_value(),
+            )
+        )
+    elif telegram_review_configured:
+        raise ReviewConfigurationError("Telegram review database configuration is unavailable")
+    if publication_service is not None and review_api_configured:
         application.include_router(
             create_publication_router(
                 publication_service,
