@@ -46,6 +46,7 @@ from .graph import (
     EvidenceProvenanceState,
     EvidenceTemporalRole,
 )
+from .methodology import EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
 from .policy import SearchPolicy, SearchPolicyEnforcer
 from .provider import (
     SearchCapabilityError,
@@ -347,6 +348,9 @@ class EvidenceEngine:
             "research",
             {
                 "methodology_version": self.methodology_version,
+                "evidence_assessment_methodology_version": (
+                    EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
+                ),
                 "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
                 "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "story_id": story.id,
@@ -394,6 +398,9 @@ class EvidenceEngine:
             payload={
                 "plan": plan.model_dump(mode="json"),
                 "methodology_version": self.methodology_version,
+                "evidence_assessment_methodology_version": (
+                    EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
+                ),
                 "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
                 "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
                 "reasoning_by_claim": {
@@ -505,6 +512,13 @@ class EvidenceEngine:
             raise ValueError(f"research run is not collectible from status {job.status!r}")
         if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
             raise ValueError("research run requires replanning under current evidence semantics")
+        if (
+            job.payload.get("evidence_assessment_methodology_version")
+            != EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
+        ):
+            raise ValueError(
+                "research run requires replanning under current assessment methodology"
+            )
         if job.payload.get("reasoning_policy_version") != REASONING_ROUTING_POLICY_VERSION:
             raise ValueError("research run requires replanning under current reasoning policy")
         raw_plan = job.payload.get("plan")
@@ -787,6 +801,13 @@ class EvidenceEngine:
             raise ValueError(f"research run cannot complete from status {job.status!r}")
         if job.payload.get("evidence_graph_policy_version") != EVIDENCE_GRAPH_POLICY_VERSION:
             raise ValueError("research run requires replanning under current evidence semantics")
+        if (
+            job.payload.get("evidence_assessment_methodology_version")
+            != EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
+        ):
+            raise ValueError(
+                "research run requires replanning under current assessment methodology"
+            )
         if job.payload.get("reasoning_policy_version") != REASONING_ROUTING_POLICY_VERSION:
             raise ValueError("research run requires replanning under current reasoning policy")
         self._validate_event_against_plan(event, task.plan)
@@ -990,6 +1011,7 @@ class EvidenceEngine:
 
         job.status = "COMPLETED"
         job.result = {
+            "evidence_assessment_methodology_version": (EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION),
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
             "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
             "evidence_ids": [str(item) for item in evidence_ids],

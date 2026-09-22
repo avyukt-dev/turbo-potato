@@ -445,12 +445,16 @@ def _classify_graph_error(
 ) -> SocialErrorClass:
     if status == 429 or provider_code in _THROTTLE_CODES:
         return SocialErrorClass.RATE_LIMIT
+    if provider_code == 190:
+        return SocialErrorClass.AUTHENTICATION
     # Meta may return permission code 200 with the broad OAuthException type.
     # The numeric cause is more specific than the envelope type.
-    if status == 403 or provider_code in {10, 200}:
+    if provider_code in {10, 200}:
         return SocialErrorClass.PERMISSION
-    if status == 401 or provider_code == 190 or "oauth" in error_type.lower():
+    if status == 401 or "oauth" in error_type.lower():
         return SocialErrorClass.AUTHENTICATION
+    if status == 403:
+        return SocialErrorClass.PERMISSION
     if status == 404:
         return SocialErrorClass.NOT_FOUND
     if status >= 500:

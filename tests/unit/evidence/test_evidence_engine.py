@@ -345,6 +345,56 @@ def test_evidence_graph_policy_version_invalidates_semantic_operation(monkeypatc
     assert second.created and second.research_run_id != first.research_run_id
 
 
+def test_evidence_assessment_methodology_invalidates_semantic_operation(monkeypatch) -> None:
+    import news_ai_evidence.engine as engine_module
+
+    factory = _factory()
+    engine = _engine()
+    _, _, trigger, _, _, first = _prepare(factory, engine)
+    monkeypatch.setattr(
+        engine_module,
+        "EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION",
+        "evidence-assessment-methodology-v2",
+    )
+    with factory() as session, session.begin():
+        second = engine.request_research(session, trigger)
+
+    with factory() as session:
+        stored = session.get(Job, second.research_run_id)
+        assert stored is not None
+        assert (
+            stored.payload["evidence_assessment_methodology_version"]
+            == "evidence-assessment-methodology-v2"
+        )
+    assert second.created and second.research_run_id != first.research_run_id
+
+
+def test_in_flight_old_assessment_methodology_requires_replanning(monkeypatch) -> None:
+    import news_ai_evidence.engine as engine_module
+
+    factory = _factory()
+    engine = _engine()
+    _, _, _, requested, task, _ = _prepare(factory, engine)
+    collection = asyncio.run(engine.collect(task))
+    monkeypatch.setattr(
+        engine_module,
+        "EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION",
+        "evidence-assessment-methodology-v2",
+    )
+
+    with factory() as session, pytest.raises(ValueError, match="assessment methodology"):
+        engine.load_collection_task(session, requested)
+    with (
+        pytest.raises(ValueError, match="assessment methodology"),
+        factory() as session,
+        session.begin(),
+    ):
+        engine.persist_collection(session, requested, task, collection)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(EvidenceItem)) == 0
+
+
 def test_in_flight_old_graph_policy_requires_replanning(monkeypatch) -> None:
     import news_ai_evidence.engine as engine_module
 

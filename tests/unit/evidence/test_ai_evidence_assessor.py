@@ -30,6 +30,7 @@ from news_ai_ai import (
     select_reasoning_effort,
 )
 from news_ai_evidence import (
+    EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION,
     AIRouterEvidenceAssessor,
     CandidateSourceType,
     EvidenceAssessmentPrompt,
@@ -157,6 +158,10 @@ def test_ai_assessor_validates_output_and_preserves_ai_provenance(tmp_path: Path
     assert request.response_schema is not None
     assert request.response_schema.name == "evidence_assessment"
     assert request.response_schema.strict is True
+    assert (
+        request.input["evidence_assessment_methodology_version"]
+        == EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
+    )
     assert request.input["reasoning_policy_version"] == REASONING_ROUTING_POLICY_VERSION
     assert (
         result.ai_provenance.routing_attempts[0]["reasoning_policy_version"]

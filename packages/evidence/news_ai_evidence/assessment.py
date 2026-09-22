@@ -33,6 +33,7 @@ from .graph import (
     EvidenceProvenanceState,
     EvidenceTemporalRole,
 )
+from .methodology import EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
 
 
 class EvidenceAssessmentOutput(BaseModel):
@@ -99,6 +100,7 @@ class AIRouterEvidenceAssessor:
     ) -> EvidenceAssessment | None:
         reasoning = candidate.reasoning
         material = {
+            "evidence_assessment_methodology_version": (EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION),
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
             "reasoning_policy_version": reasoning.policy_version,
             "claim_id": str(candidate.claim_id),
