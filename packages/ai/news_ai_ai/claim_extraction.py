@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -33,6 +34,7 @@ from news_ai_domain.values import (
     VALUE_INTEGRITY_POLICY_VERSION,
     ClaimValueAnchor,
     ClaimValueCandidate,
+    ClaimValueKind,
     anchors_for_claim,
     mechanical_span_present,
 )
@@ -42,12 +44,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .contracts import AIRequest, AIResponse, AIResponseFormat, AITaskType, PromptReference
+from .contracts import (
+    AIRequest,
+    AIResponse,
+    AIResponseFormat,
+    AIResponseSchema,
+    AITaskType,
+    PromptReference,
+)
 from .provider import AIInvalidResponseError
 from .reasoning import REASONING_ROUTING_POLICY_VERSION, select_reasoning_effort
 from .routing import AIRoutedResponse, AIRouter
 
-CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v3"
+CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v4"
 
 
 class ClaimExtractionItem(BaseModel):
@@ -122,6 +131,49 @@ class ClaimExtractionOutput(BaseModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("claim extraction output contains duplicate claims")
         return self
+
+
+def _conservative_value_fallback(payload: dict[str, Any]) -> dict[str, Any]:
+    """Replace invalid canonical guesses with exact-copy-only source annotations."""
+
+    normalized = deepcopy(payload)
+    claims = normalized.get("claims")
+    if not isinstance(claims, list):
+        return normalized
+    for claim in claims:
+        if not isinstance(claim, dict) or not isinstance(claim.get("claim_text"), str):
+            continue
+        candidates = claim.get("value_candidates")
+        if not isinstance(candidates, list):
+            continue
+        for index, candidate in enumerate(candidates):
+            try:
+                ClaimValueCandidate.model_validate(candidate)
+                continue
+            except ValidationError:
+                pass
+            if not isinstance(candidate, dict):
+                continue
+            source_text = candidate.get("source_text")
+            value = candidate.get("value")
+            if (
+                not isinstance(source_text, str)
+                or not mechanical_span_present(claim["claim_text"], source_text)
+                or not isinstance(value, dict)
+            ):
+                continue
+            kind = value.get("kind")
+            if kind == "EXACT_COPY_ONLY":
+                kind = value.get("value_kind")
+            try:
+                value_kind = ClaimValueKind(kind)
+                candidates[index] = ClaimValueCandidate(
+                    source_text=source_text,
+                    value={"kind": "EXACT_COPY_ONLY", "value_kind": value_kind},
+                ).model_dump(mode="json")
+            except (TypeError, ValueError, ValidationError):
+                continue
+    return normalized
 
 
 class StoryArticleInput(BaseModel):
@@ -376,7 +428,9 @@ class ClaimExtractionService:
         def validate_response(response: AIResponse) -> None:
             nonlocal parsed
             try:
-                parsed = ClaimExtractionOutput.model_validate(response.structured)
+                parsed = ClaimExtractionOutput.model_validate(
+                    _conservative_value_fallback(response.structured)
+                )
             except ValidationError as exc:
                 raise AIInvalidResponseError(
                     "claim extraction output failed schema validation"
@@ -396,6 +450,10 @@ class ClaimExtractionService:
             reasoning_policy_version=reasoning.policy_version,
             reasoning_reasons=reasoning.reasons,
             response_format=AIResponseFormat.STRUCTURED,
+            response_schema=AIResponseSchema(
+                name="claim_extraction",
+                json_schema=ClaimExtractionOutput.model_json_schema(),
+            ),
             correlation_id=triggering_event.correlation_id,
             language=context.language,
             sensitivity=context.sensitive_topics,

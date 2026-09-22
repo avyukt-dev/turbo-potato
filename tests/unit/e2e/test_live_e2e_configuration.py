@@ -94,9 +94,19 @@ def test_application_live_prerequisites_are_strict(monkeypatch, name, value):
 def test_missing_groq_is_rejected_without_reading_or_printing_secret(monkeypatch):
     _env(monkeypatch)
     monkeypatch.delenv("GROQ_API_KEY")
+    monkeypatch.delenv("GROQ_API_KEY_2", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY_3", raising=False)
     settings = LiveE2ESettings.from_env()
     with pytest.raises(LiveE2EConfigurationError, match="GROQ_API_KEY"):
         settings.validate_application(AppSettings(), SocialSettings())
+
+
+def test_secondary_groq_credential_satisfies_live_prerequisite(monkeypatch):
+    _env(monkeypatch)
+    monkeypatch.delenv("GROQ_API_KEY")
+    monkeypatch.setenv("GROQ_API_KEY_2", "secondary-secret")
+    settings = LiveE2ESettings.from_env()
+    settings.validate_application(AppSettings(), SocialSettings())
 
 
 def test_loopback_ipv6_is_allowed(monkeypatch):

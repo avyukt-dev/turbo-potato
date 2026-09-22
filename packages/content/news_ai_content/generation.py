@@ -12,16 +12,17 @@ from uuid import UUID
 
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
-    AIFailureReason,
     AIInvalidResponseError,
     AIRequest,
     AIResponse,
     AIResponseFormat,
+    AIResponseSchema,
     AIRoutedResponse,
     AIRouter,
     AIRoutingExecutionError,
     AITaskType,
     PromptReference,
+    is_retryable_routing_failure,
 )
 from news_ai_database import (
     AIModel,
@@ -76,12 +77,6 @@ from .reasoning import editorial_reasoning_decision
 from .values import ClaimValuePresentation, presentation_errors
 
 _QUOTED_SPAN = re.compile(r'[“"]([^”"]+)[”"]')
-_TRANSIENT_AI_FAILURES = {
-    AIFailureReason.UNAVAILABLE,
-    AIFailureReason.TIMEOUT,
-    AIFailureReason.RATE_LIMIT,
-    AIFailureReason.LOCAL_RESOURCE_EXHAUSTED,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +211,7 @@ class ContentGenerationService:
                 "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
                 "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
                 "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
+                "input_projection_version": AI_INPUT_PROJECTION_VERSION,
                 "style": self.style.model_dump(mode="json"),
                 "prompt_id": self.prompt.prompt_id,
                 "prompt_version": self.prompt.version,
@@ -318,7 +314,6 @@ class ContentGenerationService:
                 raise AIInvalidResponseError("content output failed contract validation") from exc
             parsed = output
 
-        reasoning = editorial_reasoning_decision(context.brief)
         provider_input = project_content_generation_input(
             {
                 "immutable_fact_sheet": context.fact_sheet.model_dump(mode="json"),
@@ -334,6 +329,13 @@ class ContentGenerationService:
                 },
             }
         )
+        selected_claim_ids = tuple(
+            UUID(item["claim_id"]) for item in provider_input["editorial_brief"]["claims"]
+        )
+        reasoning = editorial_reasoning_decision(
+            context.brief,
+            claim_ids=selected_claim_ids,
+        )
         request = AIRequest(
             task_type=AITaskType.CONTENT_GENERATION,
             system_prompt=self.prompt.system_prompt,
@@ -347,6 +349,10 @@ class ContentGenerationService:
             reasoning_policy_version=reasoning.policy_version,
             reasoning_reasons=reasoning.reasons,
             response_format=AIResponseFormat.STRUCTURED,
+            response_schema=AIResponseSchema(
+                name="content_generation",
+                json_schema=ContentGenerationOutput.model_json_schema(),
+            ),
             correlation_id=event.correlation_id,
             language=context.generation_language,
             sensitivity=context.fact_sheet.sensitive_topics,
@@ -359,8 +365,7 @@ class ContentGenerationService:
         try:
             routed = await self.router.execute(request, response_validator=validate)
         except AIRoutingExecutionError as exc:
-            reasons = {attempt.failure_reason for attempt in exc.attempts}
-            if reasons and reasons <= _TRANSIENT_AI_FAILURES:
+            if is_retryable_routing_failure(exc):
                 raise TransientEventError("content AI provider is temporarily unavailable") from exc
             raise PermanentEventError("content AI output or route is permanently invalid") from exc
         if parsed is None:

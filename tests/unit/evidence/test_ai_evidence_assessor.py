@@ -30,6 +30,7 @@ from news_ai_ai import (
     select_reasoning_effort,
 )
 from news_ai_evidence import (
+    EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION,
     AIRouterEvidenceAssessor,
     CandidateSourceType,
     EvidenceAssessmentPrompt,
@@ -154,6 +155,13 @@ def test_ai_assessor_validates_output_and_preserves_ai_provenance(tmp_path: Path
     assert request.reasoning_effort is AIReasoningEffort.MEDIUM
     assert request.reasoning_policy_version == REASONING_ROUTING_POLICY_VERSION
     assert request.reasoning_reasons == ()
+    assert request.response_schema is not None
+    assert request.response_schema.name == "evidence_assessment"
+    assert request.response_schema.strict is True
+    assert (
+        request.input["evidence_assessment_methodology_version"]
+        == EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
+    )
     assert request.input["reasoning_policy_version"] == REASONING_ROUTING_POLICY_VERSION
     assert (
         result.ai_provenance.routing_attempts[0]["reasoning_policy_version"]
@@ -233,3 +241,20 @@ def test_hostile_source_instructions_remain_untrusted_ai_input(tmp_path: Path) -
     assert hostile in request.input["candidate_snippet"]
     assert "untrusted" in request.system_prompt.casefold()
     assert request.task_type is AITaskType.EVIDENCE_ASSESSMENT
+
+
+def test_ai_assessor_discards_unanchored_optional_excerpt(tmp_path: Path) -> None:
+    candidate = _candidate()
+    provider = RecordingProvider(
+        {
+            **_valid_output(candidate),
+            "relevant_excerpt": "A paraphrase that is not present in the reviewed snippet.",
+        }
+    )
+
+    result = asyncio.run(_assessor(tmp_path, provider).assess(candidate, "Level was two metres"))
+
+    assert result is not None
+    assert result.relevant_excerpt is None
+    assert result.ai_provenance is not None
+    assert result.ai_provenance.output_payload["relevant_excerpt"] is None

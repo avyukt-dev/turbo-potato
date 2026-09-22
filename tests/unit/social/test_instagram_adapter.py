@@ -166,7 +166,18 @@ def test_processing_failure_and_timeout_are_typed() -> None:
     [
         (400, {"error": {"code": 100}}, SocialErrorClass.VALIDATION),
         (401, {"error": {"code": 190}}, SocialErrorClass.AUTHENTICATION),
+        (
+            403,
+            {"error": {"type": "OAuthException", "code": 190}},
+            SocialErrorClass.AUTHENTICATION,
+        ),
         (403, {"error": {"code": 10}}, SocialErrorClass.PERMISSION),
+        (401, {"error": {"code": 10}}, SocialErrorClass.PERMISSION),
+        (
+            400,
+            {"error": {"type": "OAuthException", "code": 200}},
+            SocialErrorClass.PERMISSION,
+        ),
         (404, {"error": {"code": 803}}, SocialErrorClass.NOT_FOUND),
         (429, {"error": {"code": 4}}, SocialErrorClass.RATE_LIMIT),
         (400, {"error": {"type": "OAuthException", "code": 4}}, SocialErrorClass.RATE_LIMIT),

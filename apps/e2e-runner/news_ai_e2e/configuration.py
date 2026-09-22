@@ -215,9 +215,12 @@ class LiveE2ESettings:
         ):
             failures.append("NEWS_AI_INSTAGRAM_ACCESS_TOKEN is required")
         if groq_api_key_present is None:
-            groq_api_key_present = bool(os.getenv("GROQ_API_KEY", "").strip())
+            groq_api_key_present = any(
+                os.getenv(name, "").strip()
+                for name in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3")
+            )
         if not groq_api_key_present:
-            failures.append("GROQ_API_KEY is required")
+            failures.append("at least one configured GROQ_API_KEY credential is required")
         if publishing_pause_value is None:
             publishing_pause_value = os.getenv("NEWS_AI_PUBLISHING_PAUSED")
         if publishing_pause_value is not None and publishing_pause_value.casefold() != "false":

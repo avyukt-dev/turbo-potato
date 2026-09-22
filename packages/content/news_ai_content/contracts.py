@@ -137,6 +137,24 @@ class ContentGenerationOutput(BaseModel):
             raise ValueError("hashtags must be non-empty and start with #")
         return value
 
+    @field_validator("hashtags", mode="before")
+    @classmethod
+    def normalize_hashtag_markers(cls, value: Any) -> Any:
+        """Apply only mechanical Instagram marker formatting to model output."""
+
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[Any] = []
+        for item in value:
+            if not isinstance(item, str):
+                normalized.append(item)
+                continue
+            stripped = item.strip()
+            normalized.append(
+                stripped if not stripped or stripped.startswith("#") else f"#{stripped}"
+            )
+        return tuple(normalized)
+
     @model_validator(mode="after")
     def sequential_slides(self) -> ContentGenerationOutput:
         if tuple(slide.position for slide in self.slides) != tuple(range(1, len(self.slides) + 1)):

@@ -7,6 +7,12 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from news_ai_ai import (
+    AIFailureReason,
+    AIRouteAttempt,
+    AIRouteAttemptOutcome,
+    AIRoutingExecutionError,
+)
 from news_ai_common.config import ConfigLoader
 from news_ai_database import (
     AIRun,
@@ -128,6 +134,29 @@ class NoopAssessor:
         claim_text: str,
     ) -> EvidenceAssessment | None:
         return None
+
+
+@dataclass
+class PartiallyRateLimitedAssessor(ExplicitAssessor):
+    fail_after: int = 1
+
+    async def assess(
+        self,
+        candidate: ResearchCandidate,
+        claim_text: str,
+    ) -> EvidenceAssessment | None:
+        if len(self.calls) >= self.fail_after:
+            raise AIRoutingExecutionError(
+                (
+                    AIRouteAttempt(
+                        provider_id="assessment-ai",
+                        model="assessment-model",
+                        outcome=AIRouteAttemptOutcome.FAILED,
+                        failure_reason=AIFailureReason.RATE_LIMIT,
+                    ),
+                )
+            )
+        return await super().assess(candidate, claim_text)
 
 
 def _factory() -> sessionmaker[Session]:
@@ -314,6 +343,56 @@ def test_evidence_graph_policy_version_invalidates_semantic_operation(monkeypatc
     with factory() as session, session.begin():
         second = engine.request_research(session, trigger)
     assert second.created and second.research_run_id != first.research_run_id
+
+
+def test_evidence_assessment_methodology_invalidates_semantic_operation(monkeypatch) -> None:
+    import news_ai_evidence.engine as engine_module
+
+    factory = _factory()
+    engine = _engine()
+    _, _, trigger, _, _, first = _prepare(factory, engine)
+    monkeypatch.setattr(
+        engine_module,
+        "EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION",
+        "evidence-assessment-methodology-v2",
+    )
+    with factory() as session, session.begin():
+        second = engine.request_research(session, trigger)
+
+    with factory() as session:
+        stored = session.get(Job, second.research_run_id)
+        assert stored is not None
+        assert (
+            stored.payload["evidence_assessment_methodology_version"]
+            == "evidence-assessment-methodology-v2"
+        )
+    assert second.created and second.research_run_id != first.research_run_id
+
+
+def test_in_flight_old_assessment_methodology_requires_replanning(monkeypatch) -> None:
+    import news_ai_evidence.engine as engine_module
+
+    factory = _factory()
+    engine = _engine()
+    _, _, _, requested, task, _ = _prepare(factory, engine)
+    collection = asyncio.run(engine.collect(task))
+    monkeypatch.setattr(
+        engine_module,
+        "EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION",
+        "evidence-assessment-methodology-v2",
+    )
+
+    with factory() as session, pytest.raises(ValueError, match="assessment methodology"):
+        engine.load_collection_task(session, requested)
+    with (
+        pytest.raises(ValueError, match="assessment methodology"),
+        factory() as session,
+        session.begin(),
+    ):
+        engine.persist_collection(session, requested, task, collection)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(EvidenceItem)) == 0
 
 
 def test_in_flight_old_graph_policy_requires_replanning(monkeypatch) -> None:
@@ -763,3 +842,43 @@ def test_partial_search_failure_is_recorded_without_discarding_other_evidence() 
     assert persisted.query_failure_count == 1
     assert job is not None
     assert len(job.result["query_failures"]) == 1
+
+
+def test_partial_assessment_rate_limit_retains_useful_assessments() -> None:
+    factory = _factory()
+    assessor = PartiallyRateLimitedAssessor(fail_after=1)
+    engine = _engine(assessor=assessor)
+    _, _, _, requested, task, result = _prepare(factory, engine)
+
+    collection = asyncio.run(engine.collect(task))
+
+    assert collection.disposition.value == "PARTIAL"
+    assert len(collection.assessments) == 1
+    assert collection.failures
+    assert collection.failures[0].error_code == "AI_ASSESSMENT_FAILED"
+    assert {item.error_code for item in collection.failures[1:]} <= {"AI_ASSESSMENT_DEFERRED"}
+    assert all(item.retryable for item in collection.failures)
+    assert len(assessor.calls) == 1
+
+    with factory() as session, session.begin():
+        persisted = engine.persist_collection(session, requested, task, collection)
+
+    with factory() as session:
+        job = session.get(Job, result.research_run_id)
+        assert session.scalar(select(func.count()).select_from(EvidenceItem)) == 1
+    assert persisted.query_failure_count == len(collection.failures)
+    assert job is not None and len(job.result["query_failures"]) == len(collection.failures)
+
+
+def test_total_assessment_rate_limit_remains_retryable() -> None:
+    factory = _factory()
+    engine = _engine(assessor=PartiallyRateLimitedAssessor(fail_after=0))
+    _, _, _, _, task, _ = _prepare(factory, engine)
+
+    collection = asyncio.run(engine.collect(task))
+
+    assert collection.disposition.value == "RETRYABLE_FAILURE"
+    assert collection.assessments == ()
+    assert collection.successful_query_count == 0
+    assert collection.failures and all(item.retryable for item in collection.failures)
+    assert len(engine.assessor.calls) == 0

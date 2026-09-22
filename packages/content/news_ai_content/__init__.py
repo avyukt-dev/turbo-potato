@@ -2,6 +2,7 @@
 
 from .ai_projection import (
     AI_INPUT_PROJECTION_VERSION,
+    CONTENT_GENERATION_MAX_CLAIMS,
     AIInputProjectionError,
     project_content_generation_input,
     project_quality_assessment_input,
@@ -56,6 +57,7 @@ from .values import ClaimValueOccurrence, ClaimValuePresentation
 __all__ = [
     "AI_INPUT_PROJECTION_VERSION",
     "AIInputProjectionError",
+    "CONTENT_GENERATION_MAX_CLAIMS",
     "ClaimValuePresentation",
     "ClaimValueOccurrence",
     "ClaimSemanticPresentation",

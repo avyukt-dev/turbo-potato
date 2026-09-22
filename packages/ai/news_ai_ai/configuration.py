@@ -75,9 +75,9 @@ def build_ai_router(
         configured = AIProvidersConfigLoader(loader).load()
         built: list[AIProvider] = []
         for item in configured.providers:
-            secret = os.getenv(item.api_key_env) if item.api_key_env else None
             values = item.model_dump(exclude={"adapter_type"})
             if isinstance(item, ConfiguredLlamaCppProvider):
+                secret = os.getenv(item.api_key_env) if item.api_key_env else None
                 built.append(
                     LlamaCppProvider(
                         LlamaCppProviderConfig.model_validate(values),
@@ -85,10 +85,15 @@ def build_ai_router(
                     )
                 )
             else:
+                secrets = tuple(
+                    value
+                    for name in item.credential_env_names
+                    if (value := os.getenv(name)) is not None and value.strip()
+                )
                 built.append(
                     GroqProvider(
                         GroqProviderConfig.model_validate(values),
-                        api_key=secret,
+                        api_keys=secrets,
                     )
                 )
         providers = built

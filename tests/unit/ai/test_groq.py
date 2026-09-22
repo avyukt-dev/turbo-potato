@@ -18,6 +18,7 @@ from news_ai_ai import (
     AIReasoningReason,
     AIRequest,
     AIResponseFormat,
+    AIResponseSchema,
     AITaskType,
     GroqProvider,
     GroqProviderConfig,
@@ -97,14 +98,27 @@ def test_config_and_provider_declare_closed_cloud_capabilities_without_secret() 
     assert not provider.capabilities.supports_tools
     assert "test-secret" not in config.model_dump_json()
     assert config.api_key_env == "GROQ_API_KEY"
+    assert config.api_key_envs == ()
     asyncio.run(provider.close())
 
 
 def test_config_rejects_insecure_url_and_constructor_requires_key() -> None:
     with pytest.raises(ValidationError, match="HTTPS"):
         GroqProviderConfig(base_url="http://api.groq.com/openai/v1", task_types=ACTIVE_TASKS)
-    with pytest.raises(ValueError, match="GROQ_API_KEY"):
+    with pytest.raises(ValueError, match="GROQ_API_KEY credential"):
         GroqProvider(_config(), api_key="  ")
+
+    with pytest.raises(ValidationError, match="GROQ_API_KEY_<number>"):
+        GroqProviderConfig(
+            task_types=ACTIVE_TASKS,
+            api_key_envs=("UNSAFE_SECRET_NAME",),
+        )
+
+    with pytest.raises(ValidationError, match="must be unique"):
+        GroqProviderConfig(
+            task_types=ACTIVE_TASKS,
+            api_key_envs=("GROQ_API_KEY_2", "GROQ_API_KEY_2"),
+        )
 
 
 def test_structured_request_maps_payload_and_normalizes_response() -> None:
@@ -142,6 +156,56 @@ def test_structured_request_maps_payload_and_normalizes_response() -> None:
         assert response.finish_reason == "stop"
         assert response.metadata == {"system_fingerprint": "fp-1"}
         assert "reasoning" not in response.model_dump_json()
+
+    asyncio.run(run())
+
+
+def test_structured_schema_uses_strict_provider_contract() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            assert payload["response_format"] == {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "claim_output",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "claims": {"type": "array", "items": {"type": "string"}},
+                            "notes": {"type": ["string", "null"]},
+                        },
+                        "required": ["claims", "notes"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+            return httpx.Response(200, json=_completion('{"claims":[],"notes":null}'))
+
+        request = _request().model_copy(
+            update={
+                "response_schema": AIResponseSchema(
+                    name="claim_output",
+                    json_schema={
+                        "type": "object",
+                        "properties": {
+                            "claims": {"type": "array", "items": {"type": "string"}},
+                            "notes": {
+                                "type": ["string", "null"],
+                                "default": None,
+                                "pattern": "^[a-z]+$",
+                            },
+                        },
+                        "required": ["claims"],
+                    },
+                )
+            }
+        )
+        async with _client(handler) as client:
+            response = await GroqProvider(_config(), api_key="test-secret", client=client).execute(
+                request
+            )
+        assert response.structured == {"claims": [], "notes": None}
 
     asyncio.run(run())
 
@@ -280,6 +344,107 @@ def test_413_non_rate_limit_code_remains_context_too_large_without_provider_body
     assert type(caught.value) is AIContextTooLargeError
     assert "secret-provider-body" not in error
     assert "test-secret" not in error
+
+
+def test_rate_limit_preserves_only_bounded_retry_after_guidance() -> None:
+    async def run(header: str) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, headers={"retry-after": header})
+
+        async with _client(handler) as client:
+            await GroqProvider(_config(), api_key="test-secret", client=client).execute(_request())
+
+    with pytest.raises(AIProviderRateLimitError) as caught:
+        asyncio.run(run("12.5"))
+    assert caught.value.retry_after_seconds == 12.5
+
+    with pytest.raises(AIProviderRateLimitError) as caught:
+        asyncio.run(run("9999"))
+    assert caught.value.retry_after_seconds == 60
+
+    with pytest.raises(AIProviderRateLimitError) as caught:
+        asyncio.run(run("secret-provider-header"))
+    assert caught.value.retry_after_seconds is None
+    assert "secret-provider-header" not in str(caught.value)
+
+
+def test_rate_limited_credential_fails_over_once_to_another_credential() -> None:
+    async def run() -> None:
+        seen: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            authorization = request.headers["Authorization"]
+            seen.append(authorization)
+            if authorization == "Bearer first-secret":
+                return httpx.Response(429, headers={"retry-after": "30"})
+            return httpx.Response(200, json=_completion('{"claims":[]}'))
+
+        async with _client(handler) as client:
+            provider = GroqProvider(
+                _config(),
+                api_keys=("first-secret", "second-secret"),
+                client=client,
+            )
+            response = await provider.execute(_request())
+            assert response.structured == {"claims": []}
+            assert seen == ["Bearer first-secret", "Bearer second-secret"]
+
+            seen.clear()
+            await provider.execute(_request())
+            assert seen == ["Bearer second-secret"]
+
+    asyncio.run(run())
+
+
+def test_exhausted_credential_pool_tries_each_unique_key_once_without_leakage() -> None:
+    async def run() -> None:
+        seen: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers["Authorization"])
+            return httpx.Response(429, headers={"retry-after": "20"})
+
+        async with _client(handler) as client:
+            provider = GroqProvider(
+                _config(),
+                api_keys=("first-secret", "first-secret", "second-secret"),
+                client=client,
+            )
+            with pytest.raises(AIProviderRateLimitError) as caught:
+                await provider.execute(_request())
+            assert seen == ["Bearer first-secret", "Bearer second-secret"]
+            assert caught.value.retry_after_seconds == 20
+            assert "first-secret" not in str(caught.value)
+            assert "second-secret" not in str(caught.value)
+
+            seen.clear()
+            with pytest.raises(AIProviderRateLimitError, match="cooling down") as cooling:
+                await provider.execute(_request())
+            assert seen == []
+            assert cooling.value.retry_after_seconds is not None
+
+    asyncio.run(run())
+
+
+def test_non_rate_limit_failure_does_not_cycle_credentials() -> None:
+    async def run() -> None:
+        seen: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers["Authorization"])
+            return httpx.Response(401, json={"error": {"message": "secret-provider-body"}})
+
+        async with _client(handler) as client:
+            provider = GroqProvider(
+                _config(),
+                api_keys=("invalid-secret", "unused-secret"),
+                client=client,
+            )
+            with pytest.raises(AIProviderPolicyError):
+                await provider.execute(_request())
+            assert seen == ["Bearer invalid-secret"]
+
+    asyncio.run(run())
 
 
 def test_413_error_code_takes_precedence_over_conflicting_rate_limit_type() -> None:

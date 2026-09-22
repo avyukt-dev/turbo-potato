@@ -5,7 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-AI_INPUT_PROJECTION_VERSION = "ai-input-projection-v1"
+AI_INPUT_PROJECTION_VERSION = "ai-input-projection-v2"
+CONTENT_GENERATION_MAX_CLAIMS = 3
 
 
 class AIInputProjectionError(ValueError):
@@ -19,22 +20,33 @@ def project_content_generation_input(payload: dict[str, Any]) -> dict[str, Any]:
     brief = _mapping(_required(payload, "editorial_brief"), "editorial_brief")
     _require_same_identity(fact_sheet, brief)
 
-    fact_claim_ids = _claim_ids(_array(_required(fact_sheet, "claims"), "Fact Sheet claims"))
+    fact_claims = _array(_required(fact_sheet, "claims"), "Fact Sheet claims")
+    fact_claim_ids = _claim_ids(fact_claims)
     brief_claim_ids = _claim_ids(_array(_required(brief, "claims"), "Editorial Brief claims"))
     if fact_claim_ids != brief_claim_ids:
         raise AIInputProjectionError(
             "content-generation Fact Sheet and Editorial Brief claim sets do not match"
         )
 
+    selected_claim_ids = _select_content_claim_ids(fact_claims)
+    ceilings = _mapping(_required(payload, "certainty_ceilings"), "certainty_ceilings")
+    if frozenset(str(key) for key in ceilings) != fact_claim_ids:
+        raise AIInputProjectionError(
+            "content-generation certainty ceilings do not match the Fact Sheet claims"
+        )
+
     projected = deepcopy(payload)
     projected["immutable_fact_sheet"] = _project_fact_sheet(
         fact_sheet,
-        selected_claim_ids=fact_claim_ids,
+        selected_claim_ids=selected_claim_ids,
     )
     projected["editorial_brief"] = _project_brief(
         brief,
-        selected_claim_ids=fact_claim_ids,
+        selected_claim_ids=selected_claim_ids,
     )
+    projected["certainty_ceilings"] = {
+        claim_id: deepcopy(ceilings[claim_id]) for claim_id in sorted(selected_claim_ids)
+    }
     return projected
 
 
@@ -347,6 +359,27 @@ def _claim_ids(claims: list[Any]) -> frozenset[str]:
     if len(result) != len(set(result)):
         raise AIInputProjectionError("claim identifiers must be unique")
     return frozenset(result)
+
+
+def _select_content_claim_ids(claims: list[Any]) -> frozenset[str]:
+    """Select the most editorially important claims with stable deterministic tie-breaking."""
+
+    ranked: list[tuple[float, str]] = []
+    for raw in claims:
+        claim = _mapping(raw, "Fact Sheet claim")
+        claim_id = str(_required(claim, "claim_id"))
+        importance = _required(claim, "importance_score")
+        if importance is None:
+            score = -1.0
+        elif isinstance(importance, bool) or not isinstance(importance, (int, float)):
+            raise AIInputProjectionError("Fact Sheet claim importance_score must be numeric")
+        else:
+            score = float(importance)
+            if not 0.0 <= score <= 1.0:
+                raise AIInputProjectionError("Fact Sheet claim importance_score is out of range")
+        ranked.append((-score, claim_id))
+    ranked.sort()
+    return frozenset(claim_id for _, claim_id in ranked[:CONTENT_GENERATION_MAX_CLAIMS])
 
 
 def _unique_ids(values: list[Any], *, owner: str) -> frozenset[str]:

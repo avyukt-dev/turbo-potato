@@ -7,11 +7,13 @@ from uuid import UUID, uuid4
 
 from helpers.claim_semantics import SEMANTICS, presentation
 from news_ai_ai import (
+    AIReasoningEffort,
     AIRequest,
     AIResponse,
     AIRouteAttempt,
     AIRouteAttemptOutcome,
     AIRoutedResponse,
+    ReasoningDecision,
 )
 from news_ai_content import (
     AI_INPUT_PROJECTION_VERSION,
@@ -297,8 +299,24 @@ def _fact_sheet_and_brief(*, two_claims: bool = False) -> tuple[FactSheetArtifac
     return fact_sheet, brief
 
 
-def test_content_service_projects_only_provider_input_and_keeps_canonical_hash() -> None:
+def test_content_service_projects_only_provider_input_and_keeps_canonical_hash(
+    monkeypatch,
+) -> None:
     fact_sheet, brief = _fact_sheet_and_brief()
+    selected_reasoning_claims = None
+
+    def reasoning_for_projection(_brief, *, claim_ids=None):
+        nonlocal selected_reasoning_claims
+        selected_reasoning_claims = tuple(claim_ids) if claim_ids is not None else None
+        return ReasoningDecision(
+            policy_version="reasoning-routing-policy-v1",
+            effort=AIReasoningEffort.MEDIUM,
+        )
+
+    monkeypatch.setattr(
+        "news_ai_content.generation.editorial_reasoning_decision",
+        reasoning_for_projection,
+    )
     router = CaptureContentRouter()
     service = ContentGenerationService(
         router,
@@ -335,6 +353,9 @@ def test_content_service_projects_only_provider_input_and_keeps_canonical_hash()
     assert router.request.metadata == {"input_projection_version": AI_INPUT_PROJECTION_VERSION}
     request_sheet = router.request.input["immutable_fact_sheet"]
     request_brief = router.request.input["editorial_brief"]
+    assert selected_reasoning_claims == tuple(
+        UUID(item["claim_id"]) for item in request_brief["claims"]
+    )
     assert "url" not in request_sheet["evidence"][0]
     assert request_brief["claims"][0]["text"] == brief.claims[0].text
     assert request_brief["claims"][0]["semantics"] == brief.claims[0].semantics.model_dump(

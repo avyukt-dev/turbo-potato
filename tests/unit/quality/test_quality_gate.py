@@ -633,6 +633,10 @@ def test_prompt_injection_is_bounded_untrusted_input_only() -> None:
         }
     _, result = _run(factory, _service(ai), event)
     request = ai.requests[0]
+    assert request.response_schema is not None
+    assert request.response_schema.name == "quality_assessment"
+    assert request.response_schema.strict
+    assert "factual_accuracy_passed" in request.response_schema.json_schema["properties"]
     assert hostile in request.input["content_artifact"]["body"]
     assert "untrusted data" in request.system_prompt
     assert result.passed

@@ -11,17 +11,18 @@ from uuid import UUID
 
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
-    AIFailureReason,
     AIInvalidResponseError,
     AIRequest,
     AIResponse,
     AIResponseFormat,
+    AIResponseSchema,
     AIRoutedResponse,
     AIRouter,
     AIRoutingExecutionError,
     AITaskType,
     PromptReference,
     escalate_reasoning_for_validation,
+    is_retryable_routing_failure,
 )
 from news_ai_content import (
     AI_INPUT_PROJECTION_VERSION,
@@ -70,12 +71,6 @@ from .semantic import SemanticValidationReport, SemanticValidator, fabricated_qu
 # v7 adds value integrity; historical quality methodologies remain immutable.
 QUALITY_METHODOLOGY_VERSION = "quality-gate-methodology-v7"
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
-_TRANSIENT_FAILURES = {
-    AIFailureReason.UNAVAILABLE,
-    AIFailureReason.TIMEOUT,
-    AIFailureReason.RATE_LIMIT,
-    AIFailureReason.LOCAL_RESOURCE_EXHAUSTED,
-}
 
 
 class _InvalidQualityMedia(PermanentEventError):
@@ -510,6 +505,10 @@ class QualityAssessmentService:
                 reasoning_policy_version=reasoning.policy_version,
                 reasoning_reasons=reasoning.reasons,
                 response_format=AIResponseFormat.STRUCTURED,
+                response_schema=AIResponseSchema(
+                    name="quality_assessment",
+                    json_schema=QualityAssessmentOutput.model_json_schema(),
+                ),
                 correlation_id=event.correlation_id,
                 language=variant.artifact["language"],
                 sensitivity=context.sensitive_topics,
@@ -523,8 +522,7 @@ class QualityAssessmentService:
             try:
                 routed = await self.router.execute(request, response_validator=validate)
             except AIRoutingExecutionError as exc:
-                reasons = {attempt.failure_reason for attempt in exc.attempts}
-                if reasons and reasons <= _TRANSIENT_FAILURES:
+                if is_retryable_routing_failure(exc):
                     raise TransientEventError(
                         "quality AI provider is temporarily unavailable"
                     ) from exc

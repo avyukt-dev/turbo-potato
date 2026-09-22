@@ -66,6 +66,7 @@ from .graph import (
     EvidenceProvenanceState,
     EvidenceTemporalRole,
 )
+from .methodology import EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
 from .policy import (
     SearchBudgets,
     SearchExecutionConstraints,
@@ -111,6 +112,7 @@ __all__ = [
     "EvidenceCollectionResult",
     "EvidenceEngine",
     "EVIDENCE_GRAPH_POLICY_VERSION",
+    "EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION",
     "EvidenceDirectness",
     "EvidenceGraphRelationSpec",
     "EvidenceGraphRelationType",

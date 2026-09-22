@@ -40,6 +40,7 @@ from news_ai_ai import (
     PromptReference,
     ProviderCapabilities,
     ProviderLocality,
+    is_retryable_routing_failure,
 )
 from news_ai_common.config import ConfigError, ConfigLoader
 from pydantic import ValidationError
@@ -90,6 +91,7 @@ def _stage(
     task_type: AITaskType,
     providers: tuple[tuple[str, str], ...],
     fallback_on: frozenset[AIFailureReason] = frozenset(),
+    request_defaults: AIStageRequestDefaults | None = None,
 ) -> AIStageConfig:
     return AIStageConfig(
         schema_version=1,
@@ -105,6 +107,7 @@ def _stage(
             for provider, model in providers
         ),
         fallback_on=fallback_on,
+        request_defaults=request_defaults or AIStageRequestDefaults(),
     )
 
 
@@ -244,6 +247,88 @@ def test_fallback_uses_each_stage_selected_model_and_records_attempts() -> None:
     ]
 
 
+def test_stage_rate_limit_retry_preserves_route_and_applies_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("news_ai_ai.routing.asyncio.sleep", capture_sleep)
+    registry = _registry(
+        local_outcomes=[
+            AIProviderRateLimitError("limited", retry_after_seconds=7),
+            _response("local-a", "model-a"),
+        ]
+    )
+    defaults = AIStageRequestDefaults(
+        max_tokens=1024,
+        rate_limit_retry_delays_seconds=(5, 15),
+    )
+    stages = {
+        stage_id: _stage(stage_id, task_type, (("local-a", "model-a"),), request_defaults=defaults)
+        for stage_id, task_type in (
+            (AIStageId.CLAIM_EXTRACTION, AITaskType.CLAIM_EXTRACTION),
+            (AIStageId.EVIDENCE_ASSESSMENT, AITaskType.EVIDENCE_ASSESSMENT),
+            (AIStageId.CONTENT_GENERATION, AITaskType.CONTENT_GENERATION),
+            (AIStageId.QUALITY_CHECKING, AITaskType.QUALITY_CHECKING),
+        )
+    }
+
+    result = asyncio.run(AIRouter(registry, _policy(), stages).execute(_request()))
+
+    provider = registry.get("local-a")
+    assert sleeps == [7]
+    assert [request.max_tokens for request in provider.requests] == [1024, 1024]
+    assert [attempt.failure_reason for attempt in result.attempts] == [
+        AIFailureReason.RATE_LIMIT,
+        None,
+    ]
+
+
+def test_stage_rate_limit_retry_is_bounded_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("news_ai_ai.routing.asyncio.sleep", capture_sleep)
+    defaults = AIStageRequestDefaults(rate_limit_retry_delays_seconds=(3,))
+    stages = {
+        stage_id: _stage(
+            stage_id,
+            task_type,
+            (("local-a", "model-a"), ("cloud-a", "model-b")),
+            frozenset({AIFailureReason.RATE_LIMIT}),
+            defaults,
+        )
+        for stage_id, task_type in (
+            (AIStageId.CLAIM_EXTRACTION, AITaskType.CLAIM_EXTRACTION),
+            (AIStageId.EVIDENCE_ASSESSMENT, AITaskType.EVIDENCE_ASSESSMENT),
+            (AIStageId.CONTENT_GENERATION, AITaskType.CONTENT_GENERATION),
+            (AIStageId.QUALITY_CHECKING, AITaskType.QUALITY_CHECKING),
+        )
+    }
+    registry = _registry(
+        local_outcomes=[
+            AIProviderRateLimitError("limited"),
+            AIProviderRateLimitError("limited"),
+        ]
+    )
+
+    result = asyncio.run(AIRouter(registry, _policy(), stages).execute(_request()))
+
+    assert sleeps == [3]
+    assert [attempt.provider_id for attempt in result.attempts] == [
+        "local-a",
+        "local-a",
+        "cloud-a",
+    ]
+
+
 def test_invalid_response_falls_back_but_policy_rejection_and_sensitive_route_do_not() -> None:
     invalid_registry = _registry(local_outcomes=[AIInvalidResponseError("invalid")])
     result = asyncio.run(AIRouter(invalid_registry, _policy(), _stages()).execute(_request()))
@@ -263,6 +348,37 @@ def test_invalid_response_falls_back_but_policy_rejection_and_sensitive_route_do
             )
         )
     assert not sensitive_cloud.requests
+
+
+def test_mixed_transient_and_invalid_route_remains_retryable() -> None:
+    def failed(reason: AIFailureReason) -> AIRouteAttempt:
+        return AIRouteAttempt(
+            provider_id="cloud-a",
+            model="model-a",
+            outcome=AIRouteAttemptOutcome.FAILED,
+            failure_reason=reason,
+        )
+
+    assert is_retryable_routing_failure(
+        AIRoutingExecutionError(
+            (
+                failed(AIFailureReason.RATE_LIMIT),
+                failed(AIFailureReason.INVALID_RESPONSE),
+                failed(AIFailureReason.UNAVAILABLE),
+            )
+        )
+    )
+    assert not is_retryable_routing_failure(
+        AIRoutingExecutionError((failed(AIFailureReason.INVALID_RESPONSE),))
+    )
+    assert not is_retryable_routing_failure(
+        AIRoutingExecutionError(
+            (
+                failed(AIFailureReason.RATE_LIMIT),
+                failed(AIFailureReason.POLICY_REJECTION),
+            )
+        )
+    )
 
 
 def test_startup_rejects_missing_stage_provider_and_unsupported_model() -> None:

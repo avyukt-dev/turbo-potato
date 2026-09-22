@@ -72,6 +72,16 @@ class PromptReference(BaseModel):
     checksum: str = Field(min_length=1, max_length=128)
 
 
+class AIResponseSchema(BaseModel):
+    """Provider-neutral JSON Schema requested for structured model output."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    json_schema: dict[str, Any]
+    strict: bool = True
+
+
 class AIRequest(BaseModel):
     """Provider-neutral AI invocation request.
 
@@ -92,6 +102,7 @@ class AIRequest(BaseModel):
     reasoning_policy_version: str | None = Field(default=None, min_length=1, max_length=64)
     reasoning_reasons: tuple[AIReasoningReason, ...] = ()
     response_format: AIResponseFormat = AIResponseFormat.TEXT
+    response_schema: AIResponseSchema | None = None
     timeout_seconds: float | None = Field(default=None, gt=0.0, le=600.0)
     priority: int = Field(default=3, ge=1, le=5)
     correlation_id: UUID | None = None
@@ -140,6 +151,15 @@ class AIRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("reasoning_reasons must be unique")
         return value
+
+    @model_validator(mode="after")
+    def require_structured_schema_format(self) -> AIRequest:
+        if (
+            self.response_schema is not None
+            and self.response_format is not AIResponseFormat.STRUCTURED
+        ):
+            raise ValueError("response_schema requires structured response format")
+        return self
 
     @model_validator(mode="after")
     def validate_reasoning_provenance(self) -> AIRequest:

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+from collections.abc import Iterable
 from time import monotonic
 from typing import Any, Literal
 
@@ -37,6 +40,27 @@ from .provider import (
 )
 
 
+def _strict_json_schema(value: Any) -> Any:
+    """Normalize generated schemas to Groq's strict structured-output contract."""
+
+    if isinstance(value, list):
+        return [_strict_json_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = {
+        key: _strict_json_schema(item)
+        for key, item in value.items()
+        # Constrained decoding supports a JSON Schema subset. Application
+        # Pydantic validation remains authoritative for regex refinements.
+        if key not in {"default", "pattern"}
+    }
+    properties = normalized.get("properties")
+    if isinstance(properties, dict):
+        normalized["required"] = list(properties)
+        normalized["additionalProperties"] = False
+    return normalized
+
+
 class GroqProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -47,7 +71,10 @@ class GroqProviderConfig(BaseModel):
     request_timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
     max_context_tokens: int = Field(default=131072, ge=1)
     default_max_completion_tokens: int = Field(default=8192, ge=1)
+    max_retry_after_seconds: float = Field(default=60.0, ge=0.0, le=300.0)
+    credential_cooldown_seconds: float = Field(default=60.0, gt=0.0, le=3600.0)
     api_key_env: Literal["GROQ_API_KEY"] = "GROQ_API_KEY"
+    api_key_envs: tuple[str, ...] = Field(default=(), max_length=15)
 
     @field_validator("model")
     @classmethod
@@ -56,6 +83,22 @@ class GroqProviderConfig(BaseModel):
         if not stripped:
             raise ValueError("Groq model must not be blank")
         return stripped
+
+    @field_validator("api_key_envs")
+    @classmethod
+    def require_safe_unique_credential_references(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("Groq credential environment references must be unique")
+        for name in value:
+            if re.fullmatch(r"GROQ_API_KEY_[1-9][0-9]*", name) is None:
+                raise ValueError(
+                    "additional Groq credential references must use GROQ_API_KEY_<number>"
+                )
+        return value
+
+    @property
+    def credential_env_names(self) -> tuple[str, ...]:
+        return (self.api_key_env, *self.api_key_envs)
 
     @model_validator(mode="after")
     def require_safe_configuration(self) -> GroqProviderConfig:
@@ -71,19 +114,30 @@ class GroqProviderConfig(BaseModel):
 
 
 class GroqProvider:
-    """One-request Groq adapter; fallback and retries remain router/worker concerns."""
+    """Groq adapter with bounded credential failover before router fallback."""
 
     def __init__(
         self,
         config: GroqProviderConfig,
         *,
-        api_key: str | None,
+        api_key: str | None = None,
+        api_keys: Iterable[str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if api_key is None or not api_key.strip():
-            raise ValueError("GROQ_API_KEY is required for the configured Groq provider")
+        if api_key is not None and api_keys is not None:
+            raise ValueError("configure Groq credentials through one constructor input")
+        supplied = (api_key,) if api_keys is None else tuple(api_keys)
+        credentials = tuple(
+            dict.fromkeys(
+                value.strip() for value in supplied if value is not None and value.strip()
+            )
+        )
+        if not credentials:
+            raise ValueError("at least one configured GROQ_API_KEY credential is required")
         self.config = config
-        self._api_key = api_key.strip()
+        self._api_keys = credentials
+        self._credential_cooldowns = [0.0] * len(credentials)
+        self._credential_lock = asyncio.Lock()
         self._base_url = str(config.base_url).rstrip("/")
         self._client = client
         self._owns_client = client is None
@@ -119,12 +173,42 @@ class GroqProvider:
 
     async def execute(self, request: AIRequest) -> AIResponse:
         selected_model = request.model or self.config.model
+        attempted: set[int] = set()
+        last_rate_limit: AIProviderRateLimitError | None = None
+
+        while len(attempted) < len(self._api_keys):
+            selected = await self._acquire_credential(attempted)
+            if selected is None:
+                break
+            credential_index, api_key = selected
+            attempted.add(credential_index)
+            try:
+                response = await self._execute_with_credential(request, selected_model, api_key)
+            except AIProviderRateLimitError as exc:
+                last_rate_limit = exc
+                await self._cool_down_credential(credential_index, exc)
+                continue
+            return response
+
+        if last_rate_limit is not None:
+            raise last_rate_limit
+        raise AIProviderRateLimitError(
+            "All configured Groq credentials are cooling down",
+            retry_after_seconds=await self._minimum_cooldown_remaining(),
+        )
+
+    async def _execute_with_credential(
+        self,
+        request: AIRequest,
+        selected_model: str,
+        api_key: str,
+    ) -> AIResponse:
         started_at = monotonic()
         try:
             response = await self._http_client().post(
                 f"{self._base_url}/chat/completions",
                 json=self._request_payload(request, selected_model),
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers={"Authorization": f"Bearer {api_key}"},
                 timeout=request.timeout_seconds or self.config.request_timeout_seconds,
             )
         except httpx.TimeoutException as exc:
@@ -137,6 +221,40 @@ class GroqProvider:
             return self._normalize_response(request, self._decode_response(response), latency_ms)
         except ValidationError:
             raise AIInvalidResponseError("Groq response failed normalization") from None
+
+    async def _acquire_credential(self, attempted: set[int]) -> tuple[int, str] | None:
+        async with self._credential_lock:
+            now = monotonic()
+            eligible = [
+                index
+                for index, cooldown_until in enumerate(self._credential_cooldowns)
+                if index not in attempted and cooldown_until <= now
+            ]
+            if not eligible:
+                return None
+            index = eligible[0]
+            return index, self._api_keys[index]
+
+    async def _cool_down_credential(
+        self,
+        index: int,
+        rate_limit: AIProviderRateLimitError,
+    ) -> None:
+        async with self._credential_lock:
+            delay = (
+                rate_limit.retry_after_seconds
+                if rate_limit.retry_after_seconds is not None
+                else self.config.credential_cooldown_seconds
+            )
+            self._credential_cooldowns[index] = max(
+                self._credential_cooldowns[index], monotonic() + delay
+            )
+
+    async def _minimum_cooldown_remaining(self) -> float | None:
+        async with self._credential_lock:
+            remaining = [max(0.0, until - monotonic()) for until in self._credential_cooldowns]
+        positive = [value for value in remaining if value > 0.0]
+        return min(positive) if positive else None
 
     def _request_payload(self, request: AIRequest, model: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -157,7 +275,17 @@ class GroqProvider:
         if request.reasoning_effort is not None:
             payload["reasoning_effort"] = request.reasoning_effort.value
         if request.response_format is AIResponseFormat.STRUCTURED:
-            payload["response_format"] = {"type": "json_object"}
+            if request.response_schema is None:
+                payload["response_format"] = {"type": "json_object"}
+            else:
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": request.response_schema.name,
+                        "strict": request.response_schema.strict,
+                        "schema": _strict_json_schema(request.response_schema.json_schema),
+                    },
+                }
         return payload
 
     @staticmethod
@@ -190,14 +318,16 @@ class GroqProvider:
             code if isinstance(code, str) else None,
         )
 
-    @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
+    def _raise_for_status(self, response: httpx.Response) -> None:
         status = response.status_code
         if status < 400:
             return
 
         if status == 429:
-            raise AIProviderRateLimitError("Groq request was rate limited")
+            raise AIProviderRateLimitError(
+                "Groq request was rate limited",
+                retry_after_seconds=self._retry_after_seconds(response),
+            )
         if status in {401, 403}:
             raise AIProviderPolicyError("Groq request was not authorized")
         if status == 413:
@@ -205,7 +335,10 @@ class GroqProvider:
             if error_code == "rate_limit_exceeded" or (
                 error_code is None and error_type == "rate_limit_exceeded"
             ):
-                raise AIProviderRateLimitError("Groq request was rate limited")
+                raise AIProviderRateLimitError(
+                    "Groq request was rate limited",
+                    retry_after_seconds=self._retry_after_seconds(response),
+                )
             raise AIContextTooLargeError("Groq request exceeded the accepted context size")
         if status >= 500:
             raise AIProviderUnavailableError(f"Groq server returned HTTP {status}")
@@ -216,6 +349,17 @@ class GroqProvider:
                 raise AIInvalidResponseError("Groq failed to produce valid structured output")
 
         raise AIProviderError(f"Groq rejected request with HTTP {status}")
+
+    def _retry_after_seconds(self, response: httpx.Response) -> float | None:
+        """Parse only bounded delta-seconds; never expose provider header text."""
+
+        value = response.headers.get("retry-after")
+        if value is None:
+            return None
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*s?\s*", value)
+        if match is None:
+            return None
+        return min(float(match.group(1)), self.config.max_retry_after_seconds)
 
     @staticmethod
     def _decode_response(response: httpx.Response) -> dict[str, Any]:

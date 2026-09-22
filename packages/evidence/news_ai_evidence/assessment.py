@@ -13,6 +13,7 @@ from news_ai_ai import (
     AIRequest,
     AIResponse,
     AIResponseFormat,
+    AIResponseSchema,
     AIRouter,
     AITaskType,
     PromptReference,
@@ -32,6 +33,7 @@ from .graph import (
     EvidenceProvenanceState,
     EvidenceTemporalRole,
 )
+from .methodology import EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION
 
 
 class EvidenceAssessmentOutput(BaseModel):
@@ -98,6 +100,7 @@ class AIRouterEvidenceAssessor:
     ) -> EvidenceAssessment | None:
         reasoning = candidate.reasoning
         material = {
+            "evidence_assessment_methodology_version": (EVIDENCE_ASSESSMENT_METHODOLOGY_VERSION),
             "evidence_graph_policy_version": EVIDENCE_GRAPH_POLICY_VERSION,
             "reasoning_policy_version": reasoning.policy_version,
             "claim_id": str(candidate.claim_id),
@@ -132,9 +135,10 @@ class AIRouterEvidenceAssessor:
                 candidate.result.snippet is None
                 or output.relevant_excerpt not in candidate.result.snippet
             ):
-                raise AIInvalidResponseError(
-                    "evidence assessment excerpt is absent from reviewed source text"
-                )
+                # Excerpts are optional provenance. Never persist a model-invented or
+                # mechanically altered quotation, but retain an otherwise valid
+                # claim-specific assessment instead of retrying the entire research run.
+                output = output.model_copy(update={"relevant_excerpt": None})
             parsed = output
 
         artifacts = _candidate_artifacts(candidate)
@@ -151,6 +155,10 @@ class AIRouterEvidenceAssessor:
             reasoning_policy_version=reasoning.policy_version,
             reasoning_reasons=reasoning.reasons,
             response_format=AIResponseFormat.STRUCTURED,
+            response_schema=AIResponseSchema(
+                name="evidence_assessment",
+                json_schema=EvidenceAssessmentOutput.model_json_schema(),
+            ),
             language=candidate.result.language,
             input_artifact_ids=artifacts,
             input_hash=input_hash,
