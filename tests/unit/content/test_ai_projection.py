@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from news_ai_content import (
+    CONTENT_GENERATION_MAX_CLAIMS,
     AIInputProjectionError,
     project_content_generation_input,
     project_quality_assessment_input,
@@ -247,9 +248,10 @@ def test_content_projection_preserves_factual_contract_and_removes_operational_b
     projected = project_content_generation_input(original)
 
     assert original == snapshot
-    assert [item["claim_id"] for item in projected["editorial_brief"]["claims"]] == [
-        f"claim-{index}" for index in range(6)
-    ]
+    selected = {f"claim-{index}" for index in range(CONTENT_GENERATION_MAX_CLAIMS)}
+    assert {item["claim_id"] for item in projected["editorial_brief"]["claims"]} == selected
+    assert {item["claim_id"] for item in projected["immutable_fact_sheet"]["claims"]} == selected
+    assert set(projected["certainty_ceilings"]) == selected
     first = projected["editorial_brief"]["claims"][0]
     assert first["text"] == snapshot["editorial_brief"]["claims"][0]["text"]
     assert first["status"] == "SUPPORTED"
@@ -269,6 +271,50 @@ def test_content_projection_preserves_factual_contract_and_removes_operational_b
     assert "research_run_id" not in projected_evidence["graph_relations"][0]
     assert _size(projected) < _size(original) * 0.65
     assert _size(projected) < 26_000
+
+
+def test_content_projection_selects_highest_importance_with_stable_ties() -> None:
+    original = _payload()
+    scores = [0.1, 0.9, 0.5, 0.9, 0.2, 0.7]
+    for claim, score in zip(original["immutable_fact_sheet"]["claims"], scores, strict=True):
+        claim["importance_score"] = score
+
+    projected = project_content_generation_input(original)
+
+    assert [item["claim_id"] for item in projected["immutable_fact_sheet"]["claims"]] == [
+        "claim-1",
+        "claim-3",
+        "claim-5",
+    ]
+    assert [item["claim_id"] for item in projected["editorial_brief"]["claims"]] == [
+        "claim-1",
+        "claim-3",
+        "claim-5",
+    ]
+    assert set(projected["certainty_ceilings"]) == {"claim-1", "claim-3", "claim-5"}
+
+
+def test_content_projection_treats_unknown_importance_conservatively() -> None:
+    content = _payload()
+    content["immutable_fact_sheet"]["claims"][0]["importance_score"] = None
+
+    projected = project_content_generation_input(content)
+
+    assert "claim-0" not in {
+        item["claim_id"] for item in projected["immutable_fact_sheet"]["claims"]
+    }
+
+
+def test_content_projection_fails_closed_on_invalid_importance_or_ceilings() -> None:
+    content = _payload()
+    content["immutable_fact_sheet"]["claims"][0]["importance_score"] = "high"
+    with pytest.raises(AIInputProjectionError, match="importance_score must be numeric"):
+        project_content_generation_input(content)
+
+    content = _payload()
+    content["certainty_ceilings"].pop("claim-0")
+    with pytest.raises(AIInputProjectionError, match="certainty ceilings do not match"):
+        project_content_generation_input(content)
 
 
 def test_quality_projection_is_exactly_claim_and_source_scoped() -> None:

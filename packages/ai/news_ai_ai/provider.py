@@ -22,6 +22,10 @@ class AIProviderTimeoutError(AIProviderError):
 class AIProviderRateLimitError(AIProviderError):
     """Provider refused execution because of a rate limit."""
 
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
 
 class AIProviderPolicyError(AIProviderError):
     """Provider or application policy disallows this request."""

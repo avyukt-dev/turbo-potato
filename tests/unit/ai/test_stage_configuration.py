@@ -60,7 +60,10 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
     assert str(groq.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
     assert groq.model == "openai/gpt-oss-120b"
     assert groq.default_max_completion_tokens == 8192
+    assert groq.max_retry_after_seconds == 60
+    assert groq.credential_cooldown_seconds == 60
     assert groq.api_key_env == "GROQ_API_KEY"
+    assert groq.api_key_envs == ("GROQ_API_KEY_2", "GROQ_API_KEY_3")
     assert groq.max_context_tokens == 131072
     assert llama.provider_id == "local-llama"
     assert str(llama.base_url).rstrip("/") == "http://127.0.0.1:8080"
@@ -92,6 +95,21 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
             ("local-llama", "local-news-ai"),
         ]
         assert stage.request_defaults.reasoning_effort is AIReasoningEffort.MEDIUM
+        if stage_id is AIStageId.CLAIM_EXTRACTION:
+            assert stage.request_defaults.max_tokens == 3072
+            assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
+        elif stage_id is AIStageId.EVIDENCE_ASSESSMENT:
+            assert stage.request_defaults.max_tokens == 2048
+            assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
+        elif stage_id is AIStageId.CONTENT_GENERATION:
+            assert stage.request_defaults.max_tokens == 7168
+            assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
+        elif stage_id is AIStageId.QUALITY_CHECKING:
+            assert stage.request_defaults.max_tokens == 4096
+            assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
+        else:
+            assert stage.request_defaults.max_tokens is None
+            assert stage.request_defaults.rate_limit_retry_delays_seconds == ()
         assert stage.fallback_on == frozenset(
             {
                 AIFailureReason.INVALID_RESPONSE,
@@ -221,8 +239,17 @@ def test_production_factory_requires_groq_key_and_builds_without_network(
 ) -> None:
     loader = ConfigLoader("config")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY_2", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY_3", raising=False)
     with pytest.raises(ValueError, match="GROQ_API_KEY"):
         build_ai_router(loader)
+    monkeypatch.setenv("GROQ_API_KEY_2", "secondary-placeholder")
+    router = build_ai_router(loader)
+    assert {item.provider_id for item in router.registry.capabilities()} == {
+        "groq",
+        "local-llama",
+    }
+    monkeypatch.delenv("GROQ_API_KEY_2")
     monkeypatch.setenv("GROQ_API_KEY", "test-placeholder")
     router = build_ai_router(loader)
     assert {item.provider_id for item in router.registry.capabilities()} == {

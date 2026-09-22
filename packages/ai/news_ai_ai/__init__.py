@@ -24,6 +24,7 @@ from .contracts import (
     AIRequest,
     AIResponse,
     AIResponseFormat,
+    AIResponseSchema,
     AITaskType,
     PromptReference,
     ProviderCapabilities,
@@ -73,6 +74,7 @@ from .routing import (
     AIStagePromptConfig,
     AIStageProviderSelection,
     AIStageRequestDefaults,
+    is_retryable_routing_failure,
 )
 
 __all__ = [
@@ -101,6 +103,7 @@ __all__ = [
     "AIReasoningReason",
     "AIResponse",
     "AIResponseFormat",
+    "AIResponseSchema",
     "AIRouteAttempt",
     "AIRouteAttemptOutcome",
     "AIRoutedResponse",
@@ -116,6 +119,7 @@ __all__ = [
     "AIStagePromptConfig",
     "AIStageProviderSelection",
     "AIStageRequestDefaults",
+    "is_retryable_routing_failure",
     "AITaskType",
     "ClaimExtractionExecution",
     "ClaimExtractionItem",

@@ -567,11 +567,27 @@ def test_prompt_injection_in_source_remains_untrusted_input() -> None:
     )
     assert request.task_type is AITaskType.CONTENT_GENERATION
     assert request.response_format is AIResponseFormat.STRUCTURED
+    assert request.response_schema is not None
+    assert request.response_schema.name == "content_generation"
+    assert request.response_schema.strict
+    assert "slides" in request.response_schema.json_schema["properties"]
     assert request.input["editorial_brief"]["claims"][0]["status"] == "PARTIALLY_SUPPORTED"
     assert request.input["editorial_brief"]["claims"][0]["label"] == "PARTIALLY_TRUE"
     assert request.input["editorial_brief"]["unresolved_questions"]
     assert "UNVERIFIED must remain uncertain" in " ".join(request.system_prompt.split())
     assert "arrest" in request.system_prompt and "conviction" in request.system_prompt
+
+
+def test_content_output_mechanically_adds_missing_hashtag_markers() -> None:
+    factory, ai = _factory(), ContentAI(mutate={"hashtags": ["EvidenceFirst", " #News "]})
+    event, _, _ = _seed(factory)
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+
+    execution = asyncio.run(service.generate(context, event))
+
+    assert execution.output.hashtags == ("#EvidenceFirst", "#News")
 
 
 def test_unassessed_fact_sheet_claim_is_rejected_before_ai() -> None:

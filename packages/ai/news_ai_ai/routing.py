@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from enum import StrEnum
 from pathlib import Path
@@ -101,6 +102,15 @@ class AIStagePromptConfig(BaseModel):
 class AIStageRequestDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     reasoning_effort: AIReasoningEffort | None = None
+    max_tokens: int | None = Field(default=None, ge=1, le=32768)
+    rate_limit_retry_delays_seconds: tuple[float, ...] = Field(default=(), max_length=5)
+
+    @field_validator("rate_limit_retry_delays_seconds")
+    @classmethod
+    def require_bounded_rate_limit_delays(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if any(delay < 0 or delay > 300 for delay in value):
+            raise ValueError("rate-limit retry delays must be between 0 and 300 seconds")
+        return value
 
     @field_validator("reasoning_effort")
     @classmethod
@@ -338,6 +348,26 @@ class AIRoutingExecutionError(AIRoutingError):
         return self.provenance.model_dump(mode="json")
 
 
+def is_retryable_routing_failure(error: AIRoutingExecutionError) -> bool:
+    """Return whether at least one transient route can still make progress safely."""
+
+    reasons = {
+        attempt.failure_reason for attempt in error.attempts if attempt.failure_reason is not None
+    }
+    hard_failures = {
+        AIFailureReason.CONTEXT_TOO_LARGE,
+        AIFailureReason.POLICY_REJECTION,
+        AIFailureReason.OTHER,
+    }
+    transient_failures = {
+        AIFailureReason.UNAVAILABLE,
+        AIFailureReason.TIMEOUT,
+        AIFailureReason.RATE_LIMIT,
+        AIFailureReason.LOCAL_RESOURCE_EXHAUSTED,
+    }
+    return not bool(reasons & hard_failures) and bool(reasons & transient_failures)
+
+
 def _validated_request_update(request: AIRequest, **updates: object) -> AIRequest:
     try:
         return AIRequest.model_validate({**request.model_dump(mode="python"), **updates})
@@ -407,6 +437,7 @@ class AIRouter:
             selection = selections[provider_id]
             provider = self.registry.get(provider_id)
             attempt_request = self._attempt_request(route_request, stage, selection)
+            rate_limit_retry_index = 0
 
             while True:
                 try:
@@ -416,6 +447,21 @@ class AIRouter:
                 except AIProviderError as exc:
                     reason = _failure_reason(exc)
                     attempts.append(self._attempt_record(selection, attempt_request, reason))
+                    if reason is AIFailureReason.RATE_LIMIT and rate_limit_retry_index < len(
+                        stage.request_defaults.rate_limit_retry_delays_seconds
+                    ):
+                        configured_delay = stage.request_defaults.rate_limit_retry_delays_seconds[
+                            rate_limit_retry_index
+                        ]
+                        provider_delay = (
+                            exc.retry_after_seconds
+                            if isinstance(exc, AIProviderRateLimitError)
+                            and exc.retry_after_seconds is not None
+                            else 0
+                        )
+                        rate_limit_retry_index += 1
+                        await asyncio.sleep(max(configured_delay, provider_delay))
+                        continue
                     if self._should_escalate_validation(attempt_request, reason):
                         route_request = self._validation_escalated_request(route_request)
                         if provider.capabilities.honors_reasoning_effort:
@@ -534,6 +580,11 @@ class AIRouter:
         attempt = _validated_request_update(
             request,
             model=selection.model,
+            max_tokens=(
+                request.max_tokens
+                if request.max_tokens is not None
+                else stage.request_defaults.max_tokens
+            ),
             reasoning_effort=(
                 request.reasoning_effort
                 if request.reasoning_effort is not None

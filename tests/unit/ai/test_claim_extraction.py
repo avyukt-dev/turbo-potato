@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -54,6 +54,7 @@ class FakeProvider:
     provider_id: str
     locality: ProviderLocality
     outcomes: list[AIResponse | Exception]
+    requests: list[AIRequest] = field(default_factory=list)
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -65,6 +66,7 @@ class FakeProvider:
         )
 
     async def execute(self, request: AIRequest) -> AIResponse:
+        self.requests.append(request)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -240,6 +242,71 @@ def test_claim_output_requires_at_least_one_claim(output) -> None:
 def test_claim_output_accepts_one_valid_claim() -> None:
     output = ClaimExtractionOutput.model_validate({"claims": [_claim()]})
     assert len(output.claims) == 1
+
+
+def test_generate_supplies_strict_typed_response_schema(tmp_path: Path) -> None:
+    factory = _session_factory()
+    story, _, _ = _seed_story(factory)
+    provider = FakeProvider("local", ProviderLocality.LOCAL, [_response("local", [_claim()])])
+    service = ClaimExtractionService(_router(provider), _prompt(tmp_path))
+
+    with factory() as session:
+        context = service.load_context(session, story.id)
+    asyncio.run(service.generate(context, _story_event(story.id)))
+
+    schema = provider.requests[0].response_schema
+    assert schema is not None
+    assert schema.name == "claim_extraction"
+    assert schema.strict is True
+    assert schema.json_schema == ClaimExtractionOutput.model_json_schema()
+
+
+def test_generate_conservatively_preserves_invalid_value_as_exact_copy(tmp_path: Path) -> None:
+    factory = _session_factory()
+    story, _, _ = _seed_story(factory)
+    claim = _claim("The programme lasted nine months.")
+    claim["value_candidates"] = [
+        {
+            "source_text": "nine months",
+            "value": {
+                "kind": "DURATION",
+                "quantity": {"relation": "EXACT", "amount": "9", "upper": None},
+            },
+        }
+    ]
+    provider = FakeProvider("local", ProviderLocality.LOCAL, [_response("local", [claim])])
+    service = ClaimExtractionService(_router(provider), _prompt(tmp_path))
+
+    with factory() as session:
+        context = service.load_context(session, story.id)
+    execution = asyncio.run(service.generate(context, _story_event(story.id)))
+
+    value = execution.output.claims[0].value_candidates[0].value
+    assert value.model_dump(mode="json") == {
+        "kind": "EXACT_COPY_ONLY",
+        "value_kind": "DURATION",
+    }
+
+
+def test_generate_does_not_repair_value_with_unanchored_source_text(tmp_path: Path) -> None:
+    factory = _session_factory()
+    story, _, _ = _seed_story(factory)
+    invalid = _claim("The programme lasted nine months.")
+    invalid["value_candidates"] = [
+        {
+            "source_text": "ten months",
+            "value": {"kind": "DURATION"},
+        }
+    ]
+    first = FakeProvider("local-a", ProviderLocality.LOCAL, [_response("local-a", [invalid])])
+    second = FakeProvider("cloud-a", ProviderLocality.CLOUD, [_response("cloud-a", [_claim()])])
+    service = ClaimExtractionService(_router(first, second), _prompt(tmp_path))
+
+    with factory() as session:
+        context = service.load_context(session, story.id)
+    execution = asyncio.run(service.generate(context, _story_event(story.id)))
+
+    assert execution.routed.response.provider == "cloud-a"
 
 
 def test_generate_uses_domain_validation_for_configured_fallback(tmp_path: Path) -> None:

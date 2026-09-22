@@ -5,6 +5,7 @@ import os
 
 import pytest
 from news_ai_ai import (
+    REASONING_ROUTING_POLICY_VERSION,
     AIReasoningEffort,
     AIRequest,
     AIResponseFormat,
@@ -33,6 +34,7 @@ def test_live_groq_structured_completion_normalizes_without_reasoning() -> None:
                     input={"synthetic": True},
                     model="openai/gpt-oss-120b",
                     reasoning_effort=AIReasoningEffort.MEDIUM,
+                    reasoning_policy_version=REASONING_ROUTING_POLICY_VERSION,
                     response_format=AIResponseFormat.STRUCTURED,
                     # GPT-OSS reasoning tokens consume the completion budget; 64 tokens can
                     # exhaust the budget before valid JSON is produced.

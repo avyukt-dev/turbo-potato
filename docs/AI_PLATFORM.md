@@ -293,7 +293,12 @@ Models should be enabled/disabled without rewriting business logic.
 The current primary CLOUD adapter is Groq using `openai/gpt-oss-120b`, with local
 llama.cpp as fallback. All four active stages select Groq first in HYBRID mode;
 sensitive-topic authorization explicitly allows both providers and remains fail-closed.
-Groq uses one bounded HTTP chat-completions request without SDK dependencies or adapter retries.
+Groq uses bounded HTTP chat-completions requests without SDK dependencies. One logical provider
+call may fail over across the configured credential pool only after a normalized rate-limit
+response; each eligible credential is attempted at most once before the router's normal retry or
+fallback policy resumes. Per-credential cooldown honors bounded `Retry-After` guidance. This is
+availability failover, not quota circumvention: Groq organization limits remain shared across
+keys, and operators must use only credentials/projects authorized under provider policy.
 Only INVALID_RESPONSE, TIMEOUT, RATE_LIMIT, and UNAVAILABLE authorize local fallback;
 policy rejection, unknown failures, and context overflow do not.
 
@@ -335,8 +340,9 @@ operator/application authority regardless of model effort.
 
 Groq receives only existing pipeline context. Built-in browsing, retrieval, and tools are not
 enabled; the Research Engine remains the evidence authority. Prompts and semantic validators
-are shared across providers. The configured credential reference is `GROQ_API_KEY`, never a
-committed key value; missing credentials fail startup/readiness. General adaptive retries,
+are shared across providers. Configured credential references are `GROQ_API_KEY` and optional
+numbered failover slots, never committed key values; missing credentials fail startup/readiness.
+General adaptive retries,
 backoff, and resilience loops remain reserved for a later resilience layer; the single bounded
 MEDIUM-to-HIGH validation escalation above is reasoning-policy behavior, not general retry logic.
 
@@ -911,6 +917,12 @@ local resource exhaustion
 ```
 
 Failures create durable job/provenance state and bounded retry/fallback behavior.
+
+Stage routing may define a bounded output-token budget and bounded rate-limit retry
+delays. A provider-supplied `Retry-After` delta is honored within the configured
+bounded retry attempt count. These waits occur around external inference, never
+inside a durable PostgreSQL transaction; exhaustion continues through the normal
+fallback and worker failure lifecycle.
 
 They do not produce fabricated placeholder facts.
 

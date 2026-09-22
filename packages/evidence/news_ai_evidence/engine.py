@@ -14,7 +14,9 @@ from uuid import UUID, uuid4
 
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
+    AIRoutingExecutionError,
     ReasoningDecision,
+    is_retryable_routing_failure,
     select_reasoning_effort,
 )
 from news_ai_database import (
@@ -610,6 +612,7 @@ class EvidenceEngine:
         failures: list[ResearchQueryFailure] = []
         successful_query_count = 0
         active_claim_set = set(active_claim_ids or task.plan.claim_ids)
+        assessment_retryable_outage = False
 
         for query in task.plan.queries:
             if query.claim_id not in active_claim_set:
@@ -705,7 +708,7 @@ class EvidenceEngine:
                 )
                 continue
 
-            successful_query_count += 1
+            assessment_completed = not response.results
             for result in response.results:
                 candidate = ResearchCandidate(
                     claim_id=query.claim_id,
@@ -718,16 +721,44 @@ class EvidenceEngine:
                     reasoning=task.reasoning_by_claim[query.claim_id],
                 )
                 candidates.append(candidate)
-                assessment = await self.assessor.assess(
-                    candidate,
-                    task.claim_texts[query.claim_id],
-                )
+                if assessment_retryable_outage:
+                    failures.append(
+                        self._query_failure(
+                            query,
+                            provider_id,
+                            "AI_ASSESSMENT_DEFERRED",
+                            "candidate evidence assessment deferred after transient AI outage",
+                            True,
+                        )
+                    )
+                    continue
+                try:
+                    assessment = await self.assessor.assess(
+                        candidate,
+                        task.claim_texts[query.claim_id],
+                    )
+                except AIRoutingExecutionError as exc:
+                    retryable = is_retryable_routing_failure(exc)
+                    failures.append(
+                        self._query_failure(
+                            query,
+                            provider_id,
+                            "AI_ASSESSMENT_FAILED",
+                            "candidate evidence assessment failed",
+                            retryable,
+                        )
+                    )
+                    assessment_retryable_outage = retryable
+                    continue
+                assessment_completed = True
                 if assessment is not None:
                     if assessment.claim_id != query.claim_id:
                         raise ValueError("evidence assessor changed candidate claim_id")
                     if assessment.candidate_url != result.url:
                         raise ValueError("evidence assessor changed candidate URL")
                     assessments.append(assessment)
+            if assessment_completed:
+                successful_query_count += 1
 
         return ResearchCollection(
             research_run_id=task.plan.research_run_id,
