@@ -15,14 +15,22 @@ from news_ai_ai import (
     build_ai_router,
     build_image_router,
 )
-from news_ai_common.config import AppSettings, ConfigLoader
+from news_ai_common.config import (
+    AppSettings,
+    ConfigLoader,
+    GeneratedMediaStorageBackend,
+    S3CompatibleProvider,
+)
 from news_ai_content import (
     MEDIA_GENERATION_PROMPT_CHECKSUM,
     MEDIA_GENERATION_PROMPT_VERSION,
     ContentGenerationPrompt,
     ContentGenerationService,
+    GeneratedMediaStore,
     LocalGeneratedMediaStore,
     MediaGenerationService,
+    S3GeneratedMediaStore,
+    build_s3_client,
 )
 from news_ai_editorial import EditorialConfigLoader
 from news_ai_events import EventType, RedisStreamConsumer
@@ -58,6 +66,7 @@ def build_production_content_stack(
     ai_providers: Iterable[AIProvider] | None = None,
     ai_router: AIRouter | None = None,
     image_providers: tuple[ImageGenerationProvider, ...] | None = None,
+    media_store: GeneratedMediaStore | None = None,
 ) -> ProductionContentStack:
     if not consumer_name.strip():
         raise ValueError("content consumer name must not be blank")
@@ -80,12 +89,10 @@ def build_production_content_stack(
     if settings.media_generation_enabled:
         image_router, image_config = build_image_router(loader, providers=image_providers)
         assert settings.generated_media_public_base_url is not None
+        selected_store = media_store or _build_generated_media_store(settings)
         media_service = MediaGenerationService(
             image_router,
-            LocalGeneratedMediaStore(
-                settings.generated_media_directory,
-                settings.generated_media_public_base_url,
-            ),
+            selected_store,
             methodology_version=image_config.methodology_version,
             watermark_text=settings.generated_media_watermark_text,
         )
@@ -94,12 +101,15 @@ def build_production_content_stack(
             "prompt_version": MEDIA_GENERATION_PROMPT_VERSION,
             "prompt_checksum": MEDIA_GENERATION_PROMPT_CHECKSUM,
             "watermark_text": settings.generated_media_watermark_text,
+            "storage": selected_store.identity,
             "providers": [
                 {"provider_id": item.provider_id, "model": item.model}
                 for item in image_config.providers
             ],
             "output": {"width": 1080, "height": 1350, "mime_type": "image/jpeg"},
         }
+    elif media_store is not None:
+        raise ValueError("generated media store requires media generation to be enabled")
     service = ContentGenerationService(
         router,
         prompt,
@@ -123,6 +133,57 @@ def build_production_content_stack(
             media_service=media_service,
         ),
         media_service=media_service,
+    )
+
+
+def _build_generated_media_store(settings: AppSettings) -> GeneratedMediaStore:
+    assert settings.generated_media_public_base_url is not None
+    if settings.generated_media_storage_backend is GeneratedMediaStorageBackend.LOCAL:
+        return LocalGeneratedMediaStore(
+            settings.generated_media_directory,
+            settings.generated_media_public_base_url,
+            key_prefix=settings.generated_media_key_prefix,
+        )
+    assert settings.generated_media_s3_bucket is not None
+    assert settings.generated_media_s3_region is not None
+    access_key = (
+        settings.generated_media_s3_access_key_id.get_secret_value()
+        if settings.generated_media_s3_access_key_id is not None
+        else None
+    )
+    secret_key = (
+        settings.generated_media_s3_secret_access_key.get_secret_value()
+        if settings.generated_media_s3_secret_access_key is not None
+        else None
+    )
+    session_token = (
+        settings.generated_media_s3_session_token.get_secret_value()
+        if settings.generated_media_s3_session_token is not None
+        else None
+    )
+    provider_names = {
+        S3CompatibleProvider.AWS: "aws-s3",
+        S3CompatibleProvider.CLOUDFLARE_R2: "cloudflare-r2",
+        S3CompatibleProvider.COMPATIBLE: "s3-compatible",
+    }
+    client = build_s3_client(
+        region=settings.generated_media_s3_region,
+        endpoint_url=settings.generated_media_s3_endpoint_url,
+        access_key_id=access_key,
+        secret_access_key=secret_key,
+        session_token=session_token,
+        connect_timeout_seconds=settings.generated_media_s3_connect_timeout_seconds,
+        read_timeout_seconds=settings.generated_media_s3_read_timeout_seconds,
+        max_attempts=settings.generated_media_s3_max_attempts,
+    )
+    return S3GeneratedMediaStore(
+        client,
+        storage_provider=provider_names[settings.generated_media_s3_provider],
+        bucket=settings.generated_media_s3_bucket,
+        region=settings.generated_media_s3_region,
+        public_base_url=settings.generated_media_public_base_url,
+        key_prefix=settings.generated_media_key_prefix,
+        endpoint_url=settings.generated_media_s3_endpoint_url,
     )
 
 

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import io
-import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from news_ai_ai import ImageGenerationRequest, ImageGenerationRouter
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 from .contracts import ContentGenerationOutput
+from .media_storage import GeneratedMediaStore, StoreMediaRequest
 
 MEDIA_GENERATION_PROMPT_VERSION = "media-image-prompt-v1"
 MEDIA_GENERATION_PROMPT_TEMPLATE = (
@@ -50,36 +49,18 @@ class GeneratedMedia:
     input_hash: str
     methodology_version: str
     watermark_text: str
+    storage_provider: str
+    storage_etag: str | None = None
+    storage_version_id: str | None = None
     prompt_version: str = MEDIA_GENERATION_PROMPT_VERSION
     prompt_checksum: str = MEDIA_GENERATION_PROMPT_CHECKSUM
-
-
-class LocalGeneratedMediaStore:
-    """Persist exact JPEG bytes locally; public delivery is configured separately."""
-
-    def __init__(self, root: Path, public_base_url: str) -> None:
-        self.root = root.resolve()
-        self.public_base_url = public_base_url.rstrip("/")
-
-    def write(
-        self, *, input_hash: str, file_hash: str, position: int, content: bytes
-    ) -> tuple[str, str]:
-        key = f"{input_hash[:2]}/{input_hash}/{file_hash}/slide-{position}.jpg"
-        target = (self.root / key).resolve()
-        if self.root not in target.parents:
-            raise ValueError("generated media storage key escaped its configured root")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(f".tmp-{os.getpid()}")
-        temporary.write_bytes(content)
-        os.replace(temporary, target)
-        return key, f"{self.public_base_url}/{key}"
 
 
 class MediaGenerationService:
     def __init__(
         self,
         router: ImageGenerationRouter,
-        store: LocalGeneratedMediaStore,
+        store: GeneratedMediaStore,
         *,
         methodology_version: str,
         watermark_text: str,
@@ -122,19 +103,21 @@ class MediaGenerationService:
             )
             watermarked = self._watermark(response.image_bytes)
             file_hash = hashlib.sha256(watermarked).hexdigest()
-            key, url = self.store.write(
-                input_hash=input_hash,
-                file_hash=file_hash,
-                position=slide.position,
-                content=watermarked,
+            stored = await self.store.put(
+                StoreMediaRequest(
+                    input_hash=input_hash,
+                    file_hash=file_hash,
+                    position=slide.position,
+                    content=watermarked,
+                )
             )
             generated.append(
                 GeneratedMedia(
                     position=slide.position,
                     image_bytes=watermarked,
                     file_hash=file_hash,
-                    storage_key=key,
-                    public_url=url,
+                    storage_key=stored.storage_key,
+                    public_url=stored.public_url,
                     width=self.width,
                     height=self.height,
                     provider=response.provider,
@@ -144,6 +127,9 @@ class MediaGenerationService:
                     input_hash=input_hash,
                     methodology_version=self.methodology_version,
                     watermark_text=self.watermark_text,
+                    storage_provider=stored.storage_provider,
+                    storage_etag=stored.etag,
+                    storage_version_id=stored.version_id,
                 )
             )
         return tuple(generated)

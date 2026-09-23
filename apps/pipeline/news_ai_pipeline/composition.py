@@ -102,6 +102,7 @@ async def build_production_pipeline_stack(
     *,
     ai_providers=None,
     image_providers=None,
+    media_store=None,
     feed_collector=None,
     config: PipelineConfig | None = None,
     article_content_acquirer: ArticleContentAcquirer | None = None,
@@ -142,7 +143,10 @@ async def build_production_pipeline_stack(
         )
         research = build_production_research_stack(settings, **arguments)
         content = build_production_content_stack(
-            settings, **arguments, image_providers=image_providers
+            settings,
+            **arguments,
+            image_providers=image_providers,
+            media_store=media_store,
         )
         quality = build_production_quality_stack(settings, **arguments)
         if article_content_acquirer is None:

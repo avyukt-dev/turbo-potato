@@ -804,6 +804,11 @@ The referenced `AIRun` records `IMAGE_GENERATION`, exact input hash, safe provid
 provenance, and validated output metadata. Historical caller-owned assets remain valid and do not
 receive fabricated generation provenance.
 
+`storage_provider` identifies the selected immutable backend (`local-generated-media`, `aws-s3`,
+`cloudflare-r2`, or `s3-compatible`). `storage_key` remains content-addressed; `public_url` is the
+stable HTTPS delivery URL. S3 ETag/version results may be retained in `source_metadata`, but the
+application SHA-256 `file_hash` remains the canonical byte identity.
+
 ---
 
 # 26. Social Accounts

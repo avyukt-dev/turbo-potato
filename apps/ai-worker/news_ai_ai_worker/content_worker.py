@@ -10,7 +10,12 @@ from news_ai_ai import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
-from news_ai_content import ContentGenerationService, MediaGenerationService
+from news_ai_content import (
+    ContentGenerationService,
+    MediaGenerationService,
+    MediaStorageError,
+    MediaStorageTransientError,
+)
 from news_ai_events import (
     EventEnvelope,
     EventType,
@@ -112,12 +117,12 @@ class ContentGenerationWorker:
             AIProviderRateLimitError,
             AIProviderTimeoutError,
             AIProviderUnavailableError,
+            MediaStorageTransientError,
+            OSError,
         ) as exc:
             raise TransientEventError("media generation is temporarily unavailable") from exc
-        except (AIProviderError, ValueError) as exc:
+        except (AIProviderError, MediaStorageError, ValueError) as exc:
             raise PermanentEventError("media generation output is invalid") from exc
-        except OSError as exc:
-            raise TransientEventError("generated media storage is unavailable") from exc
         with self.session_factory() as session, session.begin():
             if was_processed(
                 session, event_id=event.event_id, consumer_group=CONTENT_CONSUMER_GROUP

@@ -583,6 +583,8 @@ Local persistence and public delivery remain separate concerns.
 Production-generated assets use ordinary `MediaAsset` records: the application validates and
 watermarks provider output before setting `visual_check_status=VALIDATED`, and retains the image
 generation `AIRun` reference plus dimensions/provider/prompt provenance in `source_metadata`.
+The same contract supports local and S3-compatible persistence. Backend ETag/version metadata is
+audit provenance only; it never replaces the canonical SHA-256 `file_hash`.
 
 ---
 

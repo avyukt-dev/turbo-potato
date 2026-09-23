@@ -615,8 +615,9 @@ configured newsroom watermark, persists immutable AI/file provenance, and attach
 assets transactionally to the content variant. The exact images are included in the Telegram
 review packet; they receive no publication authority until the ordinary exact-version human
 approval succeeds. The configured public HTTPS base is a delivery boundary and must serve the
-exact bytes written under the generated-media directory; local persistence does not itself expose
-an HTTP service.
+exact stored bytes. Local mode requires a static server plus HTTPS ingress; S3 mode may use AWS S3
+with a CDN/custom domain or Cloudflare R2 with a production custom domain. Storage selection does
+not alter review authority, content identity, or publication safety.
 
 The quality-domain `semantic-validator-v4` checks explicit reference ownership,
 relation roles, duplicate references, claim temporal bounds, and quoted spans.

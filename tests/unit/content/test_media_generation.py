@@ -64,6 +64,7 @@ def test_media_service_watermarks_jpeg_and_preserves_provider_provenance(tmp_pat
         assert item.position == position
         assert item.provider == "openai"
         assert item.model == "gpt-image-1.5"
+        assert item.storage_provider == "local-generated-media"
         assert item.public_url.startswith("https://media.example/generated/")
         stored = tmp_path / item.storage_key
         assert stored.read_bytes() == item.image_bytes
