@@ -52,6 +52,13 @@ from .generation import (
     ContentGenerationService,
 )
 from .integrity import content_artifact_hash
+from .media_generation import (
+    MEDIA_GENERATION_PROMPT_CHECKSUM,
+    MEDIA_GENERATION_PROMPT_VERSION,
+    GeneratedMedia,
+    LocalGeneratedMediaStore,
+    MediaGenerationService,
+)
 from .values import ClaimValueOccurrence, ClaimValuePresentation
 
 __all__ = [
@@ -73,6 +80,11 @@ __all__ = [
     "ContentMediaAttachmentService",
     "MediaAttachmentConflict",
     "MediaAttachmentRequest",
+    "MEDIA_GENERATION_PROMPT_VERSION",
+    "MEDIA_GENERATION_PROMPT_CHECKSUM",
+    "GeneratedMedia",
+    "LocalGeneratedMediaStore",
+    "MediaGenerationService",
     "BriefClaim",
     "CarouselSlide",
     "ContentDraftArtifact",

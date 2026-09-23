@@ -33,6 +33,19 @@ from .contracts import (
     metadata_contains_secret_key,
 )
 from .groq import GroqProvider, GroqProviderConfig
+from .image_generation import (
+    GeminiImageProvider,
+    GeminiImageProviderConfig,
+    ImageGenerationProvider,
+    ImageGenerationRequest,
+    ImageGenerationResponse,
+    ImageGenerationRouter,
+    ImageProvidersConfig,
+    ImageProvidersConfigLoader,
+    OpenAIImageProvider,
+    OpenAIImageProviderConfig,
+    build_image_router,
+)
 from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig
 from .provider import (
     AICapabilityError,
@@ -94,6 +107,17 @@ __all__ = [
     "AIProviderRegistry",
     "AIProviderTimeoutError",
     "AIProviderUnavailableError",
+    "GeminiImageProvider",
+    "GeminiImageProviderConfig",
+    "ImageGenerationProvider",
+    "ImageGenerationRequest",
+    "ImageGenerationResponse",
+    "ImageGenerationRouter",
+    "ImageProvidersConfig",
+    "ImageProvidersConfigLoader",
+    "OpenAIImageProvider",
+    "OpenAIImageProviderConfig",
+    "build_image_router",
     "AIProvidersConfig",
     "AIProvidersConfigLoader",
     "ConfiguredGroqProvider",

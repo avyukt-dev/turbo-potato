@@ -31,6 +31,7 @@ from news_ai_database import (
     ContentVariant,
     EventOutbox,
     FactSheet,
+    MediaAsset,
     Story,
 )
 from news_ai_domain import CLAIM_SEMANTICS_POLICY_VERSION, ReviewState
@@ -73,6 +74,7 @@ from .contracts import (
     EditorialBrief,
     normalize_generation_language,
 )
+from .media_generation import GeneratedMedia
 from .reasoning import editorial_reasoning_decision
 from .values import ClaimValuePresentation, presentation_errors
 
@@ -150,6 +152,7 @@ class ContentGenerationService:
         style: ContentStyleConfig,
         publishing_policy: PublishingPolicyConfig,
         *,
+        media_generation_identity: dict[str, Any] | None = None,
         producer: str = "ai-worker",
         producer_version: str = "0.1.0",
     ) -> None:
@@ -157,6 +160,7 @@ class ContentGenerationService:
         self.prompt = prompt
         self.style = style
         self.publishing_policy = publishing_policy
+        self.media_generation_identity = media_generation_identity
         self.producer = producer
         self.producer_version = producer_version
 
@@ -199,25 +203,26 @@ class ContentGenerationService:
                 certainty_ceiling(claim.status, claim.label)
             except ValueError as exc:
                 raise PermanentEventError("content claim certainty source is invalid") from exc
-        operation_key = _semantic_key(
-            {
-                "fact_sheet_id": row.id,
-                "fact_sheet_version": row.version,
-                "editorial_brief": brief.model_dump(mode="json"),
-                "generation_language": generation_language,
-                "target": target.model_dump(mode="json"),
-                "methodology_version": self.style.methodology_version,
-                "certainty_policy_version": CERTAINTY_POLICY_VERSION,
-                "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
-                "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
-                "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
-                "input_projection_version": AI_INPUT_PROJECTION_VERSION,
-                "style": self.style.model_dump(mode="json"),
-                "prompt_id": self.prompt.prompt_id,
-                "prompt_version": self.prompt.version,
-                "prompt_checksum": self.prompt.checksum,
-            }
-        )
+        identity = {
+            "fact_sheet_id": row.id,
+            "fact_sheet_version": row.version,
+            "editorial_brief": brief.model_dump(mode="json"),
+            "generation_language": generation_language,
+            "target": target.model_dump(mode="json"),
+            "methodology_version": self.style.methodology_version,
+            "certainty_policy_version": CERTAINTY_POLICY_VERSION,
+            "claim_semantics_policy_version": CLAIM_SEMANTICS_POLICY_VERSION,
+            "value_integrity_policy_version": VALUE_INTEGRITY_POLICY_VERSION,
+            "reasoning_policy_version": REASONING_ROUTING_POLICY_VERSION,
+            "input_projection_version": AI_INPUT_PROJECTION_VERSION,
+            "style": self.style.model_dump(mode="json"),
+            "prompt_id": self.prompt.prompt_id,
+            "prompt_version": self.prompt.version,
+            "prompt_checksum": self.prompt.checksum,
+        }
+        if self.media_generation_identity is not None:
+            identity["media_generation"] = self.media_generation_identity
+        operation_key = _semantic_key(identity)
         return ContentGenerationContext(
             fact_sheet=artifact,
             brief=brief,
@@ -379,6 +384,7 @@ class ContentGenerationService:
         context: ContentGenerationContext,
         event: EventEnvelope,
         execution: ContentGenerationExecution,
+        generated_media: tuple[GeneratedMedia, ...] = (),
     ) -> ContentGenerationResult:
         story = session.scalar(
             select(Story).where(Story.id == context.fact_sheet.story_id).with_for_update()
@@ -481,6 +487,83 @@ class ContentGenerationService:
         )
         session.add(variant)
         session.flush()
+        if generated_media:
+            expected_positions = tuple(slide.position for slide in output.slides)
+            if tuple(item.position for item in generated_media) != expected_positions:
+                raise PermanentEventError("generated media does not match carousel slide order")
+            media_ids: list[str] = []
+            for item in generated_media:
+                image_model = session.scalar(
+                    select(AIModel).where(
+                        AIModel.provider == item.provider,
+                        AIModel.model_name == item.model,
+                    )
+                )
+                if image_model is None:
+                    image_model = AIModel(
+                        provider=item.provider,
+                        model_name=item.model,
+                        locality="CLOUD",
+                        capabilities={"image_generation": True},
+                    )
+                    session.add(image_model)
+                    session.flush()
+                image_run = AIRun(
+                    ai_model_id=image_model.id,
+                    task_type=AITaskType.IMAGE_GENERATION.value,
+                    prompt_id="media-generation",
+                    prompt_version=item.prompt_version,
+                    prompt_checksum=item.prompt_checksum,
+                    input_artifact_ids=[f"content_variant:{variant.id}:v{variant.version}"],
+                    input_hash=item.input_hash,
+                    output_payload={
+                        "position": item.position,
+                        "file_hash": item.file_hash,
+                        "width": item.width,
+                        "height": item.height,
+                    },
+                    status="SUCCEEDED",
+                    validation_status="VALIDATED",
+                    latency_ms=item.latency_ms,
+                    correlation_id=event.correlation_id,
+                    routing_attempts=[
+                        {
+                            "provider": item.provider,
+                            "model": item.model,
+                            "provider_request_id": item.provider_request_id,
+                        }
+                    ],
+                )
+                session.add(image_run)
+                session.flush()
+                asset = MediaAsset(
+                    asset_type="IMAGE",
+                    storage_provider="local-generated-media",
+                    storage_key=item.storage_key,
+                    public_url=item.public_url,
+                    mime_type="image/jpeg",
+                    file_hash=item.file_hash,
+                    visual_check_status="VALIDATED",
+                    source_metadata={
+                        "media_format": "JPEG",
+                        "generated": True,
+                        "position": item.position,
+                        "width": item.width,
+                        "height": item.height,
+                        "ai_run_id": str(image_run.id),
+                        "provider": item.provider,
+                        "model": item.model,
+                        "prompt_version": item.prompt_version,
+                        "prompt_checksum": item.prompt_checksum,
+                        "methodology_version": item.methodology_version,
+                        "watermark_text": item.watermark_text,
+                        "watermark_applied": True,
+                    },
+                )
+                session.add(asset)
+                session.flush()
+                media_ids.append(str(asset.id))
+            variant.media_asset_ids = media_ids
         generated = EventEnvelope(
             event_type=EventType.CONTENT_GENERATED,
             producer=self.producer,

@@ -42,6 +42,22 @@ class AppSettings(BaseSettings):
     telegram_webhook_secret: SecretStr | None = Field(default=None, min_length=1, max_length=256)
     telegram_review_chat_id: int | None = None
     telegram_reviewer_user_id: int | None = Field(default=None, gt=0)
+    media_generation_enabled: bool = False
+    generated_media_directory: Path = Path("var/generated-media")
+    generated_media_public_base_url: str | None = None
+    generated_media_watermark_text: str = Field(
+        default="News AI • AI-generated", min_length=1, max_length=96
+    )
+
+    @field_validator("generated_media_public_base_url")
+    @classmethod
+    def validate_generated_media_public_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized.startswith("https://"):
+            raise ValueError("generated media public base URL must use HTTPS")
+        return normalized
 
     @field_validator("telegram_webhook_secret")
     @classmethod
@@ -75,4 +91,8 @@ class AppSettings(BaseSettings):
             )
         ):
             raise ValueError("Telegram review configuration is incomplete")
+        if self.media_generation_enabled and self.generated_media_public_base_url is None:
+            raise ValueError(
+                "generated media public base URL is required when generation is enabled"
+            )
         return self

@@ -101,6 +101,7 @@ async def build_production_pipeline_stack(
     settings: AppSettings,
     *,
     ai_providers=None,
+    image_providers=None,
     feed_collector=None,
     config: PipelineConfig | None = None,
     article_content_acquirer: ArticleContentAcquirer | None = None,
@@ -140,7 +141,9 @@ async def build_production_pipeline_stack(
             session_factory=factory, redis_client=client, consumer_name=name, ai_router=router
         )
         research = build_production_research_stack(settings, **arguments)
-        content = build_production_content_stack(settings, **arguments)
+        content = build_production_content_stack(
+            settings, **arguments, image_providers=image_providers
+        )
         quality = build_production_quality_stack(settings, **arguments)
         if article_content_acquirer is None:
             owned_acquirer = HttpArticleContentAcquirer(

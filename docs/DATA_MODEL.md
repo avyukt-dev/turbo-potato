@@ -798,6 +798,12 @@ updated_at
 
 Local storage does not imply public accessibility.
 
+Current generated-image dimensions, provider/model identity, prompt version, and `ai_run_id` are
+retained in `source_metadata`; the final watermarked JPEG hash remains the immutable byte identity.
+The referenced `AIRun` records `IMAGE_GENERATION`, exact input hash, safe provider request
+provenance, and validated output metadata. Historical caller-owned assets remain valid and do not
+receive fabricated generation provenance.
+
 ---
 
 # 26. Social Accounts

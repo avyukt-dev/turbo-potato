@@ -25,6 +25,7 @@ from news_ai_content import (
     ContentGenerationService,
     ContentStyleConfig,
     ContentStyleConfigLoader,
+    GeneratedMedia,
 )
 from news_ai_database import (
     AIRun,
@@ -34,6 +35,7 @@ from news_ai_database import (
     EventDeadLetter,
     EventOutbox,
     FactSheet,
+    MediaAsset,
     ProcessedEvent,
     Story,
 )
@@ -330,6 +332,56 @@ def test_exact_fact_sheet_generates_not_ready_draft_variant_and_canonical_event(
         "content_variant_ids": [str(variant.id)],
         "ai_run_id": str(run.id),
     }
+
+
+def test_generated_media_and_ai_provenance_are_atomic_with_content_event() -> None:
+    factory, ai = _factory(), ContentAI()
+    event, _, _ = _seed(factory)
+    service = _service(ai)
+    with factory() as session:
+        context = service.load_context(session, event)
+    execution = asyncio.run(service.generate(context, event))
+    media = tuple(
+        GeneratedMedia(
+            position=slide.position,
+            image_bytes=b"already-stored",
+            file_hash=f"{slide.position}" * 64,
+            storage_key=f"generated/slide-{slide.position}.jpg",
+            public_url=f"https://media.example/slide-{slide.position}.jpg",
+            width=1080,
+            height=1350,
+            provider="openai",
+            model="gpt-image-1.5",
+            provider_request_id=f"request-{slide.position}",
+            latency_ms=10,
+            input_hash=f"{slide.position + 1}" * 64,
+            methodology_version="media-generation-methodology-v1",
+            watermark_text="Our Newsroom • AI-generated",
+        )
+        for slide in execution.output.slides
+    )
+    with factory() as session, session.begin():
+        result = service.persist(
+            session,
+            context=context,
+            event=event,
+            execution=execution,
+            generated_media=media,
+        )
+    with factory() as session:
+        variant = session.get(ContentVariant, result.content_variant_ids[0])
+        assets = tuple(session.scalars(select(MediaAsset).order_by(MediaAsset.created_at)))
+        image_runs = tuple(
+            session.scalars(select(AIRun).where(AIRun.task_type == "IMAGE_GENERATION"))
+        )
+        outbox = session.scalar(
+            select(EventOutbox).where(EventOutbox.event_type == EventType.CONTENT_GENERATED.value)
+        )
+    assert variant.media_asset_ids == [str(item.id) for item in assets]
+    assert len(assets) == len(execution.output.slides) == len(image_runs)
+    assert all(item.visual_check_status == "VALIDATED" for item in assets)
+    assert all(item.source_metadata["ai_run_id"] for item in assets)
+    assert outbox is not None
 
 
 @pytest.mark.parametrize(

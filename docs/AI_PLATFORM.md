@@ -632,6 +632,15 @@ Recommended starting point:
 
 This is configuration, not a permanent architectural restriction.
 
+Production image generation uses a provider-neutral image boundary with configured OpenAI and
+Gemini adapters. Provider image bytes are untrusted: the application decodes them with a strict
+size bound, validates them as images, converts them to the canonical JPEG dimensions, and applies
+the newsroom-owned `AI-generated` watermark before persistence. Provider/model/request provenance,
+the exact input hash, prompt identity, and final file hash are retained; provider output never
+becomes evidence or documentary truth. Image-provider sensitivity authorization is an explicit,
+closed policy in `config/models/image-providers.yaml`; an unknown or unauthorized sensitivity
+fails before any provider request.
+
 ---
 
 # 21. Provider Fallback

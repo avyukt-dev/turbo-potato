@@ -13,6 +13,7 @@ dist/
 *.egg-info/
 .coverage
 htmlcov/
+var/generated-media/
 .DS_Store
 .idea/
 .vscode/
