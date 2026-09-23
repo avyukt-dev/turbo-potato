@@ -83,7 +83,9 @@ def build_production_research_stack(
     loader = ConfigLoader(settings.config_dir)
     if ai_router is not None and ai_providers is not None:
         raise ValueError("inject either an AI router or providers")
-    router = ai_router or build_ai_router(loader, providers=ai_providers)
+    router = ai_router or build_ai_router(
+        loader, providers=ai_providers, session_factory=session_factory
+    )
     for task_type in (
         AITaskType.CLAIM_EXTRACTION,
         AITaskType.EVIDENCE_ASSESSMENT,

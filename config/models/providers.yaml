@@ -1,32 +1,62 @@
-schema_version: 1
+schema_version: 2
+credential_pools:
+  - pool_id: groq-production
+    provider: groq
+    env_prefix: GROQ_API_KEY
+    max_credentials: 32
+    cooldown_seconds: 60
+    max_retry_after_seconds: 60
+  - pool_id: openai-production
+    provider: openai
+    env_prefix: OPENAI_API_KEY
+    max_credentials: 32
+    cooldown_seconds: 60
+    max_retry_after_seconds: 60
+  - pool_id: gemini-production
+    provider: gemini
+    env_prefix: GEMINI_API_KEY
+    max_credentials: 32
+    cooldown_seconds: 60
+    max_retry_after_seconds: 60
 providers:
   - provider_id: groq
     adapter_type: groq
     base_url: https://api.groq.com/openai/v1
-    model: openai/gpt-oss-120b
-    task_types:
-      - CLAIM_EXTRACTION
-      - EVIDENCE_ASSESSMENT
-      - CONTENT_GENERATION
-      - QUALITY_CHECKING
+    credential_pool_id: groq-production
+    models:
+      - model_id: openai/gpt-oss-120b
+        task_types:
+          - CLAIM_EXTRACTION
+          - EVIDENCE_ASSESSMENT
+          - CONTENT_GENERATION
+          - QUALITY_CHECKING
+        response_formats: [text, structured]
+        max_context_tokens: 131072
+        default_max_completion_tokens: 8192
+        honors_reasoning_effort: true
+      - model_id: openai/gpt-oss-20b
+        task_types:
+          - CLAIM_EXTRACTION
+          - EVIDENCE_ASSESSMENT
+          - CONTENT_GENERATION
+          - QUALITY_CHECKING
+        response_formats: [text, structured]
+        max_context_tokens: 131072
+        default_max_completion_tokens: 8192
+        honors_reasoning_effort: true
     request_timeout_seconds: 120
-    max_context_tokens: 131072
-    default_max_completion_tokens: 8192
-    max_retry_after_seconds: 60
-    credential_cooldown_seconds: 60
-    api_key_env: GROQ_API_KEY
-    api_key_envs:
-      - GROQ_API_KEY_2
-      - GROQ_API_KEY_3
   - provider_id: local-llama
     adapter_type: llama_cpp
     base_url: http://127.0.0.1:8080
-    model: local-news-ai
-    task_types:
-      - CLAIM_EXTRACTION
-      - EVIDENCE_ASSESSMENT
-      - CONTENT_GENERATION
-      - QUALITY_CHECKING
+    models:
+      - model_id: local-news-ai
+        task_types:
+          - CLAIM_EXTRACTION
+          - EVIDENCE_ASSESSMENT
+          - CONTENT_GENERATION
+          - QUALITY_CHECKING
+        response_formats: [text, structured]
+        max_context_tokens: 8192
+        default_max_completion_tokens: 4096
     request_timeout_seconds: 120
     health_timeout_seconds: 2
-    max_context_tokens: 8192

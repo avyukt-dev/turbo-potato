@@ -611,6 +611,14 @@ Editorial scoring keeps importance and evidence strength separate.
 
 Do not store provider credentials here.
 
+`ai_credentials` stores secret-free per-key operational state for configured credential pools.
+Its durable identity is `(pool_id, slot)` and it stores only a one-way secret fingerprint,
+provider type, active flag, closed state (`HEALTHY`, `COOLDOWN`, `AUTH_FAILED`, `UNKNOWN`), bounded
+reason code, cooldown deadline, safe timestamps, failure count, and revision. A changed fingerprint
+means a replacement credential and begins fresh healthy state; a removed environment slot becomes
+inactive without deleting its history. Raw credentials and organization/project/quota groupings
+are not stored. Historical operator resets use the append-only audit log and never contain the key.
+
 `ai_runs` should identify model/provider/task/prompt version/input/output references/latency/status.
 
 Operational AI route failures are preserved on the existing event reliability records rather than

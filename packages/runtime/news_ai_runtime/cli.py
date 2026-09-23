@@ -5,7 +5,7 @@ import asyncio
 import json
 from uuid import UUID
 
-from news_ai_common.config import AppSettings
+from news_ai_common.config import AppSettings, ConfigLoader
 from news_ai_database import create_database_engine, create_session_factory
 from news_ai_events import (
     DEFAULT_RECONCILIATION_LIMIT,
@@ -15,6 +15,7 @@ from news_ai_events import (
 )
 from news_ai_events.consumer_contracts import CONSUMER_CONTRACT_BY_EVENT
 
+from .ai_credentials import AICredentialOperator
 from .controller import RuntimeOperationError, build_controller
 from .health import build_monitor
 from .publishing import DatabasePublishingControl
@@ -52,6 +53,13 @@ def parser():
         "--event-type",
         choices=sorted(event_type.value for event_type in CONSUMER_CONTRACT_BY_EVENT),
     )
+    ai = commands.add_parser("ai")
+    ai_commands = ai.add_subparsers(dest="ai_command", required=True)
+    credentials = ai_commands.add_parser("credentials")
+    credentials.add_argument("action", choices=["status", "probe", "reset"])
+    credentials.add_argument("--pool")
+    credentials.add_argument("--slot", type=int)
+    credentials.add_argument("--reason")
     return root
 
 
@@ -95,6 +103,7 @@ def main(
     monitor=None,
     control=None,
     reconciliation_stack=None,
+    credential_operator=None,
 ):
     args = parser().parse_args(argv)
     engine = None
@@ -127,7 +136,7 @@ def main(
                     raise RuntimeOperationError("REASON_REQUIRED")
                 snapshot = control.set_paused(args.action == "pause", reason=args.reason)
             payload, code = snapshot.model_dump(mode="json"), 0 if snapshot.available else 2
-        else:
+        elif args.command == "events":
             if not 1 <= args.limit <= MAX_RECONCILIATION_LIMIT:
                 raise RuntimeOperationError("INVALID_LIMIT")
             if args.apply and not args.reason:
@@ -137,6 +146,28 @@ def main(
                     reconciliation_stack or build_reconciliation_stack(settings), args
                 )
             )
+        else:
+            if credential_operator is None:
+                if not settings.database_url:
+                    raise RuntimeOperationError("CREDENTIAL_STATE_UNAVAILABLE")
+                engine = create_database_engine(settings.database_url)
+                credential_operator = AICredentialOperator(
+                    ConfigLoader(settings.config_dir), create_session_factory(engine)
+                )
+            if args.action != "status" and (not args.pool or args.slot is None):
+                raise RuntimeOperationError("INVALID_ARGUMENTS")
+            if args.action == "status":
+                result = asyncio.run(credential_operator.status())
+                payload = [item.model_dump(mode="json") for item in result]
+            elif args.action == "probe":
+                asyncio.run(credential_operator.probe(args.pool, args.slot))
+                payload = {"status": "HEALTHY"}
+            else:
+                if not args.reason:
+                    raise RuntimeOperationError("REASON_REQUIRED")
+                result = asyncio.run(credential_operator.reset(args.pool, args.slot, args.reason))
+                payload = result.model_dump(mode="json")
+            code = 0
         print(json.dumps(payload, sort_keys=True))
         return code
     except RuntimeOperationError as exc:

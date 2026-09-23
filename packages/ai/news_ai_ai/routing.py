@@ -141,9 +141,9 @@ class AIStageConfig(BaseModel):
     ) -> tuple[AIStageProviderSelection, ...]:
         if not value:
             raise ValueError("stage configuration must contain at least one provider")
-        ids = [item.provider_id for item in value]
-        if len(ids) != len(set(ids)):
-            raise ValueError("stage provider IDs must be unique")
+        routes = [(item.provider_id, item.model) for item in value]
+        if len(routes) != len(set(routes)):
+            raise ValueError("stage provider/model routes must be unique")
         return value
 
     @field_validator("fallback_on")
@@ -396,10 +396,13 @@ class AIRouter:
         return self.stages[stage_id]
 
     def candidate_provider_ids(self, request: AIRequest) -> tuple[str, ...]:
+        return tuple(item.provider_id for item in self._candidate_selections(request))
+
+    def _candidate_selections(self, request: AIRequest) -> tuple[AIStageProviderSelection, ...]:
         stage = self.stage_config(request.task_type)
         self._reject_conflicting_model(request, stage)
         self._require_sensitivity_policy(request)
-        candidates: list[str] = []
+        candidates: list[AIStageProviderSelection] = []
         for selection in stage.providers:
             provider = self.registry.get(selection.provider_id)
             attempt_request = self._attempt_request(request, stage, selection)
@@ -409,7 +412,7 @@ class AIRouter:
                 continue
             if not provider.capabilities.supports(attempt_request):
                 continue
-            candidates.append(selection.provider_id)
+            candidates.append(selection)
         if not candidates:
             raise AIRoutingPolicyError("no configured AI provider is authorized and compatible")
         return tuple(candidates)
@@ -428,13 +431,12 @@ class AIRouter:
         self, request: AIRequest, *, response_validator: ResponseValidator | None = None
     ) -> AIRoutedResponse:
         stage = self.stage_config(request.task_type)
-        selections = {item.provider_id: item for item in stage.providers}
-        candidates = self.candidate_provider_ids(request)
+        candidates = self._candidate_selections(request)
         attempts: list[AIRouteAttempt] = []
         route_request = request
 
-        for index, provider_id in enumerate(candidates):
-            selection = selections[provider_id]
+        for index, selection in enumerate(candidates):
+            provider_id = selection.provider_id
             provider = self.registry.get(provider_id)
             attempt_request = self._attempt_request(route_request, stage, selection)
             rate_limit_retry_index = 0
@@ -555,12 +557,25 @@ class AIRouter:
                 ) from exc
             for stage in self.stages.values():
                 for selection in stage.providers:
-                    if selection.provider_id == provider_id and (
+                    if selection.provider_id != provider_id:
+                        continue
+                    if (
                         provider.capabilities.models
                         and selection.model not in provider.capabilities.models
                     ):
                         raise AIRoutingPolicyError(
                             f"AI stage model is not exposed by provider {provider_id!r}"
+                        )
+                    tasks = provider.capabilities.model_task_types.get(selection.model)
+                    formats = provider.capabilities.model_response_formats.get(selection.model)
+                    if tasks is not None and stage.task_type not in tasks:
+                        raise AIRoutingPolicyError(
+                            f"AI stage task is not supported by provider model {selection.model!r}"
+                        )
+                    if formats is not None and AIResponseFormat.STRUCTURED not in formats:
+                        raise AIRoutingPolicyError(
+                            "AI stage response format is not supported by provider model "
+                            f"{selection.model!r}"
                         )
 
     @staticmethod

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from types import SimpleNamespace
 
 import httpx
+import openai
 import pytest
 from news_ai_ai import (
     AIInvalidResponseError,
@@ -17,100 +19,107 @@ from news_ai_ai import (
     OpenAIImageProvider,
     OpenAIImageProviderConfig,
 )
+from news_ai_ai.credentials import (
+    CredentialPoolConfig,
+    MemoryCredentialPool,
+    ResolvedCredential,
+)
 
 
-class FakeClient:
-    def __init__(self, response=None, error=None) -> None:
-        self.response = response
-        self.error = error
-        self.request = None
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_arguments):
-        return None
-
-    async def post(self, url, **arguments):
-        self.request = (url, arguments)
-        if self.error:
-            raise self.error
-        return self.response
+def _pool(provider: str, secret: str = "secret") -> MemoryCredentialPool:
+    config = CredentialPoolConfig(
+        pool_id=f"{provider}-test",
+        provider=provider,
+        env_prefix=f"{provider.upper()}_API_KEY",
+    )
+    return MemoryCredentialPool(
+        config,
+        (
+            ResolvedCredential(
+                pool_id=config.pool_id,
+                provider_type=provider,
+                slot=1,
+                fingerprint="fingerprint",
+                secret=secret,
+            ),
+        ),
+    )
 
 
 def _request() -> ImageGenerationRequest:
     return ImageGenerationRequest(prompt="A safe editorial illustration", input_hash="a" * 64)
 
 
-def test_openai_image_provider_uses_official_image_contract(monkeypatch) -> None:
-    request = httpx.Request("POST", "https://api.openai.com/v1/images/generations")
-    response = httpx.Response(
-        200,
-        request=request,
-        headers={"x-request-id": "openai-request"},
-        json={"data": [{"b64_json": base64.b64encode(b"jpeg-bytes").decode()}]},
-    )
-    client = FakeClient(response)
-    monkeypatch.setattr("news_ai_ai.image_generation.httpx.AsyncClient", lambda **_: client)
+def test_openai_image_provider_uses_official_image_contract() -> None:
+    calls = []
+
+    class Images:
+        async def generate(self, **payload):
+            calls.append(payload)
+            return SimpleNamespace(
+                id="openai-request",
+                data=[SimpleNamespace(b64_json=base64.b64encode(b"jpeg-bytes").decode())],
+            )
+
     provider = OpenAIImageProvider(
-        OpenAIImageProviderConfig(adapter_type="openai_images"), api_key="secret"
+        OpenAIImageProviderConfig(adapter_type="openai_images"),
+        credential_pool=_pool("openai"),
+        client_factory=lambda _: SimpleNamespace(images=Images()),
     )
 
     result = asyncio.run(provider.generate(_request()))
 
     assert result.image_bytes == b"jpeg-bytes"
     assert result.provider_request_id == "openai-request"
-    assert client.request[0].endswith("/images/generations")
-    payload = client.request[1]["json"]
+    payload = calls[0]
     assert payload["output_format"] == "jpeg"
     assert payload["size"] == "1024x1536"
     assert "secret" not in repr(result)
 
 
-def test_gemini_image_provider_extracts_non_thought_inline_image(monkeypatch) -> None:
-    request = httpx.Request("POST", "https://generativelanguage.googleapis.com")
-    response = httpx.Response(
-        200,
-        request=request,
-        json={
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {"text": "reasoning", "thought": True},
-                            {
-                                "inlineData": {
-                                    "mimeType": "image/png",
-                                    "data": base64.b64encode(b"png-bytes").decode(),
-                                }
-                            },
-                        ]
-                    }
-                }
-            ]
-        },
-    )
-    client = FakeClient(response)
-    monkeypatch.setattr("news_ai_ai.image_generation.httpx.AsyncClient", lambda **_: client)
+def test_gemini_image_provider_extracts_non_thought_inline_image() -> None:
+    calls = []
+
+    class Models:
+        async def generate_content(self, **payload):
+            calls.append(payload)
+            return SimpleNamespace(
+                response_id="gemini-request",
+                parts=[
+                    SimpleNamespace(thought=True, inline_data=None),
+                    SimpleNamespace(
+                        thought=False,
+                        inline_data=SimpleNamespace(mime_type="image/png", data=b"png-bytes"),
+                    ),
+                ],
+            )
+
     provider = GeminiImageProvider(
-        GeminiImageProviderConfig(adapter_type="gemini_images"), api_key="secret"
+        GeminiImageProviderConfig(adapter_type="gemini_images"),
+        credential_pool=_pool("gemini"),
+        client_factory=lambda _: SimpleNamespace(aio=SimpleNamespace(models=Models())),
     )
 
     result = asyncio.run(provider.generate(_request()))
 
     assert result.image_bytes == b"png-bytes"
-    payload = client.request[1]["json"]
-    assert payload["generationConfig"]["responseModalities"] == ["IMAGE"]
-    assert payload["generationConfig"]["imageConfig"]["aspectRatio"] == "4:5"
+    assert calls[0]["config"].response_modalities == ["IMAGE"]
+    assert calls[0]["config"].image_config.aspect_ratio == "4:5"
 
 
-def test_provider_failures_are_normalized_without_secret_leakage(monkeypatch) -> None:
+def test_provider_failures_are_normalized_without_secret_leakage() -> None:
     secret = "SUPER_SECRET_IMAGE_TOKEN"
-    request = httpx.Request("POST", "https://api.openai.com/v1/images/generations")
-    client = FakeClient(error=httpx.ReadTimeout(f"failed with {secret}", request=request))
-    monkeypatch.setattr("news_ai_ai.image_generation.httpx.AsyncClient", lambda **_: client)
+
+    class Images:
+        async def generate(self, **_payload):
+            raise openai.APITimeoutError(
+                request=httpx.Request("POST", "https://api.openai.com/v1/images/generations")
+            )
+
     provider = OpenAIImageProvider(
-        OpenAIImageProviderConfig(adapter_type="openai_images"), api_key=secret
+        OpenAIImageProviderConfig(adapter_type="openai_images"),
+        credential_pool=_pool("openai", secret),
+        client_factory=lambda _: SimpleNamespace(images=Images()),
     )
 
     with pytest.raises(AIProviderTimeoutError) as caught:

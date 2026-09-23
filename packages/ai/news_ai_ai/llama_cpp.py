@@ -1,4 +1,4 @@
-"""Local llama.cpp HTTP provider adapter."""
+"""OpenAI-compatible SDK adapter for a local llama.cpp server."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from time import monotonic
 from typing import Any
 
 import httpx
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
+import openai
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import (
     AIRequest,
@@ -18,6 +19,7 @@ from .contracts import (
     ProviderLocality,
     TokenUsage,
 )
+from .model_config import ProviderModelConfig
 from .provider import (
     AIContextTooLargeError,
     AIInvalidResponseError,
@@ -30,65 +32,84 @@ from .provider import (
 
 
 class LlamaCppProviderConfig(BaseModel):
-    """Configuration for one local llama.cpp server endpoint."""
-
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     provider_id: str = Field(default="local-llama", pattern=r"^[a-z][a-z0-9_-]*$")
     base_url: AnyHttpUrl
-    model: str = Field(min_length=1, max_length=255)
-    task_types: frozenset[AITaskType]
+    models: tuple[ProviderModelConfig, ...] = ()
     request_timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
     health_timeout_seconds: float = Field(default=2.0, gt=0.0, le=30.0)
-    max_context_tokens: int | None = Field(default=None, ge=1)
-    api_key_env: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Z_][A-Z0-9_]*$",
-    )
-
-    @field_validator("model")
-    @classmethod
-    def strip_model(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("llama.cpp model must not be blank")
-        return stripped
+    credential_pool_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*$")
+    model: str | None = Field(default=None, min_length=1, max_length=255, exclude=True)
+    task_types: frozenset[AITaskType] = Field(default_factory=frozenset, exclude=True)
+    max_context_tokens: int | None = Field(default=None, ge=1, exclude=True)
+    api_key_env: str | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
-    def require_tasks(self) -> LlamaCppProviderConfig:
-        if not self.task_types:
-            raise ValueError("llama.cpp provider must declare at least one task")
+    def validate_configuration(self) -> LlamaCppProviderConfig:
         if self.base_url.query is not None or self.base_url.fragment is not None:
-            raise ValueError("llama.cpp base_url must not contain query or fragment components")
+            raise ValueError("llama.cpp base_url must not contain query or fragment")
+        ids = [item.model_id for item in self.models]
+        if len(ids) != len(set(ids)):
+            raise ValueError("llama.cpp model IDs must be unique")
+        if self.model is not None and not self.models and not self.task_types:
+            raise ValueError("llama.cpp requires at least one task")
         return self
+
+    @property
+    def configured_models(self) -> tuple[ProviderModelConfig, ...]:
+        if self.models:
+            return self.models
+        return (
+            ProviderModelConfig(
+                model_id=self.model or "local-news-ai",
+                task_types=self.task_types or frozenset(AITaskType),
+                max_context_tokens=self.max_context_tokens,
+                default_max_completion_tokens=4096,
+            ),
+        )
 
 
 class LlamaCppProvider:
-    """Provider-neutral adapter for a configured local llama.cpp HTTP server."""
-
     def __init__(
         self,
         config: LlamaCppProviderConfig,
         *,
-        client: httpx.AsyncClient | None = None,
         api_key: str | None = None,
+        client: openai.AsyncOpenAI | None = None,
+        health_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.config = config
         self._base_url = str(config.base_url).rstrip("/")
-        self._client = client
+        self._client = client or openai.AsyncOpenAI(
+            api_key=api_key or "local-no-auth",
+            base_url=f"{self._base_url}/v1",
+            timeout=config.request_timeout_seconds,
+            max_retries=0,
+        )
         self._owns_client = client is None
-        self._api_key = api_key
+        self._health_client = health_client
+        self._owns_health_client = health_client is None
+        self._models = {item.model_id: item for item in config.configured_models}
         self._capabilities = ProviderCapabilities(
             provider_id=config.provider_id,
             locality=ProviderLocality.LOCAL,
-            task_types=config.task_types,
-            response_formats=frozenset({AIResponseFormat.TEXT, AIResponseFormat.STRUCTURED}),
-            models=frozenset({config.model}),
-            supports_vision=False,
-            supports_tools=False,
-            max_context_tokens=config.max_context_tokens,
+            task_types=frozenset(
+                task for item in self._models.values() for task in item.task_types
+            ),
+            response_formats=frozenset(
+                fmt for item in self._models.values() for fmt in item.response_formats
+            ),
+            models=frozenset(self._models),
+            model_task_types={key: value.task_types for key, value in self._models.items()},
+            model_response_formats={
+                key: value.response_formats for key, value in self._models.items()
+            },
+            supports_vision=any(item.supports_vision for item in self._models.values()),
+            supports_tools=any(item.supports_tools for item in self._models.values()),
+            max_context_tokens=max(
+                (item.max_context_tokens or 0 for item in self._models.values()), default=0
+            )
+            or None,
         )
 
     @property
@@ -100,179 +121,88 @@ class LlamaCppProvider:
         return self._capabilities
 
     async def close(self) -> None:
-        if self._owns_client and self._client is not None:
-            await self._client.aclose()
-            self._client = None
-
-    def _http_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient()
-        return self._client
+        if self._owns_client:
+            await self._client.close()
+        if self._owns_health_client and self._health_client is not None:
+            await self._health_client.aclose()
 
     async def healthcheck(self) -> bool:
-        """Return whether the configured llama.cpp endpoint reports ready."""
-
+        if self._health_client is None:
+            self._health_client = httpx.AsyncClient()
         try:
-            response = await self._http_client().get(
-                f"{self._base_url}/health",
-                headers=self._headers(),
-                timeout=self.config.health_timeout_seconds,
+            response = await self._health_client.get(
+                f"{self._base_url}/health", timeout=self.config.health_timeout_seconds
             )
-        except httpx.RequestError:
+            return response.status_code == 200 and response.json().get("status") == "ok"
+        except (httpx.RequestError, ValueError, AttributeError):
             return False
-        if response.status_code != 200:
-            return False
-        try:
-            payload = response.json()
-        except ValueError:
-            return False
-        return isinstance(payload, dict) and payload.get("status") == "ok"
 
     async def execute(self, request: AIRequest) -> AIResponse:
-        """Execute a non-streaming OpenAI-compatible chat completion."""
-
-        selected_model = request.model or self.config.model
-        payload = self._request_payload(request, selected_model)
-        started_at = monotonic()
-        try:
-            response = await self._http_client().post(
-                f"{self._base_url}/v1/chat/completions",
-                json=payload,
-                headers=self._headers(),
-                timeout=request.timeout_seconds or self.config.request_timeout_seconds,
-            )
-        except httpx.TimeoutException as exc:
-            raise AIProviderTimeoutError("llama.cpp request timed out") from exc
-        except httpx.RequestError as exc:
-            raise AIProviderUnavailableError("llama.cpp endpoint is unavailable") from exc
-
-        latency_ms = max(0, round((monotonic() - started_at) * 1000))
-        self._raise_for_status(response)
-        body = self._decode_response(response)
-        return self._normalize_response(request, selected_model, body, latency_ms)
-
-    def _headers(self) -> dict[str, str]:
-        if self._api_key is None:
-            return {}
-        return {"Authorization": f"Bearer {self._api_key}"}
-
-    @staticmethod
-    def _serialize_input(value: Any) -> str:
-        if isinstance(value, str):
-            return value
-        try:
-            return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        except (TypeError, ValueError) as exc:
-            raise AIProviderError("AI request input is not JSON serializable") from exc
-
-    def _request_payload(self, request: AIRequest, model: str) -> dict[str, Any]:
+        model = request.model or next(iter(self._models))
+        model_config = self._models.get(model)
+        if model_config is None:
+            raise AIProviderError("llama.cpp model is not configured")
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": request.system_prompt},
-                {"role": "user", "content": self._serialize_input(request.input)},
+                {"role": "user", "content": self._serialize(request.input)},
             ],
             "temperature": request.temperature,
-            "stream": False,
+            "max_tokens": request.max_tokens or model_config.default_max_completion_tokens,
         }
-        if request.max_tokens is not None:
-            payload["max_tokens"] = request.max_tokens
         if request.response_format is AIResponseFormat.STRUCTURED:
             payload["response_format"] = {"type": "json_object"}
-        return payload
-
-    @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
-        status = response.status_code
-        if status < 400:
-            return
-        if status == 429:
-            raise AIProviderRateLimitError("llama.cpp request was rate limited")
-        if status in {401, 403}:
-            raise AIProviderPolicyError("llama.cpp request was not authorized")
-        if status == 413:
-            raise AIContextTooLargeError("llama.cpp request exceeded the accepted context size")
-        if status >= 500:
-            raise AIProviderUnavailableError(f"llama.cpp server returned HTTP {status}")
-        raise AIProviderError(f"llama.cpp rejected request with HTTP {status}")
-
-    @staticmethod
-    def _decode_response(response: httpx.Response) -> dict[str, Any]:
+        started = monotonic()
         try:
-            body = response.json()
-        except ValueError as exc:
-            raise AIInvalidResponseError("llama.cpp returned invalid JSON") from exc
-        if not isinstance(body, dict):
-            raise AIInvalidResponseError("llama.cpp response must be a JSON object")
-        return body
-
-    def _normalize_response(
-        self,
-        request: AIRequest,
-        selected_model: str,
-        body: dict[str, Any],
-        latency_ms: int,
-    ) -> AIResponse:
-        content, finish_reason = self._extract_choice(body)
-        structured: dict[str, Any] | None = None
-        text: str | None = content
-        if request.response_format is AIResponseFormat.STRUCTURED:
-            structured = self._parse_structured(content)
-            text = None
-
-        usage = body.get("usage")
-        usage_mapping = usage if isinstance(usage, dict) else {}
-        response_model = body.get("model")
-        if not isinstance(response_model, str) or not response_model.strip():
-            response_model = selected_model
-        request_id = body.get("id")
-        provider_request_id = request_id if isinstance(request_id, str) else None
-        fingerprint = body.get("system_fingerprint")
-        metadata = {"system_fingerprint": fingerprint} if isinstance(fingerprint, str) else {}
-
+            completion = await self._client.chat.completions.create(**payload)
+        except openai.PermissionDeniedError as exc:
+            raise AIProviderPolicyError("llama.cpp rejected the request policy") from exc
+        except openai.RateLimitError as exc:
+            raise AIProviderRateLimitError("llama.cpp request was rate limited") from exc
+        except openai.APITimeoutError as exc:
+            raise AIProviderTimeoutError("llama.cpp request timed out") from exc
+        except openai.APIConnectionError as exc:
+            raise AIProviderUnavailableError("llama.cpp endpoint is unavailable") from exc
+        except openai.APIStatusError as exc:
+            if exc.status_code == 413:
+                raise AIContextTooLargeError("llama.cpp request exceeded context") from exc
+            if exc.status_code >= 500:
+                raise AIProviderUnavailableError("llama.cpp service is unavailable") from exc
+            raise AIProviderError("llama.cpp rejected the request") from exc
+        choice = completion.choices[0] if completion.choices else None
+        content = choice.message.content if choice else None
+        if not isinstance(content, str):
+            raise AIInvalidResponseError("llama.cpp response failed normalization")
+        try:
+            structured = (
+                json.loads(content)
+                if request.response_format is AIResponseFormat.STRUCTURED
+                else None
+            )
+        except json.JSONDecodeError:
+            raise AIInvalidResponseError("llama.cpp response failed normalization") from None
+        if structured is not None and not isinstance(structured, dict):
+            raise AIInvalidResponseError("llama.cpp structured response must be an object")
+        usage = completion.usage
         return AIResponse(
-            text=text,
+            text=None if structured is not None else content,
             structured=structured,
             provider=self.provider_id,
-            model=response_model,
+            model=completion.model,
             usage=TokenUsage(
-                input_tokens=self._optional_non_negative_int(usage_mapping.get("prompt_tokens")),
-                output_tokens=self._optional_non_negative_int(
-                    usage_mapping.get("completion_tokens")
-                ),
+                input_tokens=getattr(usage, "prompt_tokens", None),
+                output_tokens=getattr(usage, "completion_tokens", None),
             ),
-            latency_ms=latency_ms,
-            finish_reason=finish_reason,
-            provider_request_id=provider_request_id,
-            metadata=metadata,
+            latency_ms=max(0, round((monotonic() - started) * 1000)),
+            finish_reason=choice.finish_reason,
+            provider_request_id=completion.id,
         )
 
     @staticmethod
-    def _extract_choice(body: dict[str, Any]) -> tuple[str, str | None]:
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise AIInvalidResponseError("llama.cpp response contains no completion choice")
-        choice = choices[0]
-        message = choice.get("message")
-        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-            raise AIInvalidResponseError("llama.cpp response contains no message content")
-        content = message["content"]
-        finish = choice.get("finish_reason")
-        finish_reason = finish if isinstance(finish, str) else None
-        return content, finish_reason
-
-    @staticmethod
-    def _parse_structured(content: str) -> dict[str, Any]:
-        try:
-            structured = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise AIInvalidResponseError("llama.cpp returned malformed structured output") from exc
-        if not isinstance(structured, dict):
-            raise AIInvalidResponseError("llama.cpp structured output must be a JSON object")
-        return structured
-
-    @staticmethod
-    def _optional_non_negative_int(value: Any) -> int | None:
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return None
-        return value
+    def _serialize(value: Any) -> str:
+        return (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )

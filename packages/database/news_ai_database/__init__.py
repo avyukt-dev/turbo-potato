@@ -2,6 +2,9 @@
 
 from .base import Base
 from .models import (
+    AICredential,
+    AICredentialReason,
+    AICredentialState,
     AIModel,
     AIRun,
     Article,
@@ -57,6 +60,9 @@ __all__ = [
     "SocialAccount",
     "SocialAccountStatus",
     "AIModel",
+    "AICredential",
+    "AICredentialReason",
+    "AICredentialState",
     "AIRun",
     "AuditLog",
     "Article",

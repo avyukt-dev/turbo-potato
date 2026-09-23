@@ -58,19 +58,19 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
     groq, llama = provider_config.providers
     assert groq.provider_id == "groq"
     assert str(groq.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
-    assert groq.model == "openai/gpt-oss-120b"
-    assert groq.default_max_completion_tokens == 8192
-    assert groq.max_retry_after_seconds == 60
-    assert groq.credential_cooldown_seconds == 60
-    assert groq.api_key_env == "GROQ_API_KEY"
-    assert groq.api_key_envs == ("GROQ_API_KEY_2", "GROQ_API_KEY_3")
-    assert groq.max_context_tokens == 131072
+    assert [item.model_id for item in groq.models] == [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+    ]
+    assert groq.models[0].default_max_completion_tokens == 8192
+    assert groq.models[0].max_context_tokens == 131072
+    assert groq.credential_pool_id == "groq-production"
     assert llama.provider_id == "local-llama"
     assert str(llama.base_url).rstrip("/") == "http://127.0.0.1:8080"
-    assert llama.model == "local-news-ai"
+    assert [item.model_id for item in llama.models] == ["local-news-ai"]
     assert llama.request_timeout_seconds == 120
     assert llama.health_timeout_seconds == 2
-    assert llama.max_context_tokens == 8192
+    assert llama.models[0].max_context_tokens == 8192
 
     policy = AIPolicyConfigLoader(loader).load()
     assert policy.mode is AIRoutingMode.HYBRID
@@ -193,7 +193,7 @@ def test_provider_configuration_is_closed_and_secret_is_only_an_environment_refe
     with pytest.raises(ValidationError):
         AIProvidersConfig.model_validate(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "providers": [
                     {
                         "adapter_type": "cloud_magic",
@@ -207,7 +207,7 @@ def test_provider_configuration_is_closed_and_secret_is_only_an_environment_refe
         )
     config = AIProvidersConfig.model_validate(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "providers": [
                 {
                     "adapter_type": "llama_cpp",
@@ -215,12 +215,11 @@ def test_provider_configuration_is_closed_and_secret_is_only_an_environment_refe
                     "base_url": "http://127.0.0.1:8080",
                     "model": "local-news-ai",
                     "task_types": ["CLAIM_EXTRACTION"],
-                    "api_key_env": "NEWS_AI_LLAMA_API_KEY",
                 }
             ],
         }
     )
-    assert config.providers[0].api_key_env == "NEWS_AI_LLAMA_API_KEY"
+    assert config.providers[0].model == "local-news-ai"
     assert "secret-value" not in config.model_dump_json()
 
     with pytest.raises(ValidationError, match="must be unique"):
@@ -241,7 +240,8 @@ def test_production_factory_requires_groq_key_and_builds_without_network(
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY_2", raising=False)
     monkeypatch.delenv("GROQ_API_KEY_3", raising=False)
-    with pytest.raises(ValueError, match="GROQ_API_KEY"):
+    monkeypatch.delenv("GROQ_API_KEY_1", raising=False)
+    with pytest.raises(ValueError, match="no configured credentials"):
         build_ai_router(loader)
     monkeypatch.setenv("GROQ_API_KEY_2", "secondary-placeholder")
     router = build_ai_router(loader)

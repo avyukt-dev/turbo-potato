@@ -14,8 +14,10 @@ from .claim_extraction import (
 from .configuration import (
     AIProvidersConfig,
     AIProvidersConfigLoader,
+    ConfiguredGeminiProvider,
     ConfiguredGroqProvider,
     ConfiguredLlamaCppProvider,
+    ConfiguredOpenAIProvider,
     build_ai_router,
 )
 from .contracts import (
@@ -32,6 +34,8 @@ from .contracts import (
     TokenUsage,
     metadata_contains_secret_key,
 )
+from .credentials import CredentialPoolConfig
+from .gemini import GeminiProvider, GeminiProviderConfig
 from .groq import GroqProvider, GroqProviderConfig
 from .image_generation import (
     GeminiImageProvider,
@@ -47,12 +51,17 @@ from .image_generation import (
     build_image_router,
 )
 from .llama_cpp import LlamaCppProvider, LlamaCppProviderConfig
+from .model_config import ProviderModelConfig
+from .openai_provider import OpenAIProvider, OpenAIProviderConfig
 from .provider import (
     AICapabilityError,
     AIContextTooLargeError,
     AIInvalidResponseError,
     AILocalResourceExhaustedError,
     AIProvider,
+    AIProviderAuthenticationError,
+    AIProviderCredentialPoolExhaustedError,
+    AIProviderCredentialUnknownError,
     AIProviderError,
     AIProviderPolicyError,
     AIProviderRateLimitError,
@@ -101,6 +110,9 @@ __all__ = [
     "AILocalResourceExhaustedError",
     "AIProvider",
     "AIProviderError",
+    "AIProviderAuthenticationError",
+    "AIProviderCredentialPoolExhaustedError",
+    "AIProviderCredentialUnknownError",
     "AIProviderNotRegisteredError",
     "AIProviderPolicyError",
     "AIProviderRateLimitError",
@@ -121,7 +133,10 @@ __all__ = [
     "AIProvidersConfig",
     "AIProvidersConfigLoader",
     "ConfiguredGroqProvider",
+    "ConfiguredGeminiProvider",
     "ConfiguredLlamaCppProvider",
+    "ConfiguredOpenAIProvider",
+    "CredentialPoolConfig",
     "AIRequest",
     "AIReasoningEffort",
     "AIReasoningReason",
@@ -153,8 +168,13 @@ __all__ = [
     "ClaimExtractionService",
     "GroqProvider",
     "GroqProviderConfig",
+    "GeminiProvider",
+    "GeminiProviderConfig",
     "LlamaCppProvider",
     "LlamaCppProviderConfig",
+    "OpenAIProvider",
+    "OpenAIProviderConfig",
+    "ProviderModelConfig",
     "PromptReference",
     "ProviderCapabilities",
     "ProviderLocality",

@@ -61,6 +61,21 @@ class EventAttemptStatus(StrEnum):
     STALE = "STALE"
 
 
+class AICredentialState(StrEnum):
+    HEALTHY = "HEALTHY"
+    COOLDOWN = "COOLDOWN"
+    AUTH_FAILED = "AUTH_FAILED"
+    UNKNOWN = "UNKNOWN"
+
+
+class AICredentialReason(StrEnum):
+    RATE_LIMIT = "RATE_LIMIT"
+    AUTHENTICATION = "AUTHENTICATION"
+    UNKNOWN_CREDENTIAL_FAILURE = "UNKNOWN_CREDENTIAL_FAILURE"
+    OPERATOR_RESET = "OPERATOR_RESET"
+    SECRET_REPLACED = "SECRET_REPLACED"
+
+
 class UUIDPrimaryKeyMixin:
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
 
@@ -217,6 +232,46 @@ class AIModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     model_metadata: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, default=dict)
+
+
+class AICredential(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Secret-free, per-key operational state shared by all AI workers."""
+
+    __tablename__ = "ai_credentials"
+    __table_args__ = (
+        UniqueConstraint("pool_id", "slot", name="uq_ai_credentials_pool_slot"),
+        CheckConstraint("slot >= 1 AND slot <= 128", name="ck_ai_credentials_slot"),
+        CheckConstraint(
+            "state IN ('HEALTHY','COOLDOWN','AUTH_FAILED','UNKNOWN')",
+            name="ck_ai_credentials_state",
+        ),
+        CheckConstraint("consecutive_failures >= 0", name="ck_ai_credentials_failures"),
+        CheckConstraint("revision >= 1", name="ck_ai_credentials_revision"),
+        CheckConstraint(
+            "(state = 'COOLDOWN' AND cooldown_until IS NOT NULL) OR "
+            "(state <> 'COOLDOWN' AND cooldown_until IS NULL)",
+            name="ck_ai_credentials_cooldown_state",
+        ),
+        Index("ix_ai_credentials_pool_active_state", "pool_id", "is_active", "state"),
+    )
+
+    pool_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    secret_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[AICredentialState] = mapped_column(
+        SAEnum(AICredentialState, native_enum=False, length=16, validate_strings=True),
+        nullable=False,
+        default=AICredentialState.HEALTHY,
+    )
+    reason_code: Mapped[str | None] = mapped_column(String(64))
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class AIRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -772,7 +827,8 @@ class AuditLog(UUIDPrimaryKeyMixin, Base):
             "actor_id IS NOT NULL OR action IN ('PUBLICATION_SCHEDULED','PUBLICATION_BLOCKED',"
             "'PUBLICATION_EXECUTION_STARTED','PUBLICATION_EXECUTED','PUBLICATION_FAILED',"
             "'PUBLICATION_RETRY_SCHEDULED','PUBLICATION_RECOVERY',"
-            "'RUNTIME_PUBLISHING_PAUSED','RUNTIME_PUBLISHING_RESUMED')",
+            "'RUNTIME_PUBLISHING_PAUSED','RUNTIME_PUBLISHING_RESUMED',"
+            "'AI_CREDENTIAL_RESET')",
             name="audit_system_actor",
         ),
     )

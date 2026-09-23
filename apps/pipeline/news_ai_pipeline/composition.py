@@ -132,7 +132,7 @@ async def build_production_pipeline_stack(
             socket_connect_timeout=settings.readiness_timeout_seconds,
             socket_timeout=max(10, config.consumer_block_ms / 1000 + 5),
         )
-        router = build_ai_router(loader, providers=ai_providers)
+        router = build_ai_router(loader, providers=ai_providers, session_factory=factory)
         if ai_providers is None:
             owned = tuple(
                 router.registry.get(item.provider_id) for item in router.registry.capabilities()
