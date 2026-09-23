@@ -601,6 +601,13 @@ sensitive-topic errors
 
 Quality pass does not equal publication approval in the MVP.
 
+Telegram may provide an authenticated human interaction channel for approval, but PostgreSQL
+`ReviewDecisionRecord` state produced by the canonical `ReviewService` remains the durable
+approval authority. Telegram messages and callbacks never become approval truth themselves.
+Each Telegram reviewer identity is deployment-allowlisted and mapped to a stable application
+reviewer principal; every accepted callback is still exact-version, capability-checked,
+idempotent, revalidated, and audited.
+
 The quality-domain `semantic-validator-v4` checks explicit reference ownership,
 relation roles, duplicate references, claim temporal bounds, and quoted spans.
 EditorialBrief claim/FactCheck references and copied factual status/label/text must

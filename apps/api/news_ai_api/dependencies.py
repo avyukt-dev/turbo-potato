@@ -26,8 +26,8 @@ class ProductionReviewStack:
 def build_production_review_stack(settings: AppSettings) -> ProductionReviewStack:
     if not settings.database_url:
         raise ReviewConfigurationError("review database configuration is unavailable")
-    if settings.review_api_token is None or settings.reviewer_id is None:
-        raise ReviewConfigurationError("review authentication configuration is unavailable")
+    if settings.reviewer_id is None:
+        raise ReviewConfigurationError("reviewer identity configuration is unavailable")
     policy = EditorialConfigLoader(ConfigLoader(settings.config_dir)).load_publishing_policy()
     engine = create_database_engine(settings.database_url)
     factory = create_session_factory(engine)
