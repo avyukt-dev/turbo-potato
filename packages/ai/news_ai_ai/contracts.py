@@ -212,6 +212,8 @@ class ProviderCapabilities(BaseModel):
     task_types: frozenset[AITaskType]
     response_formats: frozenset[AIResponseFormat]
     models: frozenset[ModelId] = frozenset()
+    model_task_types: dict[ModelId, frozenset[AITaskType]] = Field(default_factory=dict)
+    model_response_formats: dict[ModelId, frozenset[AIResponseFormat]] = Field(default_factory=dict)
     supports_vision: bool = False
     supports_tools: bool = False
     honors_reasoning_effort: bool = False
@@ -232,7 +234,19 @@ class ProviderCapabilities(BaseModel):
             return False
         if request.allowed_providers and self.provider_id not in request.allowed_providers:
             return False
-        return request.model is None or not self.models or request.model in self.models
+        if request.model is None:
+            return True
+        if self.models and request.model not in self.models:
+            return False
+        if (
+            request.model in self.model_task_types
+            and request.task_type not in self.model_task_types[request.model]
+        ):
+            return False
+        return not (
+            request.model in self.model_response_formats
+            and request.response_format not in self.model_response_formats[request.model]
+        )
 
 
 _SECRET_METADATA_KEY = re.compile(

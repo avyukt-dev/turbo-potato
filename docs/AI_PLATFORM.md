@@ -114,10 +114,9 @@ AI must not independently convert a controversial/unsupported assertion into fac
 ```text
 AIProvider
 ├── LocalLlamaProvider
-├── LocalQwenProvider
+├── GroqProvider
 ├── OpenAIProvider
 ├── GeminiProvider
-├── ClaudeProvider
 └── FutureProvider
 ```
 
@@ -290,15 +289,20 @@ Models should be enabled/disabled without rewriting business logic.
 
 # 10. AI Configuration Ownership
 
-The current primary CLOUD adapter is Groq using `openai/gpt-oss-120b`, with local
-llama.cpp as fallback. All four active stages select Groq first in HYBRID mode;
-sensitive-topic authorization explicitly allows both providers and remains fail-closed.
-Groq uses bounded HTTP chat-completions requests without SDK dependencies. One logical provider
-call may fail over across the configured credential pool only after a normalized rate-limit
-response; each eligible credential is attempted at most once before the router's normal retry or
-fallback policy resumes. Per-credential cooldown honors bounded `Retry-After` guidance. This is
-availability failover, not quota circumvention: Groq organization limits remain shared across
-keys, and operators must use only credentials/projects authorized under provider policy.
+The current primary CLOUD route is Groq using `openai/gpt-oss-120b`, with local
+llama.cpp as fallback. Provider configuration may expose multiple models, and each stage owns an
+ordered list of provider/model pairs. Groq, OpenAI, Gemini, and OpenAI-compatible llama.cpp
+adapters use their official/provider-compatible SDK boundary behind the common `AIProvider`
+contract. All four active stages select Groq first in HYBRID mode; sensitive-topic authorization
+explicitly allows configured providers and remains fail-closed.
+
+Authenticated adapters resolve numbered credential pools and may fail over between eligible keys
+after a normalized credential-specific rate-limit, authentication, or unknown-key failure. Each
+key is an independent operational unit; the application deliberately models no organization,
+project, or shared quota scope. A rate-limit response cools only the exact key used. This is an
+availability mechanism and must not be interpreted as evidence that more keys grant more provider
+quota. Per-key cooldown honors bounded `Retry-After` guidance, and each eligible key is attempted
+at most once before the router's normal cross-provider policy resumes.
 Only INVALID_RESPONSE, TIMEOUT, RATE_LIMIT, and UNAVAILABLE authorize local fallback;
 policy rejection, unknown failures, and context overflow do not.
 
@@ -340,9 +344,10 @@ operator/application authority regardless of model effort.
 
 Groq receives only existing pipeline context. Built-in browsing, retrieval, and tools are not
 enabled; the Research Engine remains the evidence authority. Prompts and semantic validators
-are shared across providers. Configured credential references are `GROQ_API_KEY` and optional
-numbered failover slots, never committed key values; missing credentials fail startup/readiness.
-General adaptive retries,
+are shared across providers. Credential pools declare a non-secret environment prefix and bounded
+slot count. Secrets use numbered variables such as `GROQ_API_KEY_1`, `GROQ_API_KEY_2`, with gaps
+allowed; the legacy unsuffixed variable temporarily represents slot 1 and cannot coexist with
+`_1`. Raw keys never enter YAML, PostgreSQL, logs, CLI output, or provider errors. General adaptive retries,
 backoff, and resilience loops remain reserved for a later resilience layer; the single bounded
 MEDIUM-to-HIGH validation escalation above is reasoning-policy behavior, not general retry logic.
 
@@ -359,14 +364,16 @@ config/models/
     └── quality-checking.yaml
 ```
 
-`providers.yaml` owns provider infrastructure and adapter construction only. `policy.yaml`
+`providers.yaml` owns provider infrastructure, model capabilities, adapter construction, and
+non-secret credential-pool metadata only. `policy.yaml`
 owns cross-cutting routing authorization such as locality mode and sensitive-topic provider
 allowlists. Each closed production stage file owns its task identity, versioned provider-neutral
 prompt reference, ordered provider/model selections, and explicitly authorized fallback reasons.
 
 The production pipeline constructs one provider registry/router and shares it across stage
 stacks. For each attempt, the router applies the model paired with that stage's selected
-provider. Domain services remain provider-neutral and never branch on adapter type. Future
+provider. The same provider may appear more than once with different configured models. Domain
+services remain provider-neutral and never branch on adapter type. Future
 providers are added through a closed adapter factory plus provider and stage configuration,
 without moving provider details into stage services.
 

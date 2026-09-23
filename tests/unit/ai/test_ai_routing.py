@@ -174,12 +174,21 @@ sensitivity_provider_allowlists:
         AIPolicyConfig(sensitivity_provider_allowlists={"SENSITIVE": frozenset()})
 
 
-def test_stage_contract_rejects_duplicate_providers_unsafe_fallback_and_extra() -> None:
-    with pytest.raises(ValidationError, match="provider IDs must be unique"):
+def test_stage_contract_allows_provider_models_but_rejects_duplicate_routes() -> None:
+    stage = _stage(
+        AIStageId.CLAIM_EXTRACTION,
+        AITaskType.CLAIM_EXTRACTION,
+        (("local-a", "a"), ("local-a", "b")),
+    )
+    assert [(item.provider_id, item.model) for item in stage.providers] == [
+        ("local-a", "a"),
+        ("local-a", "b"),
+    ]
+    with pytest.raises(ValidationError, match="provider/model routes must be unique"):
         _stage(
             AIStageId.CLAIM_EXTRACTION,
             AITaskType.CLAIM_EXTRACTION,
-            (("local-a", "a"), ("local-a", "b")),
+            (("local-a", "a"), ("local-a", "a")),
         )
     with pytest.raises(ValidationError, match="cannot authorize fallback"):
         _stage(
@@ -245,6 +254,23 @@ def test_fallback_uses_each_stage_selected_model_and_records_attempts() -> None:
         ("local-a", AIRouteAttemptOutcome.FAILED, AIFailureReason.TIMEOUT),
         ("cloud-a", AIRouteAttemptOutcome.SUCCESS, None),
     ]
+
+
+def test_fallback_can_select_second_model_on_same_provider() -> None:
+    provider = FakeProvider(
+        "local-a",
+        ProviderLocality.LOCAL,
+        frozenset({"model-a", "model-b"}),
+        [AIProviderUnavailableError("temporary"), _response("local-a", "model-b")],
+    )
+    stages = _stages(
+        providers=(("local-a", "model-a"), ("local-a", "model-b")),
+        fallback_on=frozenset({AIFailureReason.UNAVAILABLE}),
+    )
+    router = AIRouter(AIProviderRegistry((provider,)), _policy(), stages)
+    result = asyncio.run(router.execute(_request()))
+    assert [item.model for item in provider.requests] == ["model-a", "model-b"]
+    assert result.response.model == "model-b"
 
 
 def test_stage_rate_limit_retry_preserves_route_and_applies_token_budget(

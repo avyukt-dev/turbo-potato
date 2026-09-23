@@ -525,6 +525,19 @@ preserve provenance/job state
 
 Do not route sensitive material to arbitrary providers.
 
+Inspect per-key AI credential state without exposing secrets:
+
+```bash
+newsctl ai credentials status
+newsctl ai credentials probe --pool groq-production --slot 1
+newsctl ai credentials reset --pool groq-production --slot 1 --reason "credential replaced"
+```
+
+`status` reports only pool, provider, slot, closed state/reason, bounded cooldown, timestamps, and
+revision. `AUTH_FAILED` and `UNKNOWN` keys remain disabled until an explicit audited reset, a safe
+supported probe, or secret replacement. A provider without a safe non-generative probe returns
+`PROBE_UNSUPPORTED`; the command never hides a billable inference operation.
+
 ---
 
 # 25. POCO Resource Policy

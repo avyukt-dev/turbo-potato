@@ -31,6 +31,18 @@ class AIProviderPolicyError(AIProviderError):
     """Provider or application policy disallows this request."""
 
 
+class AIProviderAuthenticationError(AIProviderPolicyError):
+    """The exact credential used by the request was rejected as invalid or revoked."""
+
+
+class AIProviderCredentialUnknownError(AIProviderError):
+    """A credential-specific failure cannot be safely classified for automatic reuse."""
+
+
+class AIProviderCredentialPoolExhaustedError(AIProviderUnavailableError):
+    """No credential in one provider pool is currently usable."""
+
+
 class AIContextTooLargeError(AIProviderError):
     """Request exceeds a provider/model context limit."""
 

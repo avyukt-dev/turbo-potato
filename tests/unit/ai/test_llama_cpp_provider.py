@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
+from types import SimpleNamespace
 
 import httpx
+import openai
 import pytest
 from news_ai_ai import (
     AIContextTooLargeError,
     AIInvalidResponseError,
-    AIProviderPolicyError,
     AIProviderRateLimitError,
     AIProviderTimeoutError,
     AIProviderUnavailableError,
@@ -42,18 +42,48 @@ def _request(*, structured: bool = False) -> AIRequest:
     )
 
 
-def _client(handler: httpx.MockTransport) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=handler)
+def _completion(content: str | None = "One claim.", *, choices: bool = True):
+    return SimpleNamespace(
+        id="cmpl-1",
+        model="tiny-model",
+        choices=(
+            [SimpleNamespace(message=SimpleNamespace(content=content), finish_reason="stop")]
+            if choices
+            else []
+        ),
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3),
+    )
+
+
+class _Completions:
+    def __init__(self, outcome, calls: list[dict]) -> None:
+        self.outcome = outcome
+        self.calls = calls
+
+    async def create(self, **payload):
+        self.calls.append(payload)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+class _Client:
+    def __init__(self, outcome, calls: list[dict] | None = None) -> None:
+        self.calls = calls if calls is not None else []
+        self.chat = SimpleNamespace(completions=_Completions(outcome, self.calls))
+
+
+def _status_error(status: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "http://127.0.0.1:8080/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return openai.APIStatusError("safe", response=response, body={"error": "safe"})
 
 
 def test_config_requires_declared_tasks_and_safe_service_url() -> None:
     with pytest.raises(ValidationError, match="at least one task"):
         LlamaCppProviderConfig(
-            base_url="http://127.0.0.1:8080",
-            model="model",
-            task_types=frozenset(),
+            base_url="http://127.0.0.1:8080", model="model", task_types=frozenset()
         )
-
     with pytest.raises(ValidationError, match="query or fragment"):
         LlamaCppProviderConfig(
             base_url="http://127.0.0.1:8080?token=secret",
@@ -63,161 +93,82 @@ def test_config_requires_declared_tasks_and_safe_service_url() -> None:
 
 
 def test_provider_declares_local_capabilities_without_service_manager_logic() -> None:
-    provider = LlamaCppProvider(_config(), client=httpx.AsyncClient())
-
+    provider = LlamaCppProvider(_config(), client=_Client(_completion()))
     assert provider.provider_id == "local-llama"
     assert provider.capabilities.locality is ProviderLocality.LOCAL
     assert provider.capabilities.models == frozenset({"tiny-model"})
     assert provider.capabilities.max_context_tokens == 4096
 
-    asyncio.run(provider.close())
 
-
-def test_healthcheck_requires_http_200_and_ok_payload() -> None:
-    async def run() -> None:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/health"
-            return httpx.Response(200, json={"status": "ok"})
-
-        async with _client(httpx.MockTransport(handler)) as client:
-            provider = LlamaCppProvider(_config(), client=client)
-            assert await provider.healthcheck()
-
-    asyncio.run(run())
-
-
-def test_healthcheck_returns_false_for_loading_or_invalid_response() -> None:
+def test_healthcheck_uses_separate_bounded_http_probe() -> None:
     async def run(status: int, payload: object) -> bool:
         async def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/health"
             return httpx.Response(status, json=payload)
 
-        async with _client(httpx.MockTransport(handler)) as client:
-            return await LlamaCppProvider(_config(), client=client).healthcheck()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as health:
+            return await LlamaCppProvider(
+                _config(), client=_Client(_completion()), health_client=health
+            ).healthcheck()
 
-    assert not asyncio.run(run(503, {"error": {"message": "Loading model"}}))
+    assert asyncio.run(run(200, {"status": "ok"}))
+    assert not asyncio.run(run(503, {"error": "loading"}))
     assert not asyncio.run(run(200, {"status": "loading"}))
 
 
-def test_text_request_maps_to_chat_completion_and_normalizes_response() -> None:
-    async def run() -> None:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/v1/chat/completions"
-            payload = json.loads(request.content)
-            assert payload["model"] == "tiny-model"
-            assert payload["stream"] is False
-            assert payload["max_tokens"] == 128
-            assert "reasoning_effort" not in payload
-            assert "response_format" not in payload
-            assert payload["messages"][0] == {
-                "role": "system",
-                "content": "Extract atomic claims.",
-            }
-            assert payload["messages"][1]["content"] == '{"headline":"Example"}'
-            return httpx.Response(
-                200,
-                json={
-                    "id": "cmpl-1",
-                    "model": "tiny-model",
-                    "system_fingerprint": "build-1",
-                    "choices": [
-                        {
-                            "message": {"role": "assistant", "content": "One claim."},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 3},
-                },
-            )
-
-        async with _client(httpx.MockTransport(handler)) as client:
-            request = _request().model_copy(update={"reasoning_effort": AIReasoningEffort.HIGH})
-            response = await LlamaCppProvider(_config(), client=client).execute(request)
-            assert response.text == "One claim."
-            assert response.structured is None
-            assert response.provider == "local-llama"
-            assert response.model == "tiny-model"
-            assert response.usage.input_tokens == 10
-            assert response.usage.output_tokens == 3
-            assert response.provider_request_id == "cmpl-1"
-            assert response.metadata == {"system_fingerprint": "build-1"}
-
-    asyncio.run(run())
-
-
-def test_structured_request_never_trusts_http_200_without_valid_json_object() -> None:
-    async def run(content: str) -> dict[str, object]:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            payload = json.loads(request.content)
-            assert payload["response_format"] == {"type": "json_object"}
-            return httpx.Response(
-                200,
-                json={
-                    "model": "tiny-model",
-                    "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
-                },
-            )
-
-        async with _client(httpx.MockTransport(handler)) as client:
-            response = await LlamaCppProvider(_config(), client=client).execute(
-                _request(structured=True)
-            )
-            assert response.structured is not None
-            return response.structured
-
-    assert asyncio.run(run('{"claims":[]}')) == {"claims": []}
-
-    with pytest.raises(AIInvalidResponseError, match="malformed structured output"):
-        asyncio.run(run("I should probably return JSON."))
-
-    with pytest.raises(AIInvalidResponseError, match="must be a JSON object"):
-        asyncio.run(run("[]"))
-
-
-def test_provider_maps_http_failures_to_normalized_error_types() -> None:
-    async def execute_status(status: int) -> None:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(status, json={"error": {"message": "failed"}})
-
-        async with _client(httpx.MockTransport(handler)) as client:
-            await LlamaCppProvider(_config(), client=client).execute(_request())
-
-    cases = [
-        (429, AIProviderRateLimitError),
-        (401, AIProviderPolicyError),
-        (413, AIContextTooLargeError),
-        (503, AIProviderUnavailableError),
+def test_sdk_request_maps_to_chat_completion_and_normalizes_response() -> None:
+    calls: list[dict] = []
+    request = _request().model_copy(update={"reasoning_effort": AIReasoningEffort.HIGH})
+    response = asyncio.run(
+        LlamaCppProvider(_config(), client=_Client(_completion(), calls)).execute(request)
+    )
+    assert calls == [
+        {
+            "model": "tiny-model",
+            "messages": [
+                {"role": "system", "content": "Extract atomic claims."},
+                {"role": "user", "content": '{"headline":"Example"}'},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 128,
+        }
     ]
-    for status, error_type in cases:
-        with pytest.raises(error_type):
-            asyncio.run(execute_status(status))
+    assert response.text == "One claim."
+    assert response.usage.input_tokens == 10
+    assert response.provider_request_id == "cmpl-1"
 
 
-def test_provider_maps_transport_timeout_and_unavailable_errors() -> None:
-    async def timeout_handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("slow", request=request)
-
-    async def unavailable_handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("offline", request=request)
-
-    async def run(handler: httpx.MockTransport) -> None:
-        async with _client(handler) as client:
-            await LlamaCppProvider(_config(), client=client).execute(_request())
-
-    with pytest.raises(AIProviderTimeoutError):
-        asyncio.run(run(httpx.MockTransport(timeout_handler)))
-    with pytest.raises(AIProviderUnavailableError):
-        asyncio.run(run(httpx.MockTransport(unavailable_handler)))
+def test_structured_request_rejects_invalid_sdk_response() -> None:
+    valid = LlamaCppProvider(_config(), client=_Client(_completion('{"claims":[]}')))
+    assert asyncio.run(valid.execute(_request(structured=True))).structured == {"claims": []}
+    for content in ("not json", "[]"):
+        provider = LlamaCppProvider(_config(), client=_Client(_completion(content)))
+        with pytest.raises(AIInvalidResponseError):
+            asyncio.run(provider.execute(_request(structured=True)))
+    for completion in (_completion(choices=False), _completion(None)):
+        with pytest.raises(AIInvalidResponseError):
+            asyncio.run(LlamaCppProvider(_config(), client=_Client(completion)).execute(_request()))
 
 
-def test_provider_rejects_malformed_completion_envelope() -> None:
-    async def run(payload: object) -> None:
-        async def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=payload)
-
-        async with _client(httpx.MockTransport(handler)) as client:
-            await LlamaCppProvider(_config(), client=client).execute(_request())
-
-    with pytest.raises(AIInvalidResponseError, match="no completion choice"):
-        asyncio.run(run({"choices": []}))
-    with pytest.raises(AIInvalidResponseError, match="no message content"):
-        asyncio.run(run({"choices": [{"message": {"content": None}}]}))
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            openai.RateLimitError(
+                "safe",
+                response=httpx.Response(429, request=httpx.Request("POST", "http://local")),
+                body=None,
+            ),
+            AIProviderRateLimitError,
+        ),
+        (_status_error(413), AIContextTooLargeError),
+        (_status_error(503), AIProviderUnavailableError),
+        (
+            openai.APITimeoutError(request=httpx.Request("POST", "http://local")),
+            AIProviderTimeoutError,
+        ),
+    ],
+)
+def test_sdk_errors_are_normalized(error: Exception, expected: type[Exception]) -> None:
+    with pytest.raises(expected):
+        asyncio.run(LlamaCppProvider(_config(), client=_Client(error)).execute(_request()))

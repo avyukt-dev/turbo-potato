@@ -73,7 +73,9 @@ def build_production_content_stack(
     loader = ConfigLoader(settings.config_dir)
     if ai_router is not None and ai_providers is not None:
         raise ValueError("inject either an AI router or providers")
-    router = ai_router or build_ai_router(loader, providers=ai_providers)
+    router = ai_router or build_ai_router(
+        loader, providers=ai_providers, session_factory=session_factory
+    )
     router.validate_stage(AITaskType.CONTENT_GENERATION)
     stage_loader = AIStageConfigLoader(loader)
     stage = router.stage_config(AITaskType.CONTENT_GENERATION)
@@ -87,7 +89,9 @@ def build_production_content_stack(
     media_service = None
     media_identity = None
     if settings.media_generation_enabled:
-        image_router, image_config = build_image_router(loader, providers=image_providers)
+        image_router, image_config = build_image_router(
+            loader, providers=image_providers, session_factory=session_factory
+        )
         assert settings.generated_media_public_base_url is not None
         selected_store = media_store or _build_generated_media_store(settings)
         media_service = MediaGenerationService(
@@ -201,7 +205,9 @@ def build_production_quality_stack(
     loader = ConfigLoader(settings.config_dir)
     if ai_router is not None and ai_providers is not None:
         raise ValueError("inject either an AI router or providers")
-    router = ai_router or build_ai_router(loader, providers=ai_providers)
+    router = ai_router or build_ai_router(
+        loader, providers=ai_providers, session_factory=session_factory
+    )
     router.validate_stage(AITaskType.QUALITY_CHECKING)
     stage_loader = AIStageConfigLoader(loader)
     stage = router.stage_config(AITaskType.QUALITY_CHECKING)

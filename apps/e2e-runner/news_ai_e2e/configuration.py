@@ -217,7 +217,7 @@ class LiveE2ESettings:
         if groq_api_key_present is None:
             groq_api_key_present = any(
                 os.getenv(name, "").strip()
-                for name in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3")
+                for name in ("GROQ_API_KEY", *(f"GROQ_API_KEY_{slot}" for slot in range(1, 33)))
             )
         if not groq_api_key_present:
             failures.append("at least one configured GROQ_API_KEY credential is required")

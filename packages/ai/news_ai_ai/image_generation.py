@@ -1,33 +1,45 @@
-"""Provider-neutral image generation with OpenAI and Gemini adapters."""
+"""Provider-neutral image generation through official provider SDKs."""
 
 from __future__ import annotations
 
 import base64
 import binascii
-import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-import httpx
+import openai
+from google import genai
+from google.genai import errors, types
 from news_ai_common.config import ConfigDomain, ConfigLoader
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.orm import Session
 
+from .credentials import (
+    CredentialStateUnavailableError,
+    DatabaseCredentialPool,
+    MemoryCredentialPool,
+    ResolvedCredential,
+    resolve_credential_pool,
+)
+from .pooled import CredentialPool
 from .provider import (
     AIInvalidResponseError,
+    AIProviderAuthenticationError,
     AIProviderError,
     AIProviderPolicyError,
     AIProviderRateLimitError,
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
+from .sdk_clients import close_sdk_client
 
 MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 class ImageGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
     prompt: str = Field(min_length=1, max_length=12000)
     aspect_ratio: Literal["4:5"] = "4:5"
     input_hash: str = Field(min_length=64, max_length=64)
@@ -61,9 +73,8 @@ class OpenAIImageProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider_id: Literal["openai"] = "openai"
     adapter_type: Literal["openai_images"]
-    base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-image-1.5"
-    api_key_env: str = "OPENAI_API_KEY"
+    credential_pool_id: str = "openai-production"
     timeout_seconds: float = Field(default=180, gt=0, le=600)
 
 
@@ -71,21 +82,19 @@ class GeminiImageProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider_id: Literal["gemini"] = "gemini"
     adapter_type: Literal["gemini_images"]
-    base_url: str = "https://generativelanguage.googleapis.com/v1"
     model: str = "gemini-3.1-flash-image"
-    api_key_env: str = "GEMINI_API_KEY"
+    credential_pool_id: str = "gemini-production"
     timeout_seconds: float = Field(default=180, gt=0, le=600)
 
 
 ConfiguredImageProvider = Annotated[
-    OpenAIImageProviderConfig | GeminiImageProviderConfig,
-    Field(discriminator="adapter_type"),
+    OpenAIImageProviderConfig | GeminiImageProviderConfig, Field(discriminator="adapter_type")
 ]
 
 
 class ImageProvidersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     methodology_version: str = Field(min_length=1, max_length=64)
     providers: tuple[ConfiguredImageProvider, ...]
     sensitivity_provider_allowlists: dict[str, frozenset[str]]
@@ -97,10 +106,8 @@ class ImageProvidersConfig(BaseModel):
             raise ValueError("image providers must be non-empty and unique")
         configured = set(ids)
         for sensitivity, providers in self.sensitivity_provider_allowlists.items():
-            if not sensitivity.strip() or not providers:
-                raise ValueError("image sensitivity allowlists must be non-empty")
-            if not providers <= configured:
-                raise ValueError("image sensitivity allowlist references unknown provider")
+            if not sensitivity.strip() or not providers or not providers <= configured:
+                raise ValueError("image sensitivity allowlist is invalid")
         return self
 
 
@@ -114,14 +121,65 @@ class ImageProvidersConfigLoader:
         )
 
 
-class _HTTPImageProvider:
-    def __init__(self, *, provider_id: str, model: str, api_key: str, timeout: float) -> None:
-        if not api_key.strip():
-            raise ValueError(f"{provider_id} image credential is unavailable")
+class _PooledImageProvider:
+    def __init__(self, *, provider_id: str, model: str, credential_pool: CredentialPool) -> None:
         self.provider_id = provider_id
         self.model = model
-        self._api_key = api_key
-        self._timeout = timeout
+        self.credential_pool = credential_pool
+
+    async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
+        attempted: set[int] = set()
+        last: AIProviderError | None = None
+        while (credential := await self._acquire(attempted)) is not None:
+            attempted.add(credential.slot)
+            try:
+                response = await self._generate(request, credential.secret)
+            except AIProviderRateLimitError as exc:
+                last = exc
+                await self._record("rate", credential, exc.retry_after_seconds)
+                continue
+            except AIProviderAuthenticationError as exc:
+                last = exc
+                await self._record("auth", credential)
+                continue
+            await self._record("success", credential)
+            return response
+        if last is not None:
+            raise last
+        try:
+            remaining = await self.credential_pool.minimum_cooldown_remaining()
+        except CredentialStateUnavailableError as exc:
+            raise AIProviderUnavailableError("AI credential state is unavailable") from exc
+        raise AIProviderRateLimitError(
+            "No configured image credential is currently eligible", retry_after_seconds=remaining
+        )
+
+    async def _acquire(self, attempted: set[int]) -> ResolvedCredential | None:
+        try:
+            return await self.credential_pool.acquire(attempted)
+        except CredentialStateUnavailableError as exc:
+            raise AIProviderUnavailableError("AI credential state is unavailable") from exc
+
+    async def _record(
+        self,
+        outcome: str,
+        credential: ResolvedCredential,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        try:
+            if outcome == "success":
+                await self.credential_pool.record_success(credential)
+            elif outcome == "rate":
+                await self.credential_pool.record_rate_limit(credential, retry_after_seconds)
+            else:
+                await self.credential_pool.record_auth_failure(credential)
+        except CredentialStateUnavailableError as exc:
+            raise AIProviderUnavailableError("AI credential state is unavailable") from exc
+
+    async def _generate(
+        self, request: ImageGenerationRequest, api_key: str
+    ) -> ImageGenerationResponse:
+        raise NotImplementedError
 
     @staticmethod
     def _decode(value: object) -> bytes:
@@ -135,113 +193,130 @@ class _HTTPImageProvider:
             raise AIInvalidResponseError("image provider returned an invalid image size")
         return decoded
 
-    async def _post(
-        self, url: str, *, headers: dict[str, str], payload: dict
-    ) -> tuple[httpx.Response, dict, int]:
-        started = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(url, headers=headers, json=payload)
-        except httpx.TimeoutException:
-            raise AIProviderTimeoutError("image provider request timed out") from None
-        except httpx.HTTPError:
-            raise AIProviderUnavailableError("image provider endpoint is unavailable") from None
-        latency = int((time.monotonic() - started) * 1000)
-        try:
-            body = response.json()
-        except ValueError:
-            raise AIInvalidResponseError("image provider returned invalid JSON") from None
-        if not isinstance(body, dict):
-            raise AIInvalidResponseError("image provider returned an invalid response")
-        if response.status_code == 429:
-            raise AIProviderRateLimitError("image provider was rate limited")
-        if response.status_code in {401, 403}:
-            raise AIProviderPolicyError("image provider rejected credentials or policy")
-        if response.status_code >= 500:
-            raise AIProviderUnavailableError("image provider is temporarily unavailable")
-        if response.status_code >= 400:
-            raise AIProviderError("image provider rejected the generation request")
-        return response, body, latency
 
-
-class OpenAIImageProvider(_HTTPImageProvider):
-    def __init__(self, config: OpenAIImageProviderConfig, *, api_key: str) -> None:
+class OpenAIImageProvider(_PooledImageProvider):
+    def __init__(
+        self,
+        config: OpenAIImageProviderConfig,
+        *,
+        credential_pool: CredentialPool,
+        client_factory: Callable[[str], Any] | None = None,
+    ) -> None:
         super().__init__(
-            provider_id=config.provider_id,
-            model=config.model,
-            api_key=api_key,
-            timeout=config.timeout_seconds,
+            provider_id=config.provider_id, model=config.model, credential_pool=credential_pool
         )
-        self._base_url = config.base_url.rstrip("/")
+        self.config = config
+        self._client_factory = client_factory or (
+            lambda key: openai.AsyncOpenAI(
+                api_key=key, timeout=config.timeout_seconds, max_retries=0
+            )
+        )
 
-    async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
-        response, body, latency = await self._post(
-            f"{self._base_url}/images/generations",
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            payload={
-                "model": self.model,
-                "prompt": request.prompt,
-                "n": 1,
-                "size": "1024x1536",
-                "quality": "high",
-                "output_format": "jpeg",
-            },
-        )
-        data = body.get("data")
-        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+    async def _generate(
+        self, request: ImageGenerationRequest, api_key: str
+    ) -> ImageGenerationResponse:
+        started = time.monotonic()
+        client = self._client_factory(api_key)
+        try:
+            response = await client.images.generate(
+                model=self.model,
+                prompt=request.prompt,
+                n=1,
+                size="1024x1536",
+                quality="high",
+                output_format="jpeg",
+            )
+        except openai.AuthenticationError as exc:
+            raise AIProviderAuthenticationError("OpenAI image credential was rejected") from exc
+        except openai.PermissionDeniedError as exc:
+            raise AIProviderPolicyError("OpenAI rejected image policy") from exc
+        except openai.RateLimitError as exc:
+            raise AIProviderRateLimitError("OpenAI image request was rate limited") from exc
+        except openai.APITimeoutError as exc:
+            raise AIProviderTimeoutError("OpenAI image request timed out") from exc
+        except openai.APIConnectionError as exc:
+            raise AIProviderUnavailableError("OpenAI image endpoint is unavailable") from exc
+        except openai.APIStatusError as exc:
+            if exc.status_code >= 500:
+                raise AIProviderUnavailableError("OpenAI image service is unavailable") from exc
+            raise AIProviderError("OpenAI rejected image generation") from exc
+        finally:
+            await close_sdk_client(client)
+        if len(response.data) != 1:
             raise AIInvalidResponseError("OpenAI returned an invalid image result")
         return ImageGenerationResponse(
-            image_bytes=self._decode(data[0].get("b64_json")),
+            image_bytes=self._decode(response.data[0].b64_json),
             mime_type="image/jpeg",
             provider=self.provider_id,
             model=self.model,
-            latency_ms=latency,
-            provider_request_id=response.headers.get("x-request-id"),
+            latency_ms=int((time.monotonic() - started) * 1000),
+            provider_request_id=getattr(response, "id", None),
         )
 
 
-class GeminiImageProvider(_HTTPImageProvider):
-    def __init__(self, config: GeminiImageProviderConfig, *, api_key: str) -> None:
+class GeminiImageProvider(_PooledImageProvider):
+    def __init__(
+        self,
+        config: GeminiImageProviderConfig,
+        *,
+        credential_pool: CredentialPool,
+        client_factory: Callable[[str], Any] | None = None,
+    ) -> None:
         super().__init__(
-            provider_id=config.provider_id,
-            model=config.model,
-            api_key=api_key,
-            timeout=config.timeout_seconds,
+            provider_id=config.provider_id, model=config.model, credential_pool=credential_pool
         )
-        self._base_url = config.base_url.rstrip("/")
+        self.config = config
+        self._client_factory = client_factory or (
+            lambda key: genai.Client(
+                api_key=key,
+                http_options=types.HttpOptions(timeout=int(config.timeout_seconds * 1000)),
+            )
+        )
 
-    async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
-        response, body, latency = await self._post(
-            f"{self._base_url}/models/{self.model}:generateContent",
-            headers={"x-goog-api-key": self._api_key},
-            payload={
-                "contents": [{"parts": [{"text": request.prompt}]}],
-                "generationConfig": {
-                    "responseModalities": ["IMAGE"],
-                    "imageConfig": {"aspectRatio": request.aspect_ratio},
-                },
-            },
-        )
-        candidates = body.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
-            raise AIInvalidResponseError("Gemini returned no image candidate")
-        content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
-        parts = content.get("parts") if isinstance(content, dict) else None
-        if not isinstance(parts, list):
-            raise AIInvalidResponseError("Gemini returned an invalid image result")
-        for part in reversed(parts):
-            inline = part.get("inlineData") if isinstance(part, dict) else None
-            if isinstance(inline, dict) and not part.get("thought"):
-                mime = inline.get("mimeType")
+    async def _generate(
+        self, request: ImageGenerationRequest, api_key: str
+    ) -> ImageGenerationResponse:
+        started = time.monotonic()
+        client = self._client_factory(api_key)
+        try:
+            response = await client.aio.models.generate_content(
+                model=self.model,
+                contents=request.prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(aspect_ratio=request.aspect_ratio),
+                ),
+            )
+        except errors.APIError as exc:
+            if exc.code == 401:
+                raise AIProviderAuthenticationError("Gemini image credential was rejected") from exc
+            if exc.code == 403:
+                raise AIProviderPolicyError("Gemini rejected image policy") from exc
+            if exc.code == 429:
+                raise AIProviderRateLimitError("Gemini image request was rate limited") from exc
+            if exc.code in {408, 504}:
+                raise AIProviderTimeoutError("Gemini image request timed out") from exc
+            if exc.code >= 500:
+                raise AIProviderUnavailableError("Gemini image service is unavailable") from exc
+            raise AIProviderError("Gemini rejected image generation") from exc
+        finally:
+            await close_sdk_client(client, asynchronous_namespace=True)
+        for part in reversed(response.parts or []):
+            inline = getattr(part, "inline_data", None)
+            if inline is not None and not getattr(part, "thought", False):
+                mime = inline.mime_type
                 if mime not in {"image/png", "image/jpeg"}:
                     raise AIInvalidResponseError("Gemini returned an unsupported image format")
+                raw = inline.data
+                if not isinstance(raw, bytes) or not raw or len(raw) > MAX_GENERATED_IMAGE_BYTES:
+                    raise AIInvalidResponseError("Gemini returned invalid image bytes")
                 return ImageGenerationResponse(
-                    image_bytes=self._decode(inline.get("data")),
+                    image_bytes=raw,
                     mime_type=mime,
                     provider=self.provider_id,
                     model=self.model,
-                    latency_ms=latency,
-                    provider_request_id=response.headers.get("x-request-id"),
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                    provider_request_id=getattr(response, "response_id", None),
                 )
         raise AIInvalidResponseError("Gemini omitted generated image bytes")
 
@@ -264,7 +339,7 @@ class ImageGenerationRouter:
                 "no image provider allowlist configured for requested sensitivity"
             )
         last: AIProviderError | None = None
-        saw_retryable = False
+        retryable = False
         eligible = 0
         for provider in self.providers:
             if any(
@@ -288,19 +363,15 @@ class ImageGenerationRouter:
                 return response
             except AIProviderError as exc:
                 last = exc
-                saw_retryable = saw_retryable or isinstance(
+                retryable = retryable or isinstance(
                     exc,
-                    (
-                        AIProviderRateLimitError,
-                        AIProviderTimeoutError,
-                        AIProviderUnavailableError,
-                    ),
+                    (AIProviderRateLimitError, AIProviderTimeoutError, AIProviderUnavailableError),
                 )
         if not eligible:
             raise AIProviderPolicyError(
                 "no configured image provider is authorized for requested sensitivity"
             )
-        if saw_retryable:
+        if retryable:
             raise AIProviderUnavailableError("all configured image providers failed") from last
         assert last is not None
         raise last
@@ -310,23 +381,30 @@ def build_image_router(
     loader: ConfigLoader,
     *,
     providers: tuple[ImageGenerationProvider, ...] | None = None,
+    session_factory: Callable[[], Session] | None = None,
 ) -> tuple[ImageGenerationRouter, ImageProvidersConfig]:
     config = ImageProvidersConfigLoader(loader).load()
     if providers is None:
+        from .configuration import AIProvidersConfigLoader
+
+        pools = {
+            item.pool_id: item for item in AIProvidersConfigLoader(loader).load().credential_pools
+        }
         built: list[ImageGenerationProvider] = []
         for item in config.providers:
-            key = os.getenv(item.api_key_env)
-            if not key or not key.strip():
-                continue
-            if isinstance(item, OpenAIImageProviderConfig):
-                built.append(OpenAIImageProvider(item, api_key=key))
-            else:
-                built.append(GeminiImageProvider(item, api_key=key))
+            pool_config = pools[item.credential_pool_id]
+            resolved = resolve_credential_pool(pool_config)
+            pool: CredentialPool = (
+                DatabaseCredentialPool(pool_config, resolved, session_factory)
+                if session_factory is not None
+                else MemoryCredentialPool(pool_config, resolved)
+            )
+            built.append(
+                OpenAIImageProvider(item, credential_pool=pool)
+                if isinstance(item, OpenAIImageProviderConfig)
+                else GeminiImageProvider(item, credential_pool=pool)
+            )
         providers = tuple(built)
-    return (
-        ImageGenerationRouter(
-            providers,
-            sensitivity_provider_allowlists=config.sensitivity_provider_allowlists,
-        ),
-        config,
-    )
+    return ImageGenerationRouter(
+        providers, sensitivity_provider_allowlists=config.sensitivity_provider_allowlists
+    ), config
