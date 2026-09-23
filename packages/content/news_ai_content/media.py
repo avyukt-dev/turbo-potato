@@ -1,4 +1,4 @@
-"""Ordered caller-owned media validation. No download, mutation, or AI inspection."""
+"""Ordered immutable media validation. No download, mutation, or AI inspection."""
 
 import re
 from uuid import UUID
@@ -10,18 +10,18 @@ from sqlalchemy.orm import Session
 
 class MediaValidationError(ValueError):
     def __init__(self) -> None:
-        super().__init__("caller media provenance is invalid")
+        super().__init__("media provenance is invalid")
 
 
 class MediaNotAttachedError(MediaValidationError):
     def __init__(self) -> None:
-        ValueError.__init__(self, "required caller media is not attached")
+        ValueError.__init__(self, "required media is not attached")
 
 
 def load_media_provenance(
     session: Session, variant: ContentVariant, *, lock: bool = False
 ) -> list[dict[str, str]]:
-    """Lock in UUID order, return validated provenance in carousel/caller order."""
+    """Lock in UUID order, return validated provenance in carousel order."""
     # Lazy import keeps the platform package's content contracts dependency acyclic.
     from news_ai_social import SocialAdapterError, canonical_public_media_url
 

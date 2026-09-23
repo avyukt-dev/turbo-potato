@@ -4,14 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from news_ai_content import ContentGenerationService
+from news_ai_ai import (
+    AIProviderError,
+    AIProviderRateLimitError,
+    AIProviderTimeoutError,
+    AIProviderUnavailableError,
+)
+from news_ai_content import ContentGenerationService, MediaGenerationService
 from news_ai_events import (
     EventEnvelope,
     EventType,
+    PermanentEventError,
     ProcessingOutcome,
     RedisStreamConsumer,
     ReliableMessageProcessor,
     StreamMessage,
+    TransientEventError,
     WorkerBatchResult,
     WorkerRetryPolicy,
 )
@@ -30,6 +38,7 @@ class ContentGenerationWorker:
         session_factory: Callable[[], Session],
         service: ContentGenerationService,
         *,
+        media_service: MediaGenerationService | None = None,
         retry_policy: WorkerRetryPolicy | None = None,
     ) -> None:
         expected = stream_for_event(EventType.CONTENT_REQUESTED)
@@ -38,6 +47,7 @@ class ContentGenerationWorker:
         self.consumer = consumer
         self.session_factory = session_factory
         self.service = service
+        self.media_service = media_service
         self.reliability = ReliableMessageProcessor(
             consumer,
             session_factory,
@@ -88,13 +98,37 @@ class ContentGenerationWorker:
             return ProcessingOutcome.DUPLICATE
 
         execution = await self.service.generate(context, event)
+        try:
+            generated_media = (
+                await self.media_service.generate(
+                    execution.output,
+                    content_semantic_key=context.semantic_key,
+                    sensitivity=tuple(context.fact_sheet.sensitive_topics),
+                )
+                if self.media_service is not None
+                else ()
+            )
+        except (
+            AIProviderRateLimitError,
+            AIProviderTimeoutError,
+            AIProviderUnavailableError,
+        ) as exc:
+            raise TransientEventError("media generation is temporarily unavailable") from exc
+        except (AIProviderError, ValueError) as exc:
+            raise PermanentEventError("media generation output is invalid") from exc
+        except OSError as exc:
+            raise TransientEventError("generated media storage is unavailable") from exc
         with self.session_factory() as session, session.begin():
             if was_processed(
                 session, event_id=event.event_id, consumer_group=CONTENT_CONSUMER_GROUP
             ):
                 return ProcessingOutcome.DUPLICATE
             result = self.service.persist(
-                session, context=context, event=event, execution=execution
+                session,
+                context=context,
+                event=event,
+                execution=execution,
+                generated_media=generated_media,
             )
             mark_processed(
                 session,

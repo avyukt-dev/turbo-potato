@@ -580,6 +580,9 @@ class MediaAsset(BaseModel):
 ```
 
 Local persistence and public delivery remain separate concerns.
+Production-generated assets use ordinary `MediaAsset` records: the application validates and
+watermarks provider output before setting `visual_check_status=VALIDATED`, and retains the image
+generation `AIRun` reference plus dimensions/provider/prompt provenance in `source_metadata`.
 
 ---
 

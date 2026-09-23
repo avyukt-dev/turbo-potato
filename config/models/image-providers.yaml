@@ -1,0 +1,28 @@
+schema_version: 1
+methodology_version: media-generation-methodology-v1
+providers:
+  - provider_id: openai
+    adapter_type: openai_images
+    base_url: https://api.openai.com/v1
+    model: gpt-image-1.5
+    api_key_env: OPENAI_API_KEY
+    timeout_seconds: 180
+  - provider_id: gemini
+    adapter_type: gemini_images
+    base_url: https://generativelanguage.googleapis.com/v1
+    model: gemini-3.1-flash-image
+    api_key_env: GEMINI_API_KEY
+    timeout_seconds: 180
+sensitivity_provider_allowlists:
+  COMMUNAL_VIOLENCE: [openai, gemini]
+  RELIGIOUS_ACCUSATION: [openai, gemini]
+  RELIGIOUS_VIOLENCE: [openai, gemini]
+  CRIMINAL_ALLEGATION: [openai, gemini]
+  SEXUAL_ASSAULT: [openai, gemini]
+  TERRORISM: [openai, gemini]
+  WAR_CASUALTIES: [openai, gemini]
+  ELECTION_FRAUD: [openai, gemini]
+  SC_ST_ALLEGATION: [openai, gemini]
+  CASTE_RELATED_ACCUSATION: [openai, gemini]
+  BLASPHEMY_ALLEGATION: [openai, gemini]
+  UNVERIFIED_BREAKING_NEWS: [openai, gemini]

@@ -57,7 +57,7 @@ class SocialAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """Caller-owned artifact references only: no generation, upload or delivery code."""
+    """Immutable media provenance; generation and delivery remain outside the ORM."""
 
     __tablename__ = "media_assets"
     __table_args__ = (CheckConstraint("length(file_hash) = 64", name="media_file_hash"),)

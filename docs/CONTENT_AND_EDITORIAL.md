@@ -608,6 +608,16 @@ Each Telegram reviewer identity is deployment-allowlisted and mapped to a stable
 reviewer principal; every accepted callback is still exact-version, capability-checked,
 idempotent, revalidated, and audited.
 
+When production media generation is enabled, each carousel slide receives an illustrative image
+through the provider-neutral image-generation boundary before `content.generated` is emitted.
+The application—not the image provider—normalizes the image to canonical JPEG, applies the
+configured newsroom watermark, persists immutable AI/file provenance, and attaches the ordered
+assets transactionally to the content variant. The exact images are included in the Telegram
+review packet; they receive no publication authority until the ordinary exact-version human
+approval succeeds. The configured public HTTPS base is a delivery boundary and must serve the
+exact bytes written under the generated-media directory; local persistence does not itself expose
+an HTTP service.
+
 The quality-domain `semantic-validator-v4` checks explicit reference ownership,
 relation roles, duplicate references, claim temporal bounds, and quoted spans.
 EditorialBrief claim/FactCheck references and copied factual status/label/text must

@@ -140,6 +140,34 @@ def test_production_content_stack_owns_content_generation_route_requirement() ->
         )
 
 
+def test_production_content_stack_composes_enabled_image_generation(tmp_path) -> None:
+    class ImageProvider:
+        provider_id = "openai"
+        model = "gpt-image-1.5"
+
+        async def generate(self, _request):  # pragma: no cover - composition only
+            raise AssertionError("composition must not perform generation")
+
+    providers = _providers(frozenset({AITaskType.CONTENT_GENERATION}))
+    stack = build_production_content_stack(
+        AppSettings(
+            config_dir="config",
+            media_generation_enabled=True,
+            generated_media_directory=tmp_path,
+            generated_media_public_base_url="https://media.example/generated",
+            generated_media_watermark_text="Our Newsroom • AI-generated",
+        ),
+        session_factory=_factory(),
+        redis_client=RedisBoundary(),
+        consumer_name="content-composition-test",
+        ai_providers=providers,
+        image_providers=(ImageProvider(),),
+    )
+    assert stack.media_service is not None
+    assert stack.worker.media_service is stack.media_service
+    assert stack.media_service.watermark_text == "Our Newsroom • AI-generated"
+
+
 def test_production_quality_stack_uses_official_router_and_worker_boundaries() -> None:
     providers = _providers(frozenset({AITaskType.QUALITY_CHECKING}))
     stack = build_production_quality_stack(
