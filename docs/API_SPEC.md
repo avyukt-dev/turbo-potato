@@ -489,9 +489,12 @@ second approval state machine. The webhook requires Telegram's
 `X-Telegram-Bot-Api-Secret-Token`, an allowlisted chat ID, and an allowlisted Telegram user ID
 mapped by deployment configuration to the existing stable `reviewer_id` and capabilities.
 
-The `/review` command returns the next exact reviewable artifact with bounded Fact Sheet,
-claim, risk, content, and quality context. The approval button binds the content-variant UUID
-and exact artifact version. Callback replay uses a deterministic idempotency identity; stale,
+The `/review` command returns the next exact reviewable artifact as a bounded sequence of
+messages containing the complete publication-visible content, immutable Fact Sheet, editorial
+brief, quality findings, and safe AI/media provenance. Exact reviewed images are sent as media
+previews. The approval button is sent only after every context message and media preview succeeds,
+and binds the content-variant UUID and exact artifact version. Callback replay uses a deterministic
+idempotency identity; stale,
 superseded, already-decided, or otherwise ineligible artifacts remain rejected by the canonical
 transactional review service. Telegram credentials, user IDs, callback identifiers, and raw
 provider failures are not approval evidence and must not appear in public diagnostics.

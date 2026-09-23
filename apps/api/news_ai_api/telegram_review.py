@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
+from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -24,6 +26,8 @@ from starlette.concurrency import run_in_threadpool
 
 _CALLBACK_PATTERN = re.compile(r"^approve:([0-9a-f]{32}):([1-9][0-9]*)$")
 _TELEGRAM_API_BASE = "https://api.telegram.org"
+_TELEGRAM_MESSAGE_LIMIT = 4096
+_TELEGRAM_MEDIA_CAPTION_LIMIT = 1024
 
 
 class TelegramUser(BaseModel):
@@ -70,6 +74,8 @@ class TelegramTransport(Protocol):
         self, *, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None
     ) -> None: ...
 
+    async def send_photo(self, *, chat_id: int, photo: str, caption: str) -> None: ...
+
     async def answer_callback_query(self, *, callback_query_id: str, text: str) -> None: ...
 
     async def clear_reply_markup(self, *, chat_id: int, message_id: int) -> None: ...
@@ -91,6 +97,12 @@ class TelegramBotTransport:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         await self._call("sendMessage", payload)
+
+    async def send_photo(self, *, chat_id: int, photo: str, caption: str) -> None:
+        await self._call(
+            "sendPhoto",
+            {"chat_id": chat_id, "photo": photo, "caption": caption},
+        )
 
     async def answer_callback_query(self, *, callback_query_id: str, text: str) -> None:
         await self._call(
@@ -169,10 +181,31 @@ class TelegramReviewController:
             artifact_type=item.artifact_type.value,
             artifact_id=item.artifact_id,
         )
+        detail_payload = detail.model_dump(mode="json")
+        if (
+            detail_payload.get("artifact_id") != str(item.artifact_id)
+            or detail_payload.get("artifact_version") != item.artifact_version
+        ):
+            raise ValueError("Telegram review packet does not match the queued artifact")
         callback_data = f"approve:{item.artifact_id.hex}:{item.artifact_version}"
+        packet = _build_review_packet(detail_payload)
+        # The approval action is deliberately sent last. A partial packet or a
+        # failed media preview can therefore never expose an approval button.
+        for text in packet.messages:
+            await self.transport.send_message(chat_id=self.chat_id, text=text)
+        for media in packet.media:
+            await self.transport.send_photo(
+                chat_id=self.chat_id,
+                photo=media.url,
+                caption=media.caption,
+            )
         await self.transport.send_message(
             chat_id=self.chat_id,
-            text=_review_text(detail.model_dump(mode="json")),
+            text=(
+                "Approval action\n"
+                f"Artifact: {item.artifact_id} v{item.artifact_version}\n"
+                "Approve only after reviewing every preceding packet section and media preview."
+            ),
             reply_markup={
                 "inline_keyboard": [
                     [{"text": "Approve exact version", "callback_data": callback_data}]
@@ -285,31 +318,117 @@ def build_telegram_review_controller(
     )
 
 
-def _review_text(detail: dict[str, Any]) -> str:
-    variant = detail.get("content_variant") or {}
-    sheet = detail.get("fact_sheet") or {}
-    quality = detail.get("quality_check") or {}
-    claims = sheet.get("claims") or []
-    lines = [
-        "Human review required",
-        f"Artifact: {detail.get('artifact_id')} v{detail.get('artifact_version')}",
-        f"Risk: {detail.get('risk_level')}",
-        f"Sensitive topics: {', '.join(detail.get('sensitive_topics') or ()) or 'none'}",
-        "",
-        f"Title: {variant.get('title') or '(untitled)'}",
-        f"Caption: {variant.get('caption') or '(none)'}",
-        "",
-        f"Fact Sheet: {sheet.get('headline') or sheet.get('summary') or '(no summary)'}",
-    ]
-    for claim in claims[:8]:
-        if isinstance(claim, dict):
-            lines.append(f"- [{claim.get('status', 'UNKNOWN')}] {claim.get('claim_text', '')}")
-    lines.extend(
-        [
-            "",
-            f"Quality passed: {quality.get('passed')}",
-            "Approval applies only to this exact immutable content version.",
-        ]
+@dataclass(frozen=True, slots=True)
+class _TelegramMediaPreview:
+    url: str
+    caption: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TelegramReviewPacket:
+    messages: tuple[str, ...]
+    media: tuple[_TelegramMediaPreview, ...]
+
+
+def _build_review_packet(detail: dict[str, Any]) -> _TelegramReviewPacket:
+    """Render the exact durable review graph without truncating review evidence."""
+
+    variant = _mapping(detail.get("content_variant"), "content_variant")
+    sheet = _mapping(detail.get("fact_sheet"), "fact_sheet")
+    quality = detail.get("quality_check")
+    if quality is not None:
+        _mapping(quality, "quality_check")
+
+    artifact_id = str(detail.get("artifact_id") or "")
+    artifact_version = detail.get("artifact_version")
+    if not artifact_id or not isinstance(artifact_version, int) or artifact_version < 1:
+        raise ValueError("Telegram review packet has invalid artifact identity")
+    if detail.get("current_reviewable") is not True:
+        raise ValueError("Telegram review artifact is no longer reviewable")
+
+    media_ids = tuple(str(value) for value in variant.get("media_asset_ids") or ())
+    raw_media = variant.get("media_provenance") or ()
+    if not isinstance(raw_media, (list, tuple)):
+        raise ValueError("Telegram review packet has invalid media provenance")
+    media: list[_TelegramMediaPreview] = []
+    provenance_ids: list[str] = []
+    for position, raw_item in enumerate(raw_media, start=1):
+        item = _mapping(raw_item, "media_provenance item")
+        media_id = str(item.get("id") or "")
+        url = str(item.get("public_url") or "")
+        if not media_id or not url.startswith("https://"):
+            raise ValueError("Telegram review packet has invalid media provenance")
+        provenance_ids.append(media_id)
+        caption = (
+            f"Exact reviewed media {position}/{len(raw_media)}\n"
+            f"Asset: {media_id}\n"
+            f"Format: {item.get('mime_type') or 'unknown'} / "
+            f"{item.get('media_format') or 'unknown'}\n"
+            f"Content hash: {item.get('file_hash') or 'unavailable'}"
+        )
+        if len(caption) > _TELEGRAM_MEDIA_CAPTION_LIMIT:
+            raise ValueError("Telegram review media provenance exceeds caption limit")
+        media.append(_TelegramMediaPreview(url=url, caption=caption))
+    if tuple(provenance_ids) != media_ids:
+        raise ValueError("Telegram review media provenance does not match the artifact")
+
+    # Media bytes are delivered as Telegram photo previews. Their complete,
+    # immutable provenance is also retained in the publication-artifact JSON.
+    sections: tuple[tuple[str, Any], ...] = (
+        (
+            "Review identity and policy",
+            {
+                "artifact_id": artifact_id,
+                "artifact_version": artifact_version,
+                "current_review_state": detail.get("current_review_state"),
+                "current_reviewable": detail.get("current_reviewable"),
+                "risk_level": detail.get("risk_level"),
+                "sensitive_topics": detail.get("sensitive_topics") or [],
+            },
+        ),
+        ("Exact publication artifact", variant),
+        ("Immutable Fact Sheet", sheet),
+        ("Editorial brief", detail.get("editorial_brief") or {}),
+        ("Quality assessment", quality),
+        (
+            "Safe AI provenance",
+            {
+                "generation": detail.get("generation_ai_provenance"),
+                "quality": detail.get("quality_ai_provenance"),
+            },
+        ),
     )
-    text = "\n".join(str(line) for line in lines)
-    return text[:4000]
+    messages: list[str] = []
+    for heading, value in sections:
+        messages.extend(_chunk_text(_json_section(heading, value)))
+    return _TelegramReviewPacket(messages=tuple(messages), media=tuple(media))
+
+
+def _mapping(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"Telegram review packet has invalid {name}")
+    return value
+
+
+def _json_section(heading: str, value: Any) -> str:
+    return f"{heading}\n{json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)}"
+
+
+def _chunk_text(text: str) -> tuple[str, ...]:
+    """Split without dropping characters; Telegram sendMessage caps text at 4096."""
+
+    if not text:
+        return ("(empty)",)
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > _TELEGRAM_MESSAGE_LIMIT:
+        split_at = remaining.rfind("\n", 0, _TELEGRAM_MESSAGE_LIMIT + 1)
+        if split_at <= 0:
+            split_at = _TELEGRAM_MESSAGE_LIMIT
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+        if remaining.startswith("\n"):
+            remaining = remaining[1:]
+    if remaining:
+        chunks.append(remaining)
+    return tuple(chunks)

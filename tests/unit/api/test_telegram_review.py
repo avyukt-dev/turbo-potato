@@ -38,11 +38,18 @@ _CHAT_ID = -100123456
 class FakeTelegramTransport:
     def __init__(self) -> None:
         self.messages: list[dict] = []
+        self.photos: list[dict] = []
         self.answers: list[dict] = []
         self.cleared: list[dict] = []
+        self.fail_photo_at: int | None = None
 
     async def send_message(self, **arguments) -> None:
         self.messages.append(arguments)
+
+    async def send_photo(self, **arguments) -> None:
+        if self.fail_photo_at == len(self.photos) + 1:
+            raise RuntimeError("normalized Telegram media failure")
+        self.photos.append(arguments)
 
     async def answer_callback_query(self, **arguments) -> None:
         self.answers.append(arguments)
@@ -90,15 +97,85 @@ class FakeReviewService:
                 "artifact_version": 2,
                 "risk_level": "HIGH",
                 "sensitive_topics": ["PUBLIC_SAFETY"],
+                "current_review_state": "READY_FOR_REVIEW",
+                "current_reviewable": True,
                 "content_variant": {
+                    "content_variant_id": str(self.variant_id),
+                    "version": 2,
                     "title": "Reviewed title",
+                    "body": "Slide one heading\nSlide-only consequential statement",
                     "caption": "Reviewed caption",
+                    "structured_payload": {
+                        "slides": [
+                            {
+                                "position": 1,
+                                "heading": "Slide one heading",
+                                "body": "Slide-only consequential statement",
+                                "claim_ids": ["22222222-2222-2222-2222-222222222222"],
+                            }
+                        ],
+                        "hashtags": ["#reviewed", "#publicsafety"],
+                    },
+                    "claim_ids_used": ["22222222-2222-2222-2222-222222222222"],
+                    "source_ids_used": ["33333333-3333-3333-3333-333333333333"],
+                    "media_asset_ids": ["44444444-4444-4444-4444-444444444444"],
+                    "media_provenance": [
+                        {
+                            "id": "44444444-4444-4444-4444-444444444444",
+                            "file_hash": "a" * 64,
+                            "asset_type": "IMAGE",
+                            "mime_type": "image/jpeg",
+                            "media_format": "JPEG",
+                            "public_url": "https://media.example/reviewed.jpg",
+                            "visual_check_status": "PASSED",
+                        }
+                    ],
                 },
                 "fact_sheet": {
                     "headline": "Canonical headline",
-                    "claims": [{"status": "UNVERIFIED", "claim_text": "An uncertain claim"}],
+                    "summary": "Canonical summary",
+                    "claims": [
+                        {
+                            "claim_id": "22222222-2222-2222-2222-222222222222",
+                            "status": "UNVERIFIED",
+                            "claim_text": "An uncertain claim",
+                            "evidence_ids": ["55555555-5555-5555-5555-555555555555"],
+                            "contradictory_evidence_ids": ["66666666-6666-6666-6666-666666666666"],
+                        }
+                    ],
+                    "evidence": [
+                        {
+                            "evidence_id": "55555555-5555-5555-5555-555555555555",
+                            "relation": "DIRECT_SUPPORT",
+                            "excerpt": "Supporting evidence excerpt",
+                        },
+                        {
+                            "evidence_id": "66666666-6666-6666-6666-666666666666",
+                            "relation": "CONTRADICTS",
+                            "excerpt": "Contradictory evidence excerpt",
+                        },
+                    ],
+                    "unresolved_questions": ["What remains unknown?"],
                 },
-                "quality_check": {"passed": True},
+                "editorial_brief": {"human_review_required": True},
+                "quality_check": {
+                    "passed": True,
+                    "semantic_validation_passed": True,
+                    "semantic_findings": [
+                        {
+                            "severity": "WARNING",
+                            "code": "AUDIT_WARNING",
+                            "message": "Reviewer-visible quality warning",
+                        }
+                    ],
+                    "notes": "Quality review notes",
+                },
+                "generation_ai_provenance": {
+                    "provider": "fake",
+                    "model": "deterministic",
+                    "prompt_version": "v2",
+                },
+                "quality_ai_provenance": None,
             }
         )
 
@@ -168,13 +245,82 @@ def test_review_command_returns_evidence_context_and_exact_version_button() -> N
     controller, service, transport = _controller()
     asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
 
-    assert len(transport.messages) == 1
-    message = transport.messages[0]
-    assert "Canonical headline" in message["text"]
-    assert "[UNVERIFIED] An uncertain claim" in message["text"]
+    assert len(transport.messages) > 1
+    rendered = "\n".join(message["text"] for message in transport.messages)
+    assert "Canonical headline" in rendered
+    assert "An uncertain claim" in rendered
+    assert "Slide-only consequential statement" in rendered
+    assert "#publicsafety" in rendered
+    assert "Contradictory evidence excerpt" in rendered
+    assert "What remains unknown?" in rendered
+    assert "Reviewer-visible quality warning" in rendered
+    assert "deterministic" in rendered
+    assert transport.photos == [
+        {
+            "chat_id": _CHAT_ID,
+            "photo": "https://media.example/reviewed.jpg",
+            "caption": transport.photos[0]["caption"],
+        }
+    ]
+    assert "a" * 64 in transport.photos[0]["caption"]
+    assert all("reply_markup" not in message for message in transport.messages[:-1])
+    message = transport.messages[-1]
     assert message["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == (
         f"approve:{service.variant_id.hex}:2"
     )
+
+
+def test_review_packet_is_losslessly_chunked_with_button_only_at_end() -> None:
+    controller, service, transport = _controller()
+    original_detail = service.detail
+
+    def long_detail(**arguments):
+        detail = original_detail(**arguments)
+        payload = detail.model_dump()
+        marker = "exact-boundary-content-"
+        payload["content_variant"]["body"] = marker + ("x" * 9000)
+        return SimpleNamespace(model_dump=lambda **_kwargs: payload)
+
+    service.detail = long_detail
+    asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
+
+    assert all(len(message["text"]) <= 4096 for message in transport.messages)
+    rendered = "\n".join(message["text"] for message in transport.messages)
+    assert "exact-boundary-content-" in rendered
+    assert rendered.count("x") >= 9000
+    assert all("reply_markup" not in message for message in transport.messages[:-1])
+    assert "reply_markup" in transport.messages[-1]
+
+
+def test_media_preview_failure_never_exposes_approval_action() -> None:
+    transport = FakeTelegramTransport()
+    transport.fail_photo_at = 1
+    controller, _service, transport = _controller(transport=transport)
+
+    with pytest.raises(RuntimeError, match="normalized Telegram media failure"):
+        asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
+
+    assert transport.photos == []
+    assert transport.messages
+    assert all("reply_markup" not in message for message in transport.messages)
+
+
+def test_inconsistent_media_provenance_fails_before_packet_delivery() -> None:
+    controller, service, transport = _controller()
+    original_detail = service.detail
+
+    def invalid_detail(**arguments):
+        detail = original_detail(**arguments)
+        payload = detail.model_dump()
+        payload["content_variant"]["media_provenance"][0]["id"] = str(uuid4())
+        return SimpleNamespace(model_dump=lambda **_kwargs: payload)
+
+    service.detail = invalid_detail
+    with pytest.raises(ValueError, match="does not match"):
+        asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
+
+    assert transport.messages == []
+    assert transport.photos == []
 
 
 def test_authorized_callback_uses_canonical_exact_version_review_service() -> None:
@@ -238,7 +384,7 @@ def test_webhook_requires_constant_secret_and_never_exposes_it() -> None:
     assert missing.status_code == 401
     assert wrong.status_code == 401
     assert accepted.status_code == 200
-    assert len(transport.messages) == 1
+    assert len(transport.messages) > 1
     assert "telegram-webhook-secret" not in missing.text + wrong.text + accepted.text
 
 
@@ -283,7 +429,8 @@ def test_api_composes_telegram_review_without_exposing_bearer_review_routes() ->
         json=_message_update(),
     )
     assert response.status_code == 200
-    assert len(transport.messages) == 1
+    assert len(transport.messages) > 1
+    assert "reply_markup" in transport.messages[-1]
     assert client.get("/api/v1/review/queue").status_code == 404
 
 
