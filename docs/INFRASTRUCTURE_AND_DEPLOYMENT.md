@@ -461,6 +461,20 @@ Persistence and public delivery are separate.
 
 Initial profile may persist media locally.
 
+Generated media selects a typed backend through
+`NEWS_AI_GENERATED_MEDIA_STORAGE_BACKEND=local|s3`. The local backend writes content-addressed
+objects beneath the configured directory; a static server and stable HTTPS ingress (for example a
+named Cloudflare Tunnel) must expose the configured public base. The S3 backend uses the portable
+`PutObject`/`HeadObject` subset for AWS S3, Cloudflare R2, or another explicitly configured
+S3-compatible endpoint. AWS may use the normal SDK credential chain. R2 uses region `auto`, its
+account endpoint, and bucket-scoped credentials. Secrets remain environment/deployment owned.
+
+Objects use immutable content-addressed keys, `image/jpeg`, long-lived immutable cache headers,
+transport MD5, and application SHA-256 metadata. An existing key is reusable only when a verified
+HEAD response matches the expected size, MIME type, and SHA-256. The persisted public URL is a
+stable HTTPS/CDN/custom-domain URL, not an expiring presigned URL. Local disk, S3 API endpoints,
+and credentials are never exposed as publication URLs.
+
 If a social platform requires a fetchable URL:
 
 ```text

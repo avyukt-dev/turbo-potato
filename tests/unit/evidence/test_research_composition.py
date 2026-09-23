@@ -16,6 +16,7 @@ from news_ai_ai import (
 )
 from news_ai_ai_worker import build_production_content_stack, build_production_quality_stack
 from news_ai_common.config import AppSettings
+from news_ai_content import S3GeneratedMediaStore
 from news_ai_database import Base
 from news_ai_evidence import PostgresArticleSearchProvider
 from news_ai_research_worker import build_production_research_stack
@@ -166,6 +167,53 @@ def test_production_content_stack_composes_enabled_image_generation(tmp_path) ->
     assert stack.media_service is not None
     assert stack.worker.media_service is stack.media_service
     assert stack.media_service.watermark_text == "Our Newsroom • AI-generated"
+
+
+def test_production_content_stack_selects_cloudflare_r2_store(monkeypatch) -> None:
+    class ImageProvider:
+        provider_id = "openai"
+        model = "gpt-image-1.5"
+
+        async def generate(self, _request):  # pragma: no cover - composition only
+            raise AssertionError("composition must not perform generation")
+
+    client = object()
+    monkeypatch.setattr(
+        "news_ai_ai_worker.composition.build_s3_client", lambda **_arguments: client
+    )
+    stack = build_production_content_stack(
+        AppSettings(
+            config_dir="config",
+            media_generation_enabled=True,
+            generated_media_storage_backend="s3",
+            generated_media_public_base_url="https://media.example",
+            generated_media_key_prefix="generated",
+            generated_media_s3_provider="cloudflare-r2",
+            generated_media_s3_bucket="news-ai-media",
+            generated_media_s3_region="auto",
+            generated_media_s3_endpoint_url="https://account.r2.cloudflarestorage.com",
+            generated_media_s3_access_key_id="access",
+            generated_media_s3_secret_access_key="secret",
+        ),
+        session_factory=_factory(),
+        redis_client=RedisBoundary(),
+        consumer_name="content-composition-test",
+        ai_providers=_providers(frozenset({AITaskType.CONTENT_GENERATION})),
+        image_providers=(ImageProvider(),),
+    )
+
+    assert stack.media_service is not None
+    assert isinstance(stack.media_service.store, S3GeneratedMediaStore)
+    assert stack.media_service.store.client is client
+    assert stack.media_service.store.identity == {
+        "backend": "s3",
+        "storage_provider": "cloudflare-r2",
+        "bucket": "news-ai-media",
+        "region": "auto",
+        "public_base_url": "https://media.example",
+        "key_prefix": "generated",
+        "endpoint_url": "https://account.r2.cloudflarestorage.com",
+    }
 
 
 def test_production_quality_stack_uses_official_router_and_worker_boundaries() -> None:

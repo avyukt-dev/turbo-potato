@@ -26,6 +26,8 @@ from news_ai_content import (
     ContentStyleConfig,
     ContentStyleConfigLoader,
     GeneratedMedia,
+    MediaStorageConfigurationError,
+    MediaStorageTransientError,
 )
 from news_ai_database import (
     AIRun,
@@ -270,7 +272,9 @@ def _seed(
     return event, story_id, fact_sheet_id
 
 
-def _service(ai: ContentAI) -> ContentGenerationService:
+def _service(
+    ai: ContentAI, *, media_generation_identity: dict | None = None
+) -> ContentGenerationService:
     loader = ConfigLoader("config")
     editorial = EditorialConfigLoader(loader)
     return ContentGenerationService(
@@ -281,6 +285,7 @@ def _service(ai: ContentAI) -> ContentGenerationService:
         ContentGenerationPrompt.load(loader.root / "prompts" / "content" / "v4.txt", version="v4"),
         ContentStyleConfigLoader(loader).load(),
         editorial.load_publishing_policy(),
+        media_generation_identity=media_generation_identity,
     )
 
 
@@ -357,6 +362,9 @@ def test_generated_media_and_ai_provenance_are_atomic_with_content_event() -> No
             input_hash=f"{slide.position + 1}" * 64,
             methodology_version="media-generation-methodology-v1",
             watermark_text="Our Newsroom • AI-generated",
+            storage_provider="aws-s3",
+            storage_etag=f"etag-{slide.position}",
+            storage_version_id=f"version-{slide.position}",
         )
         for slide in execution.output.slides
     )
@@ -380,8 +388,41 @@ def test_generated_media_and_ai_provenance_are_atomic_with_content_event() -> No
     assert variant.media_asset_ids == [str(item.id) for item in assets]
     assert len(assets) == len(execution.output.slides) == len(image_runs)
     assert all(item.visual_check_status == "VALIDATED" for item in assets)
+    assert all(item.storage_provider == "aws-s3" for item in assets)
+    assert all(item.source_metadata["storage_etag"] for item in assets)
+    assert all(item.source_metadata["storage_version_id"] for item in assets)
     assert all(item.source_metadata["ai_run_id"] for item in assets)
     assert outbox is not None
+
+
+def test_storage_backend_identity_invalidates_content_semantic_reuse() -> None:
+    factory, ai = _factory(), ContentAI()
+    event, _, _ = _seed(factory)
+    local = _service(
+        ai,
+        media_generation_identity={
+            "methodology_version": "media-generation-methodology-v1",
+            "storage": {"backend": "local", "public_base_url": "https://local.example"},
+        },
+    )
+    s3 = _service(
+        ai,
+        media_generation_identity={
+            "methodology_version": "media-generation-methodology-v1",
+            "storage": {
+                "backend": "s3",
+                "storage_provider": "cloudflare-r2",
+                "bucket": "news-ai-media",
+                "public_base_url": "https://media.example",
+            },
+        },
+    )
+
+    with factory() as session:
+        local_key = local.load_context(session, event).semantic_key
+        s3_key = s3.load_context(session, event).semantic_key
+
+    assert local_key != s3_key
 
 
 @pytest.mark.parametrize(
@@ -844,6 +885,52 @@ def test_content_worker_retries_transient_ai_failure_without_ack() -> None:
     with factory() as session:
         assert session.scalar(select(func.count()).select_from(ContentDraft)) == 0
         assert session.scalar(select(func.count()).select_from(EventDeadLetter)) == 0
+
+
+def test_content_worker_retries_transient_media_storage_failure_without_ack() -> None:
+    class FailingStore:
+        async def generate(self, *_arguments, **_keywords):
+            raise MediaStorageTransientError("safe normalized failure")
+
+    factory = _factory()
+    event, _, _ = _seed(factory)
+    consumer = FakeConsumer([_message(event)])
+    worker = ContentGenerationWorker(
+        consumer,
+        factory,
+        _service(ContentAI()),
+        media_service=FailingStore(),
+        retry_policy=WorkerRetryPolicy(delays_seconds=(30,), jitter_ratio=0),
+    )
+
+    result = asyncio.run(worker.run_once())
+
+    assert result.retrying == 1 and result.dead_lettered == 0
+    assert consumer.acked == []
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(ContentDraft)) == 0
+
+
+def test_content_worker_dead_letters_permanent_media_storage_configuration() -> None:
+    class FailingStore:
+        async def generate(self, *_arguments, **_keywords):
+            raise MediaStorageConfigurationError("safe normalized failure")
+
+    factory = _factory()
+    event, _, _ = _seed(factory)
+    consumer = FakeConsumer([_message(event)])
+    worker = ContentGenerationWorker(
+        consumer,
+        factory,
+        _service(ContentAI()),
+        media_service=FailingStore(),
+    )
+
+    result = asyncio.run(worker.run_once())
+
+    assert result.dead_lettered == 1 and consumer.acked == ["1-0"]
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(ContentDraft)) == 0
 
 
 def test_content_worker_recovers_stale_pending_message() -> None:

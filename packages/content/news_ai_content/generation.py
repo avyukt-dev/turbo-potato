@@ -521,6 +521,10 @@ class ContentGenerationService:
                         "file_hash": item.file_hash,
                         "width": item.width,
                         "height": item.height,
+                        "storage_provider": item.storage_provider,
+                        "storage_key": item.storage_key,
+                        "storage_etag": item.storage_etag,
+                        "storage_version_id": item.storage_version_id,
                     },
                     status="SUCCEEDED",
                     validation_status="VALIDATED",
@@ -538,7 +542,7 @@ class ContentGenerationService:
                 session.flush()
                 asset = MediaAsset(
                     asset_type="IMAGE",
-                    storage_provider="local-generated-media",
+                    storage_provider=item.storage_provider,
                     storage_key=item.storage_key,
                     public_url=item.public_url,
                     mime_type="image/jpeg",
@@ -558,6 +562,8 @@ class ContentGenerationService:
                         "methodology_version": item.methodology_version,
                         "watermark_text": item.watermark_text,
                         "watermark_applied": True,
+                        "storage_etag": item.storage_etag,
+                        "storage_version_id": item.storage_version_id,
                     },
                 )
                 session.add(asset)
