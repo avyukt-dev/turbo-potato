@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from news_ai_database import AICredential, AICredentialState
+from news_ai_database import AICredential, AICredentialReason, AICredentialState
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -213,9 +213,12 @@ class DatabaseCredentialPool:
                         row.provider_type = self.config.provider
                         row.secret_fingerprint = credential.fingerprint
                         row.state = AICredentialState.HEALTHY
-                        row.reason_code = "SECRET_REPLACED"
+                        row.reason_code = AICredentialReason.SECRET_REPLACED
                         row.cooldown_until = None
                         row.consecutive_failures = 0
+                        row.last_used_at = None
+                        row.last_success_at = None
+                        row.last_failure_at = None
                         row.is_active = True
                         row.revision += 1
                     else:
@@ -312,19 +315,19 @@ class DatabaseCredentialPool:
                     row.last_success_at = now
                 elif outcome == "RATE_LIMIT":
                     row.state = AICredentialState.COOLDOWN
-                    row.reason_code = "RATE_LIMIT"
+                    row.reason_code = AICredentialReason.RATE_LIMIT
                     row.cooldown_until = now + timedelta(seconds=cooldown_seconds or 0)
                     row.consecutive_failures += 1
                     row.last_failure_at = now
                 elif outcome == "AUTHENTICATION":
                     row.state = AICredentialState.AUTH_FAILED
-                    row.reason_code = "AUTHENTICATION"
+                    row.reason_code = AICredentialReason.AUTHENTICATION
                     row.cooldown_until = None
                     row.consecutive_failures += 1
                     row.last_failure_at = now
                 else:
                     row.state = AICredentialState.UNKNOWN
-                    row.reason_code = "UNKNOWN_CREDENTIAL_FAILURE"
+                    row.reason_code = AICredentialReason.UNKNOWN_CREDENTIAL_FAILURE
                     row.cooldown_until = None
                     row.consecutive_failures += 1
                     row.last_failure_at = now

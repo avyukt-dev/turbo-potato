@@ -24,7 +24,7 @@ def upgrade() -> None:
         sa.Column("slot", sa.Integer(), nullable=False),
         sa.Column("secret_fingerprint", sa.String(length=64), nullable=False),
         sa.Column("state", sa.String(length=16), nullable=False),
-        sa.Column("reason_code", sa.String(length=64), nullable=True),
+        sa.Column("reason_code", sa.String(length=32), nullable=True),
         sa.Column("cooldown_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("consecutive_failures", sa.Integer(), nullable=False),
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
@@ -42,6 +42,12 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "state IN ('HEALTHY','COOLDOWN','AUTH_FAILED','UNKNOWN')",
             name="ck_ai_credentials_state",
+        ),
+        sa.CheckConstraint(
+            "reason_code IS NULL OR reason_code IN "
+            "('RATE_LIMIT','AUTHENTICATION','UNKNOWN_CREDENTIAL_FAILURE',"
+            "'OPERATOR_RESET','SECRET_REPLACED')",
+            name="ck_ai_credentials_reason_code",
         ),
         sa.CheckConstraint("consecutive_failures >= 0", name="ck_ai_credentials_failures"),
         sa.CheckConstraint("revision >= 1", name="ck_ai_credentials_revision"),

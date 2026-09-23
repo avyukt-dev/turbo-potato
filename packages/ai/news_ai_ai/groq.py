@@ -32,6 +32,7 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
+from .sdk_clients import close_sdk_client
 
 
 def _strict_json_schema(value: Any) -> Any:
@@ -196,8 +197,9 @@ class GroqProvider(CredentialPooledProvider):
         if model_config is None:
             raise AIProviderError("Groq model is not configured")
         started = monotonic()
+        client = self._client_factory(api_key)
         try:
-            completion = await self._client_factory(api_key).chat.completions.create(
+            completion = await client.chat.completions.create(
                 **self._request_payload(request, model, model_config)
             )
         except groq.AuthenticationError as exc:
@@ -220,6 +222,8 @@ class GroqProvider(CredentialPooledProvider):
             raise AIProviderError("Groq rejected the request") from exc
         except groq.APIError as exc:
             raise AIProviderError("Groq request failed") from exc
+        finally:
+            await close_sdk_client(client)
         return self._normalize_response(
             request, completion, max(0, round((monotonic() - started) * 1000))
         )

@@ -30,6 +30,7 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
+from .sdk_clients import close_sdk_client
 
 
 class GeminiProviderConfig(BaseModel):
@@ -114,8 +115,9 @@ class GeminiProvider(CredentialPooledProvider):
             if request.response_schema is not None:
                 config_args["response_json_schema"] = request.response_schema.json_schema
         started = monotonic()
+        client = self._client_factory(api_key)
         try:
-            response = await self._client_factory(api_key).aio.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=model,
                 contents=self._serialize(request.input),
                 config=types.GenerateContentConfig(**config_args),
@@ -136,6 +138,8 @@ class GeminiProvider(CredentialPooledProvider):
             raise AIProviderTimeoutError("Gemini request timed out") from exc
         except OSError as exc:
             raise AIProviderUnavailableError("Gemini endpoint is unavailable") from exc
+        finally:
+            await close_sdk_client(client, asynchronous_namespace=True)
         text = response.text
         if not isinstance(text, str) or not text:
             raise AIInvalidResponseError("Gemini response failed normalization")

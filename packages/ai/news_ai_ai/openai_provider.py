@@ -30,6 +30,7 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
+from .sdk_clients import close_sdk_client
 
 
 class OpenAIProviderConfig(BaseModel):
@@ -136,8 +137,9 @@ class OpenAIProvider(CredentialPooledProvider):
                 }
             )
         started = monotonic()
+        client = self._client_factory(api_key)
         try:
-            completion = await self._client_factory(api_key).chat.completions.create(**payload)
+            completion = await client.chat.completions.create(**payload)
         except openai.AuthenticationError as exc:
             raise AIProviderAuthenticationError("OpenAI credential was rejected") from exc
         except openai.PermissionDeniedError as exc:
@@ -156,6 +158,8 @@ class OpenAIProvider(CredentialPooledProvider):
             if exc.status_code >= 500:
                 raise AIProviderUnavailableError("OpenAI service is unavailable") from exc
             raise AIProviderError("OpenAI rejected the request") from exc
+        finally:
+            await close_sdk_client(client)
         choice = completion.choices[0] if completion.choices else None
         content = choice.message.content if choice is not None else None
         if not isinstance(content, str):

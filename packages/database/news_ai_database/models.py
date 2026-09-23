@@ -264,7 +264,9 @@ class AICredential(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         default=AICredentialState.HEALTHY,
     )
-    reason_code: Mapped[str | None] = mapped_column(String(64))
+    reason_code: Mapped[AICredentialReason | None] = mapped_column(
+        SAEnum(AICredentialReason, native_enum=False, length=32, validate_strings=True)
+    )
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

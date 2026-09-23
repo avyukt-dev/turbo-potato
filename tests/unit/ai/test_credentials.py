@@ -107,6 +107,13 @@ def test_auth_and_unknown_states_are_ineligible_until_secret_replacement() -> No
         environ={"GROQ_API_KEY_1": "replacement", "GROQ_API_KEY_2": "unknown"},
     )
     new_pool = DatabaseCredentialPool(config, replaced, factory)
+    asyncio.run(new_pool.synchronize())
+    with factory() as session:
+        replacement = session.scalar(select(AICredential).where(AICredential.slot == 1))
+    assert replacement is not None
+    assert replacement.last_used_at is None
+    assert replacement.last_success_at is None
+    assert replacement.last_failure_at is None
     selected = asyncio.run(new_pool.acquire(set()))
     assert selected is not None and selected.slot == 1
 

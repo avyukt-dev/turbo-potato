@@ -6,10 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from news_ai_common.config import AppSettings, ConfigLoader
-from news_ai_database import AICredential, AICredentialState, AuditLog, Base
+from news_ai_database import AICredential, AICredentialReason, AICredentialState, AuditLog, Base
 from news_ai_runtime.ai_credentials import AICredentialOperator
 from news_ai_runtime.cli import main
+from news_ai_runtime.controller import RuntimeOperationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -64,7 +66,7 @@ def test_operator_status_and_reset_are_secret_safe_and_audited(tmp_path: Path, m
     with factory() as session, session.begin():
         row = session.scalar(select(AICredential))
         row.state = AICredentialState.AUTH_FAILED
-        row.reason_code = "AUTHENTICATION"
+        row.reason_code = AICredentialReason.AUTHENTICATION
         row.consecutive_failures = 1
         row.last_failure_at = datetime.now(UTC)
     reset = asyncio.run(operator.reset("groq-production", 2, f"replace {secret}"))
@@ -74,6 +76,23 @@ def test_operator_status_and_reset_are_secret_safe_and_audited(tmp_path: Path, m
     assert audit is not None
     assert audit.reason == "replace [redacted]"
     assert secret not in repr(audit.audit_metadata)
+
+
+def test_reset_redacts_long_secret_before_bounding_audit_reason(
+    tmp_path: Path, monkeypatch
+) -> None:
+    secret = "SUPER_SECRET_" + "x" * 600
+    monkeypatch.setenv("GROQ_API_KEY_1", secret)
+    factory = _factory()
+    operator = AICredentialOperator(_config(tmp_path), factory)
+
+    asyncio.run(operator.reset("groq-production", 1, f"replace {secret} now"))
+
+    with factory() as session:
+        audit = session.scalar(select(AuditLog).where(AuditLog.action == "AI_CREDENTIAL_RESET"))
+    assert audit is not None
+    assert audit.reason == "replace [redacted] now"
+    assert secret[:512] not in audit.reason
 
 
 def test_non_generative_probe_restores_credential_without_exposing_secret(
@@ -86,7 +105,7 @@ def test_non_generative_probe_restores_credential_without_exposing_secret(
     with factory() as session, session.begin():
         row = session.scalar(select(AICredential))
         row.state = AICredentialState.UNKNOWN
-        row.reason_code = "UNKNOWN"
+        row.reason_code = AICredentialReason.UNKNOWN_CREDENTIAL_FAILURE
 
     calls: list[str] = []
 
@@ -105,6 +124,30 @@ def test_non_generative_probe_restores_credential_without_exposing_secret(
     asyncio.run(operator.probe("groq-production", 1))
     assert calls == ["models.list", "close"]
     assert asyncio.run(operator.status())[0].state is AICredentialState.HEALTHY
+
+
+def test_transient_probe_failure_does_not_disable_credential(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY_1", "probe-secret")
+    factory = _factory()
+    operator = AICredentialOperator(_config(tmp_path), factory)
+
+    class Client:
+        def __init__(self, **_kwargs):
+            self.models = self
+
+        async def list(self):
+            raise OSError("SUPER_SECRET_NETWORK_DETAIL")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("news_ai_runtime.ai_credentials.groq.AsyncGroq", Client)
+    with pytest.raises(RuntimeOperationError, match="CREDENTIAL_PROBE_UNAVAILABLE"):
+        asyncio.run(operator.probe("groq-production", 1))
+
+    status = asyncio.run(operator.status())[0]
+    assert status.state is AICredentialState.HEALTHY
+    assert status.reason_code is None
 
 
 def test_newsctl_credential_commands_render_only_normalized_data(capsys) -> None:

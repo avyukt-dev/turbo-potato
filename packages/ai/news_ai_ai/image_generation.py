@@ -16,7 +16,13 @@ from news_ai_common.config import ConfigDomain, ConfigLoader
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
-from .credentials import DatabaseCredentialPool, MemoryCredentialPool, resolve_credential_pool
+from .credentials import (
+    CredentialStateUnavailableError,
+    DatabaseCredentialPool,
+    MemoryCredentialPool,
+    ResolvedCredential,
+    resolve_credential_pool,
+)
 from .pooled import CredentialPool
 from .provider import (
     AIInvalidResponseError,
@@ -27,6 +33,7 @@ from .provider import (
     AIProviderTimeoutError,
     AIProviderUnavailableError,
 )
+from .sdk_clients import close_sdk_client
 
 MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -123,26 +130,51 @@ class _PooledImageProvider:
     async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
         attempted: set[int] = set()
         last: AIProviderError | None = None
-        while (credential := await self.credential_pool.acquire(attempted)) is not None:
+        while (credential := await self._acquire(attempted)) is not None:
             attempted.add(credential.slot)
             try:
                 response = await self._generate(request, credential.secret)
             except AIProviderRateLimitError as exc:
                 last = exc
-                await self.credential_pool.record_rate_limit(credential, exc.retry_after_seconds)
+                await self._record("rate", credential, exc.retry_after_seconds)
                 continue
             except AIProviderAuthenticationError as exc:
                 last = exc
-                await self.credential_pool.record_auth_failure(credential)
+                await self._record("auth", credential)
                 continue
-            await self.credential_pool.record_success(credential)
+            await self._record("success", credential)
             return response
         if last is not None:
             raise last
+        try:
+            remaining = await self.credential_pool.minimum_cooldown_remaining()
+        except CredentialStateUnavailableError as exc:
+            raise AIProviderUnavailableError("AI credential state is unavailable") from exc
         raise AIProviderRateLimitError(
-            "No configured image credential is currently eligible",
-            retry_after_seconds=await self.credential_pool.minimum_cooldown_remaining(),
+            "No configured image credential is currently eligible", retry_after_seconds=remaining
         )
+
+    async def _acquire(self, attempted: set[int]) -> ResolvedCredential | None:
+        try:
+            return await self.credential_pool.acquire(attempted)
+        except CredentialStateUnavailableError as exc:
+            raise AIProviderUnavailableError("AI credential state is unavailable") from exc
+
+    async def _record(
+        self,
+        outcome: str,
+        credential: ResolvedCredential,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        try:
+            if outcome == "success":
+                await self.credential_pool.record_success(credential)
+            elif outcome == "rate":
+                await self.credential_pool.record_rate_limit(credential, retry_after_seconds)
+            else:
+                await self.credential_pool.record_auth_failure(credential)
+        except CredentialStateUnavailableError as exc:
+            raise AIProviderUnavailableError("AI credential state is unavailable") from exc
 
     async def _generate(
         self, request: ImageGenerationRequest, api_key: str
@@ -184,8 +216,9 @@ class OpenAIImageProvider(_PooledImageProvider):
         self, request: ImageGenerationRequest, api_key: str
     ) -> ImageGenerationResponse:
         started = time.monotonic()
+        client = self._client_factory(api_key)
         try:
-            response = await self._client_factory(api_key).images.generate(
+            response = await client.images.generate(
                 model=self.model,
                 prompt=request.prompt,
                 n=1,
@@ -207,6 +240,8 @@ class OpenAIImageProvider(_PooledImageProvider):
             if exc.status_code >= 500:
                 raise AIProviderUnavailableError("OpenAI image service is unavailable") from exc
             raise AIProviderError("OpenAI rejected image generation") from exc
+        finally:
+            await close_sdk_client(client)
         if len(response.data) != 1:
             raise AIInvalidResponseError("OpenAI returned an invalid image result")
         return ImageGenerationResponse(
@@ -242,8 +277,9 @@ class GeminiImageProvider(_PooledImageProvider):
         self, request: ImageGenerationRequest, api_key: str
     ) -> ImageGenerationResponse:
         started = time.monotonic()
+        client = self._client_factory(api_key)
         try:
-            response = await self._client_factory(api_key).aio.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=self.model,
                 contents=request.prompt,
                 config=types.GenerateContentConfig(
@@ -263,6 +299,8 @@ class GeminiImageProvider(_PooledImageProvider):
             if exc.code >= 500:
                 raise AIProviderUnavailableError("Gemini image service is unavailable") from exc
             raise AIProviderError("Gemini rejected image generation") from exc
+        finally:
+            await close_sdk_client(client, asynchronous_namespace=True)
         for part in reversed(response.parts or []):
             inline = getattr(part, "inline_data", None)
             if inline is not None and not getattr(part, "thought", False):

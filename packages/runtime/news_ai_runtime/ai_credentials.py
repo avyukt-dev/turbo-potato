@@ -13,11 +13,12 @@ from google.genai import errors as google_errors
 from news_ai_ai import AIProvidersConfigLoader
 from news_ai_ai.credentials import (
     CredentialPoolEmptyError,
+    CredentialStateUnavailableError,
     DatabaseCredentialPool,
     resolve_credential_pool,
 )
 from news_ai_common.config import ConfigLoader
-from news_ai_database import AICredential, AICredentialState, AuditLog
+from news_ai_database import AICredential, AICredentialReason, AICredentialState, AuditLog
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,7 +32,7 @@ class CredentialStatus(BaseModel):
     provider: str
     slot: int
     state: AICredentialState
-    reason_code: str | None
+    reason_code: AICredentialReason | None
     cooldown_remaining_seconds: float | None
     consecutive_failures: int
     last_used_at: datetime | None
@@ -80,7 +81,7 @@ class AICredentialOperator:
                 if row is None or row.secret_fingerprint != current.fingerprint:
                     raise RuntimeOperationError("CREDENTIAL_STATE_CHANGED")
                 row.state = AICredentialState.HEALTHY
-                row.reason_code = "OPERATOR_RESET"
+                row.reason_code = AICredentialReason.OPERATOR_RESET
                 row.cooldown_until = None
                 row.consecutive_failures = 0
                 row.revision += 1
@@ -116,8 +117,8 @@ class AICredentialOperator:
         if credential is None:
             raise RuntimeOperationError("CREDENTIAL_NOT_CONFIGURED")
         durable = DatabaseCredentialPool(pool, configured, self.session_factory)
-        await durable.synchronize()
         try:
+            await durable.synchronize()
             if pool.provider == "groq":
                 client = groq.AsyncGroq(api_key=credential.secret, max_retries=0)
                 try:
@@ -144,6 +145,25 @@ class AICredentialOperator:
         except (groq.RateLimitError, openai.RateLimitError):
             await durable.record_rate_limit(credential, None)
             raise RuntimeOperationError("RATE_LIMIT") from None
+        except (groq.PermissionDeniedError, openai.PermissionDeniedError):
+            raise RuntimeOperationError("CREDENTIAL_PROBE_DENIED") from None
+        except (
+            groq.APITimeoutError,
+            groq.APIConnectionError,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            TimeoutError,
+            OSError,
+        ):
+            raise RuntimeOperationError("CREDENTIAL_PROBE_UNAVAILABLE") from None
+        except (groq.APIStatusError, openai.APIStatusError) as exc:
+            code = getattr(exc, "status_code", None)
+            error = (
+                "CREDENTIAL_PROBE_UNAVAILABLE"
+                if code and code >= 500
+                else "CREDENTIAL_PROBE_REJECTED"
+            )
+            raise RuntimeOperationError(error) from None
         except google_errors.APIError as exc:
             if exc.code == 401:
                 await durable.record_auth_failure(credential)
@@ -151,10 +171,15 @@ class AICredentialOperator:
             if exc.code == 429:
                 await durable.record_rate_limit(credential, None)
                 raise RuntimeOperationError("RATE_LIMIT") from None
-            await durable.record_unknown(credential)
-            raise RuntimeOperationError("CREDENTIAL_PROBE_UNKNOWN") from None
+            if exc.code == 403:
+                raise RuntimeOperationError("CREDENTIAL_PROBE_DENIED") from None
+            if exc.code in {408, 504} or exc.code >= 500:
+                raise RuntimeOperationError("CREDENTIAL_PROBE_UNAVAILABLE") from None
+            raise RuntimeOperationError("CREDENTIAL_PROBE_REJECTED") from None
         except RuntimeOperationError:
             raise
+        except CredentialStateUnavailableError:
+            raise RuntimeOperationError("CREDENTIAL_STATE_UNAVAILABLE") from None
         except Exception:
             await durable.record_unknown(credential)
             raise RuntimeOperationError("CREDENTIAL_PROBE_UNKNOWN") from None
@@ -207,10 +232,10 @@ class AICredentialOperator:
 
     @staticmethod
     def _safe_reason(reason: str, *, secrets: tuple[str, ...]) -> str:
-        value = " ".join(reason.split())[:512]
+        value = reason
         for secret in secrets:
             value = value.replace(secret, "[redacted]")
-        return value
+        return " ".join(value.split())[:512]
 
     @staticmethod
     def _aware(value: datetime) -> datetime:

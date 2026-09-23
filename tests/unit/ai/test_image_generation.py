@@ -11,6 +11,7 @@ from news_ai_ai import (
     AIInvalidResponseError,
     AIProviderPolicyError,
     AIProviderTimeoutError,
+    AIProviderUnavailableError,
     GeminiImageProvider,
     GeminiImageProviderConfig,
     ImageGenerationRequest,
@@ -21,6 +22,7 @@ from news_ai_ai import (
 )
 from news_ai_ai.credentials import (
     CredentialPoolConfig,
+    CredentialStateUnavailableError,
     MemoryCredentialPool,
     ResolvedCredential,
 )
@@ -125,6 +127,22 @@ def test_provider_failures_are_normalized_without_secret_leakage() -> None:
     with pytest.raises(AIProviderTimeoutError) as caught:
         asyncio.run(provider.generate(_request()))
     assert secret not in str(caught.value)
+
+
+def test_credential_state_failure_is_normalized_for_image_provider() -> None:
+    class UnavailablePool:
+        async def acquire(self, _attempted):
+            raise CredentialStateUnavailableError("SUPER_SECRET_DATABASE_DETAIL")
+
+    provider = OpenAIImageProvider(
+        OpenAIImageProviderConfig(adapter_type="openai_images"),
+        credential_pool=UnavailablePool(),
+    )
+
+    with pytest.raises(AIProviderUnavailableError) as caught:
+        asyncio.run(provider.generate(_request()))
+    assert str(caught.value) == "AI credential state is unavailable"
+    assert "SUPER_SECRET" not in str(caught.value)
 
 
 def test_router_falls_back_and_fails_closed_for_permanent_errors() -> None:

@@ -45,6 +45,7 @@ def _model() -> ProviderModelConfig:
 
 def test_openai_sdk_adapter_normalizes_provider_contract() -> None:
     calls: list[dict] = []
+    closes: list[str] = []
 
     class Completions:
         async def create(self, **payload):
@@ -61,7 +62,10 @@ def test_openai_sdk_adapter_normalizes_provider_contract() -> None:
                 usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2),
             )
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    async def close():
+        closes.append("close")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()), close=close)
     provider = OpenAIProvider(
         OpenAIProviderConfig(credential_pool_id="openai-test", models=(_model(),)),
         _pool("openai"),
@@ -71,10 +75,12 @@ def test_openai_sdk_adapter_normalizes_provider_contract() -> None:
     assert response.structured == {"claims": []}
     assert response.provider_request_id == "openai-request"
     assert calls[0]["response_format"] == {"type": "json_object"}
+    assert closes == ["close"]
 
 
 def test_gemini_sdk_adapter_normalizes_provider_contract() -> None:
     calls: list[dict] = []
+    closes: list[str] = []
 
     class Models:
         async def generate_content(self, **payload):
@@ -85,7 +91,10 @@ def test_gemini_sdk_adapter_normalizes_provider_contract() -> None:
                 usage_metadata=SimpleNamespace(prompt_token_count=3, candidates_token_count=2),
             )
 
-    client = SimpleNamespace(aio=SimpleNamespace(models=Models()))
+    async def close():
+        closes.append("close")
+
+    client = SimpleNamespace(aio=SimpleNamespace(models=Models(), aclose=close))
     provider = GeminiProvider(
         GeminiProviderConfig(credential_pool_id="gemini-test", models=(_model(),)),
         _pool("gemini"),
@@ -96,3 +105,4 @@ def test_gemini_sdk_adapter_normalizes_provider_contract() -> None:
     assert response.provider_request_id == "gemini-request"
     assert calls[0]["model"] == "model-1"
     assert calls[0]["config"].response_mime_type == "application/json"
+    assert closes == ["close"]
