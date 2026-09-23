@@ -65,6 +65,26 @@ def test_real_source_documents_preserve_publisher_identity_across_same_host_feed
     assert registry["sources"][0]["source_type"] == "NEWS"
 
 
+def test_real_source_documents_use_explicit_publisher_domain_for_feed_alias():
+    registry, feeds = build_live_source_documents(
+        ("https://feeds.bbci.co.uk/news/rss.xml",),
+        ("bbc.co.uk",),
+    )
+
+    assert registry["sources"] == [
+        {
+            "key": registry["sources"][0]["key"],
+            "name": "Live E2E bbc.co.uk",
+            "source_type": "NEWS",
+            "domain": "bbc.co.uk",
+            "base_url": "https://bbc.co.uk",
+            "enabled": True,
+            "metadata": {"live_e2e": True},
+        }
+    ]
+    assert feeds["feeds"][0]["url"] == "https://feeds.bbci.co.uk/news/rss.xml"
+
+
 def test_bounded_live_collector_filters_and_enforces_global_budget():
     collector = BoundedLiveFeedCollector(
         maximum_articles=1,
@@ -421,6 +441,7 @@ def test_wait_timeout_is_normalized():
         AppSettings(),
         LiveE2ESettings(
             feed_urls=("https://example.org/feed",),
+            source_domains=("example.org",),
             media_urls=("https://cdn.example.org/test.jpg",),
             timeout_seconds=0.01,
             poll_interval_seconds=0.001,

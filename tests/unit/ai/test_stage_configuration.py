@@ -57,7 +57,7 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
     assert [item.adapter_type for item in provider_config.providers] == ["groq", "llama_cpp"]
     groq, llama = provider_config.providers
     assert groq.provider_id == "groq"
-    assert str(groq.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
+    assert str(groq.base_url).rstrip("/") == "https://api.groq.com"
     assert [item.model_id for item in groq.models] == [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",

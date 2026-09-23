@@ -21,7 +21,7 @@ credential_pools:
 providers:
   - provider_id: groq
     adapter_type: groq
-    base_url: https://api.groq.com/openai/v1
+    base_url: https://api.groq.com
     credential_pool_id: groq-production
     models:
       - model_id: openai/gpt-oss-120b

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from types import SimpleNamespace
 
 import groq
@@ -24,6 +25,15 @@ ACTIVE_TASKS = frozenset(AITaskType)
 
 def _config() -> GroqProviderConfig:
     return GroqProviderConfig(task_types=ACTIVE_TASKS)
+
+
+def test_sdk_base_url_is_an_origin_and_rejects_versioned_api_paths() -> None:
+    assert str(_config().base_url).rstrip("/") == "https://api.groq.com"
+    with pytest.raises(ValueError, match="SDK origin"):
+        GroqProviderConfig(
+            base_url="https://api.groq.com/openai/v1",
+            task_types=ACTIVE_TASKS,
+        )
 
 
 def _request() -> AIRequest:
@@ -158,6 +168,24 @@ def test_single_rate_limited_or_auth_failed_key_returns_normalized_error() -> No
     with pytest.raises(AIProviderCredentialPoolExhaustedError) as caught:
         asyncio.run(auth.execute(_request()))
     assert "secret" not in str(caught.value)
+
+
+def test_normalized_failure_traceback_does_not_retain_raw_credential() -> None:
+    sentinel = "SUPER_SECRET_GROQ_TRACEBACK_SENTINEL"
+    provider = GroqProvider(
+        _config(),
+        api_key=sentinel,
+        client_factory=lambda _: _Client([], _status_error(groq.AuthenticationError, 401)),
+    )
+
+    with pytest.raises(AIProviderCredentialPoolExhaustedError) as caught:
+        asyncio.run(provider.execute(_request()))
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert sentinel not in rendered
+    for frame, _ in traceback.walk_tb(caught.value.__traceback__):
+        if frame.f_code.co_filename != __file__:
+            assert sentinel not in repr(frame.f_locals)
 
 
 def test_multiple_models_are_exposed_and_unconfigured_model_fails() -> None:

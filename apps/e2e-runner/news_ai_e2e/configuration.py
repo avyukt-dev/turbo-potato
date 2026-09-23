@@ -106,11 +106,48 @@ def _require_loopback_api(value: str) -> str:
     return value.rstrip("/")
 
 
+def _source_domains(feed_urls: tuple[str, ...]) -> tuple[str, ...]:
+    configured = _csv_env("NEWS_AI_E2E_SOURCE_DOMAINS")
+    if not configured:
+        return tuple((urlparse(url).hostname or "").casefold().rstrip(".") for url in feed_urls)
+    if len(configured) != len(feed_urls):
+        raise LiveE2EConfigurationError(
+            "NEWS_AI_E2E_SOURCE_DOMAINS must contain one domain per feed URL"
+        )
+    normalized: list[str] = []
+    for _, value in zip(feed_urls, configured, strict=True):
+        try:
+            domain = value.encode("idna").decode("ascii").casefold().rstrip(".")
+        except UnicodeError:
+            raise LiveE2EConfigurationError(
+                "NEWS_AI_E2E_SOURCE_DOMAINS contains an invalid domain"
+            ) from None
+        if not domain or "." not in domain or ":" in domain or "/" in domain:
+            raise LiveE2EConfigurationError(
+                "NEWS_AI_E2E_SOURCE_DOMAINS entries must be public DNS domains"
+            )
+        try:
+            address = ipaddress.ip_address(domain)
+        except ValueError:
+            if domain == "localhost" or domain.endswith((".localhost", ".local", ".internal")):
+                raise LiveE2EConfigurationError(
+                    "NEWS_AI_E2E_SOURCE_DOMAINS entries must be public DNS domains"
+                ) from None
+        else:
+            if not address.is_global:
+                raise LiveE2EConfigurationError(
+                    "NEWS_AI_E2E_SOURCE_DOMAINS entries must be public DNS domains"
+                )
+        normalized.append(domain)
+    return tuple(normalized)
+
+
 @dataclass(frozen=True, slots=True)
 class LiveE2ESettings:
     """Non-secret harness controls. Application/provider secrets stay in their existing settings."""
 
     feed_urls: tuple[str, ...]
+    source_domains: tuple[str, ...]
     media_urls: tuple[str, ...]
     api_base_url: str = "http://127.0.0.1:8000"
     article_title_contains: str | None = None
@@ -138,6 +175,7 @@ class LiveE2ESettings:
         media_urls = _csv_env("NEWS_AI_E2E_MEDIA_URLS")
         _require_https_urls("NEWS_AI_E2E_FEED_URLS", feed_urls, unique=True)
         _require_https_urls("NEWS_AI_E2E_MEDIA_URLS", media_urls)
+        source_domains = _source_domains(feed_urls)
         api_base_url = _require_loopback_api(
             os.getenv("NEWS_AI_E2E_API_BASE_URL", "http://127.0.0.1:8000")
         )
@@ -150,6 +188,7 @@ class LiveE2ESettings:
             )
         return cls(
             feed_urls=feed_urls,
+            source_domains=source_domains,
             media_urls=media_urls,
             api_base_url=api_base_url,
             article_title_contains=title_filter,

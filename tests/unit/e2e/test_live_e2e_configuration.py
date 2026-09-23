@@ -42,6 +42,29 @@ def test_live_e2e_settings_accept_explicit_safe_configuration(monkeypatch):
     settings.validate_application(AppSettings(), SocialSettings())
     assert settings.max_articles_total == 3
     assert settings.api_base_url == "http://127.0.0.1:8000"
+    assert settings.source_domains == ("example.org",)
+
+
+def test_live_e2e_settings_accept_explicit_parent_source_domain(monkeypatch):
+    _env(monkeypatch)
+    monkeypatch.setenv("NEWS_AI_E2E_FEED_URLS", "https://feeds.bbci.co.uk/news/rss.xml")
+    monkeypatch.setenv("NEWS_AI_E2E_SOURCE_DOMAINS", "bbc.co.uk")
+
+    settings = LiveE2ESettings.from_env()
+
+    assert settings.source_domains == ("bbc.co.uk",)
+
+
+@pytest.mark.parametrize(
+    "source_domains",
+    ["bbc.co.uk,example.org", "https://example.org", "localhost", "127.0.0.1"],
+)
+def test_live_e2e_source_domains_must_be_bounded_public_domains(monkeypatch, source_domains):
+    _env(monkeypatch)
+    monkeypatch.setenv("NEWS_AI_E2E_SOURCE_DOMAINS", source_domains)
+
+    with pytest.raises(LiveE2EConfigurationError):
+        LiveE2ESettings.from_env()
 
 
 @pytest.mark.parametrize(

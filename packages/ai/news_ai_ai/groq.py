@@ -65,7 +65,7 @@ def _legacy_model() -> ProviderModelConfig:
 class GroqProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider_id: str = Field(default="groq", pattern=r"^[a-z][a-z0-9_-]*$")
-    base_url: AnyHttpUrl = Field(default="https://api.groq.com/openai/v1", validate_default=True)
+    base_url: AnyHttpUrl = Field(default="https://api.groq.com", validate_default=True)
     credential_pool_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]*$")
     models: tuple[ProviderModelConfig, ...] = ()
     request_timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
@@ -82,6 +82,8 @@ class GroqProviderConfig(BaseModel):
             raise ValueError("Groq base_url must not contain credentials")
         if self.base_url.query is not None or self.base_url.fragment is not None:
             raise ValueError("Groq base_url must not contain query or fragment components")
+        if self.base_url.path not in {None, "", "/"}:
+            raise ValueError("Groq base_url must be the SDK origin without an API path")
         ids = [item.model_id for item in self.models]
         if len(ids) != len(set(ids)):
             raise ValueError("Groq model IDs must be unique")
@@ -192,36 +194,40 @@ class GroqProvider(CredentialPooledProvider):
         return await self._execute_from_pool(request)
 
     async def _execute_with_credential(self, request: AIRequest, api_key: str) -> AIResponse:
+        __tracebackhide__ = True
         model = request.model or next(iter(self._models))
         model_config = self._models.get(model)
         if model_config is None:
             raise AIProviderError("Groq model is not configured")
         started = monotonic()
         client = self._client_factory(api_key)
+        # Pytest can render frame locals on failures. Keep the credential out of
+        # this long-lived async frame once the SDK client has consumed it.
+        api_key = "<redacted>"
         try:
             completion = await client.chat.completions.create(
                 **self._request_payload(request, model, model_config)
             )
-        except groq.AuthenticationError as exc:
-            raise AIProviderAuthenticationError("Groq credential was rejected") from exc
-        except groq.PermissionDeniedError as exc:
-            raise AIProviderPolicyError("Groq rejected the request policy") from exc
+        except groq.AuthenticationError:
+            raise AIProviderAuthenticationError("Groq credential was rejected") from None
+        except groq.PermissionDeniedError:
+            raise AIProviderPolicyError("Groq rejected the request policy") from None
         except groq.RateLimitError as exc:
             raise AIProviderRateLimitError(
                 "Groq request was rate limited", retry_after_seconds=self._retry_after(exc)
-            ) from exc
-        except groq.APITimeoutError as exc:
-            raise AIProviderTimeoutError("Groq request timed out") from exc
-        except groq.APIConnectionError as exc:
-            raise AIProviderUnavailableError("Groq endpoint is unavailable") from exc
+            ) from None
+        except groq.APITimeoutError:
+            raise AIProviderTimeoutError("Groq request timed out") from None
+        except groq.APIConnectionError:
+            raise AIProviderUnavailableError("Groq endpoint is unavailable") from None
         except groq.APIStatusError as exc:
             if exc.status_code == 413:
-                raise AIContextTooLargeError("Groq request exceeded the context size") from exc
+                raise AIContextTooLargeError("Groq request exceeded the context size") from None
             if exc.status_code >= 500:
-                raise AIProviderUnavailableError("Groq service is unavailable") from exc
-            raise AIProviderError("Groq rejected the request") from exc
-        except groq.APIError as exc:
-            raise AIProviderError("Groq request failed") from exc
+                raise AIProviderUnavailableError("Groq service is unavailable") from None
+            raise AIProviderError("Groq rejected the request") from None
+        except groq.APIError:
+            raise AIProviderError("Groq request failed") from None
         finally:
             await close_sdk_client(client)
         return self._normalize_response(
