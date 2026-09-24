@@ -34,7 +34,7 @@ class CredentialPoolConfig(BaseModel):
     env_prefix: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=96)
     max_credentials: int = Field(default=32, ge=1, le=128)
     cooldown_seconds: float = Field(default=60.0, gt=0, le=3600)
-    max_retry_after_seconds: float = Field(default=60.0, ge=0, le=300)
+    max_retry_after_seconds: float = Field(default=60.0, ge=0, le=86_400)
 
     @field_validator("env_prefix")
     @classmethod

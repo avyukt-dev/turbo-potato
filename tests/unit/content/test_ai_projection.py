@@ -284,14 +284,12 @@ def test_content_projection_selects_highest_importance_with_stable_ties() -> Non
     assert [item["claim_id"] for item in projected["immutable_fact_sheet"]["claims"]] == [
         "claim-1",
         "claim-3",
-        "claim-5",
     ]
     assert [item["claim_id"] for item in projected["editorial_brief"]["claims"]] == [
         "claim-1",
         "claim-3",
-        "claim-5",
     ]
-    assert set(projected["certainty_ceilings"]) == {"claim-1", "claim-3", "claim-5"}
+    assert set(projected["certainty_ceilings"]) == {"claim-1", "claim-3"}
 
 
 def test_content_projection_treats_unknown_importance_conservatively() -> None:

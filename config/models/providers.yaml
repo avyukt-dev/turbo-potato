@@ -5,23 +5,23 @@ credential_pools:
     env_prefix: GROQ_API_KEY
     max_credentials: 32
     cooldown_seconds: 60
-    max_retry_after_seconds: 60
+    max_retry_after_seconds: 3600
   - pool_id: openai-production
     provider: openai
     env_prefix: OPENAI_API_KEY
     max_credentials: 32
     cooldown_seconds: 60
-    max_retry_after_seconds: 60
+    max_retry_after_seconds: 3600
   - pool_id: gemini-production
     provider: gemini
     env_prefix: GEMINI_API_KEY
     max_credentials: 32
     cooldown_seconds: 60
-    max_retry_after_seconds: 60
+    max_retry_after_seconds: 3600
 providers:
   - provider_id: groq
     adapter_type: groq
-    base_url: https://api.groq.com/openai/v1
+    base_url: https://api.groq.com
     credential_pool_id: groq-production
     models:
       - model_id: openai/gpt-oss-120b

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from types import SimpleNamespace
 
 import groq
@@ -8,6 +9,7 @@ import httpx
 import pytest
 from news_ai_ai import (
     REASONING_ROUTING_POLICY_VERSION,
+    AIInvalidResponseError,
     AIProviderCredentialPoolExhaustedError,
     AIProviderRateLimitError,
     AIReasoningEffort,
@@ -24,6 +26,15 @@ ACTIVE_TASKS = frozenset(AITaskType)
 
 def _config() -> GroqProviderConfig:
     return GroqProviderConfig(task_types=ACTIVE_TASKS)
+
+
+def test_sdk_base_url_is_an_origin_and_rejects_versioned_api_paths() -> None:
+    assert str(_config().base_url).rstrip("/") == "https://api.groq.com"
+    with pytest.raises(ValueError, match="SDK origin"):
+        GroqProviderConfig(
+            base_url="https://api.groq.com/openai/v1",
+            task_types=ACTIVE_TASKS,
+        )
 
 
 def _request() -> AIRequest:
@@ -99,10 +110,13 @@ def test_sdk_adapter_maps_structured_request_and_response() -> None:
     assert provider.capabilities.locality is ProviderLocality.CLOUD
 
 
-def _status_error(kind, status: int):
+def _status_error(kind, status: int, *, code: str | None = None):
     request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     response = httpx.Response(status, request=request, headers={"retry-after": "12"})
-    return kind("safe", response=response, body={"error": {"message": "sentinel-secret"}})
+    detail = {"message": "sentinel-secret"}
+    if code is not None:
+        detail["code"] = code
+    return kind("safe", response=response, body={"error": detail})
 
 
 def test_rate_limit_cools_only_exact_key_and_uses_next_key() -> None:
@@ -158,6 +172,42 @@ def test_single_rate_limited_or_auth_failed_key_returns_normalized_error() -> No
     with pytest.raises(AIProviderCredentialPoolExhaustedError) as caught:
         asyncio.run(auth.execute(_request()))
     assert "secret" not in str(caught.value)
+
+
+def test_structured_json_validation_rejection_is_an_invalid_response() -> None:
+    provider = GroqProvider(
+        _config(),
+        api_key="secret",
+        client_factory=lambda _: _Client(
+            [],
+            _status_error(
+                groq.BadRequestError,
+                400,
+                code="json_validate_failed",
+            ),
+        ),
+    )
+
+    with pytest.raises(AIInvalidResponseError, match="structured response failed validation"):
+        asyncio.run(provider.execute(_request()))
+
+
+def test_normalized_failure_traceback_does_not_retain_raw_credential() -> None:
+    sentinel = "SUPER_SECRET_GROQ_TRACEBACK_SENTINEL"
+    provider = GroqProvider(
+        _config(),
+        api_key=sentinel,
+        client_factory=lambda _: _Client([], _status_error(groq.AuthenticationError, 401)),
+    )
+
+    with pytest.raises(AIProviderCredentialPoolExhaustedError) as caught:
+        asyncio.run(provider.execute(_request()))
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert sentinel not in rendered
+    for frame, _ in traceback.walk_tb(caught.value.__traceback__):
+        if frame.f_code.co_filename != __file__:
+            assert sentinel not in repr(frame.f_locals)
 
 
 def test_multiple_models_are_exposed_and_unconfigured_model_fails() -> None:

@@ -206,26 +206,35 @@ def _stable_key(prefix: str, material: str, *, slug: str) -> str:
 
 def build_live_source_documents(
     feed_urls: tuple[str, ...],
+    source_domains: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if source_domains is None:
+        source_domains = tuple(
+            (urlparse(url).hostname or "").casefold().rstrip(".") for url in feed_urls
+        )
+    if len(source_domains) != len(feed_urls):
+        raise LiveE2EConfigurationError("E2E source domains must align with feed URLs")
     sources: list[dict[str, Any]] = []
     feeds: list[dict[str, Any]] = []
     source_keys: dict[str, str] = {}
-    for index, feed_url in enumerate(feed_urls, start=1):
+    for index, (feed_url, source_domain) in enumerate(
+        zip(feed_urls, source_domains, strict=True), start=1
+    ):
         parsed = urlparse(feed_url)
         host = (parsed.hostname or "").casefold().rstrip(".")
         if not host:
             raise LiveE2EConfigurationError("feed URL has no hostname")
-        source_key = source_keys.get(host)
+        source_key = source_keys.get(source_domain)
         if source_key is None:
-            source_key = _stable_key("e2e-source", host, slug=host)
-            source_keys[host] = source_key
+            source_key = _stable_key("e2e-source", source_domain, slug=source_domain)
+            source_keys[source_domain] = source_key
             sources.append(
                 {
                     "key": source_key,
-                    "name": f"Live E2E {host}",
+                    "name": f"Live E2E {source_domain}",
                     "source_type": "NEWS",
-                    "domain": host,
-                    "base_url": f"https://{host}",
+                    "domain": source_domain,
+                    "base_url": f"https://{source_domain}",
                     "enabled": True,
                     "metadata": {"live_e2e": True},
                 }
@@ -244,11 +253,16 @@ def build_live_source_documents(
     return {"schema_version": 1, "sources": sources}, {"schema_version": 1, "feeds": feeds}
 
 
-def build_isolated_config(base: Path, destination: Path, feed_urls: tuple[str, ...]) -> Path:
+def build_isolated_config(
+    base: Path,
+    destination: Path,
+    feed_urls: tuple[str, ...],
+    source_domains: tuple[str, ...] | None = None,
+) -> Path:
     if not base.is_dir():
         raise LiveE2EConfigurationError("NEWS_AI_CONFIG_DIR does not exist")
     shutil.copytree(base, destination)
-    registry, feeds = build_live_source_documents(feed_urls)
+    registry, feeds = build_live_source_documents(feed_urls, source_domains)
     sources_dir = destination / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
     (sources_dir / "registry.yaml").write_text(
@@ -895,6 +909,7 @@ class LiveE2ERunner:
                 Path(self.app_settings.config_dir),
                 Path(temporary) / "config",
                 self.e2e.feed_urls,
+                self.e2e.source_domains,
             )
             run_settings = self.app_settings.model_copy(update={"config_dir": config_root})
             feed_client = httpx.AsyncClient(

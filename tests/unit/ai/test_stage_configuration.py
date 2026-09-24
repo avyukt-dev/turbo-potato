@@ -25,8 +25,8 @@ EXPECTED = {
     AIStageId.CLAIM_EXTRACTION: (
         AITaskType.CLAIM_EXTRACTION,
         "claim-extraction",
-        "v4",
-        "prompts/claim-extraction/v4.txt",
+        "v5",
+        "prompts/claim-extraction/v5.txt",
     ),
     AIStageId.EVIDENCE_ASSESSMENT: (
         AITaskType.EVIDENCE_ASSESSMENT,
@@ -57,7 +57,7 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
     assert [item.adapter_type for item in provider_config.providers] == ["groq", "llama_cpp"]
     groq, llama = provider_config.providers
     assert groq.provider_id == "groq"
-    assert str(groq.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
+    assert str(groq.base_url).rstrip("/") == "https://api.groq.com"
     assert [item.model_id for item in groq.models] == [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
@@ -65,6 +65,7 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
     assert groq.models[0].default_max_completion_tokens == 8192
     assert groq.models[0].max_context_tokens == 131072
     assert groq.credential_pool_id == "groq-production"
+    assert provider_config.credential_pools[0].max_retry_after_seconds == 3600
     assert llama.provider_id == "local-llama"
     assert str(llama.base_url).rstrip("/") == "http://127.0.0.1:8080"
     assert [item.model_id for item in llama.models] == ["local-news-ai"]
@@ -98,14 +99,12 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
         if stage_id is AIStageId.CLAIM_EXTRACTION:
             assert stage.request_defaults.max_tokens == 3072
             assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
-        elif stage_id is AIStageId.EVIDENCE_ASSESSMENT:
+        elif stage_id in {
+            AIStageId.EVIDENCE_ASSESSMENT,
+            AIStageId.CONTENT_GENERATION,
+            AIStageId.QUALITY_CHECKING,
+        }:
             assert stage.request_defaults.max_tokens == 2048
-            assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
-        elif stage_id is AIStageId.CONTENT_GENERATION:
-            assert stage.request_defaults.max_tokens == 7168
-            assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
-        elif stage_id is AIStageId.QUALITY_CHECKING:
-            assert stage.request_defaults.max_tokens == 4096
             assert stage.request_defaults.rate_limit_retry_delays_seconds == (5, 15, 30)
         else:
             assert stage.request_defaults.max_tokens is None
@@ -133,14 +132,14 @@ def test_production_provider_policy_and_stages_configure_groq_primary(
         assert router.candidate_provider_ids(request) == ("groq", "local-llama")
 
 
-def test_claim_v4_prompt_matches_output_contract() -> None:
+def test_claim_v5_prompt_matches_output_contract() -> None:
     loader = ConfigLoader("config")
     stage_loader = AIStageConfigLoader(loader)
     stage = stage_loader.load(AIStageId.CLAIM_EXTRACTION)
     prompt = stage_loader.resolve_prompt(stage).read_text(encoding="utf-8")
 
-    assert stage.prompt.version == "v4"
-    assert stage.prompt.path == "prompts/claim-extraction/v4.txt"
+    assert stage.prompt.version == "v5"
+    assert stage.prompt.path == "prompts/claim-extraction/v5.txt"
     assert "A successful output requires at least one independently researchable claim." in prompt
     assert 'If there are no independently verifiable claims, return {"claims":[]}.' not in prompt
     assert "Every value object MUST contain kind." in prompt
