@@ -13,5 +13,5 @@ providers:
 fallback_on: [INVALID_RESPONSE, TIMEOUT, RATE_LIMIT, UNAVAILABLE]
 request_defaults:
   reasoning_effort: medium
-  max_tokens: 4096
+  max_tokens: 2048
   rate_limit_retry_delays_seconds: [5, 15, 30]

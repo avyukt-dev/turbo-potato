@@ -38,6 +38,7 @@ from news_ai_domain.values import (
     anchors_for_claim,
     mechanical_span_present,
 )
+from news_ai_editorial import MandatoryReviewCategory
 from news_ai_events import EventEnvelope, EventType, PermanentEventError
 from news_ai_events.outbox import build_outbox_record
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -56,7 +57,7 @@ from .provider import AIInvalidResponseError
 from .reasoning import REASONING_ROUTING_POLICY_VERSION, select_reasoning_effort
 from .routing import AIRoutedResponse, AIRouter
 
-CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v4"
+CLAIM_EXTRACTION_METHODOLOGY_VERSION = "claim-extraction-methodology-v5"
 
 
 class ClaimExtractionItem(BaseModel):
@@ -74,7 +75,7 @@ class ClaimExtractionItem(BaseModel):
     value_candidates: tuple[ClaimValueCandidate, ...] = Field(max_length=100)
     importance_score: float | None = Field(default=None, ge=0.0, le=1.0)
     risk_level: RiskLevel = RiskLevel.LOW
-    sensitive_topics: tuple[str, ...] = ()
+    sensitive_topics: tuple[MandatoryReviewCategory, ...] = ()
     temporal_start: datetime | None = None
     temporal_end: datetime | None = None
 
@@ -88,13 +89,12 @@ class ClaimExtractionItem(BaseModel):
 
     @field_validator("sensitive_topics")
     @classmethod
-    def validate_sensitive_topics(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(item.strip().upper() for item in value)
-        if any(not item for item in normalized):
-            raise ValueError("sensitive_topics must not contain blank values")
-        if len(normalized) != len(set(normalized)):
+    def validate_sensitive_topics(
+        cls, value: tuple[MandatoryReviewCategory, ...]
+    ) -> tuple[MandatoryReviewCategory, ...]:
+        if len(value) != len(set(value)):
             raise ValueError("sensitive_topics must be unique")
-        return normalized
+        return value
 
     @field_validator("temporal_start", "temporal_end")
     @classmethod

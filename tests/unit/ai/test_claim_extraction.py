@@ -244,6 +244,25 @@ def test_claim_output_accepts_one_valid_claim() -> None:
     assert len(output.claims) == 1
 
 
+def test_claim_output_rejects_noncanonical_sensitive_topic() -> None:
+    claim = _claim()
+    claim["sensitive_topics"] = ["MIGRATION"]
+
+    with pytest.raises(ValidationError, match="sensitive_topics"):
+        ClaimExtractionOutput.model_validate({"claims": [claim]})
+
+
+def test_claim_output_accepts_canonical_sensitive_topic() -> None:
+    claim = _claim()
+    claim["sensitive_topics"] = ["UNVERIFIED_BREAKING_NEWS"]
+
+    output = ClaimExtractionOutput.model_validate({"claims": [claim]})
+
+    assert [item.value for item in output.claims[0].sensitive_topics] == [
+        "UNVERIFIED_BREAKING_NEWS"
+    ]
+
+
 def test_generate_supplies_strict_typed_response_schema(tmp_path: Path) -> None:
     factory = _session_factory()
     story, _, _ = _seed_story(factory)

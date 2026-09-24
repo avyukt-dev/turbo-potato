@@ -5,8 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-AI_INPUT_PROJECTION_VERSION = "ai-input-projection-v2"
-CONTENT_GENERATION_MAX_CLAIMS = 3
+AI_INPUT_PROJECTION_VERSION = "ai-input-projection-v3"
+CONTENT_GENERATION_MAX_CLAIMS = 2
 
 
 class AIInputProjectionError(ValueError):

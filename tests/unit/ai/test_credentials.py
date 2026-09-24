@@ -88,6 +88,29 @@ def test_durable_pool_tracks_each_key_independently_and_survives_reconstruction(
     assert rows[1].state is AICredentialState.HEALTHY
 
 
+def test_provider_retry_after_is_bounded_by_the_configured_long_window() -> None:
+    now = datetime(2026, 9, 23, tzinfo=UTC)
+    config = _config().model_copy(update={"max_retry_after_seconds": 3600})
+    credentials = resolve_credential_pool(config, environ={"GROQ_API_KEY_1": "first"})
+    factory = _factory()
+    pool = DatabaseCredentialPool(config, credentials, factory, clock=lambda: now)
+
+    selected = asyncio.run(pool.acquire(set()))
+    assert selected is not None
+    asyncio.run(pool.record_rate_limit(selected, 900))
+
+    with factory() as session:
+        row = session.scalar(select(AICredential))
+    assert row is not None
+    assert row.cooldown_until == (now + timedelta(seconds=900)).replace(tzinfo=None)
+
+    asyncio.run(pool.record_rate_limit(selected, 7200))
+    with factory() as session:
+        row = session.scalar(select(AICredential))
+    assert row is not None
+    assert row.cooldown_until == (now + timedelta(seconds=3600)).replace(tzinfo=None)
+
+
 def test_auth_and_unknown_states_are_ineligible_until_secret_replacement() -> None:
     config = _config()
     first_set = resolve_credential_pool(
