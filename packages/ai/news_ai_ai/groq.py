@@ -224,9 +224,7 @@ class GroqProvider(CredentialPooledProvider):
             if exc.status_code == 413:
                 raise AIContextTooLargeError("Groq request exceeded the context size") from None
             if exc.status_code == 400 and self._error_code(exc) == "json_validate_failed":
-                raise AIInvalidResponseError(
-                    "Groq structured response failed validation"
-                ) from None
+                raise AIInvalidResponseError("Groq structured response failed validation") from None
             if exc.status_code >= 500:
                 raise AIProviderUnavailableError("Groq service is unavailable") from None
             raise AIProviderError("Groq rejected the request") from None
