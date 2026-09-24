@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from news_ai_common import CollectedMediaCandidate, FeedMediaOrigin, FeedMediaType
 from news_ai_processor import ArticleNormalizationInput, ArticleNormalizer, canonicalize_url
 from pydantic import ValidationError
 
@@ -110,3 +111,44 @@ def test_embedded_url_credentials_are_rejected() -> None:
 def test_empty_title_after_normalization_is_rejected() -> None:
     with pytest.raises(ValueError, match="title is empty"):
         ArticleNormalizer().normalize(_article(title="\x00\t   "))
+
+
+def test_content_hash_binds_exact_media_candidate_snapshot() -> None:
+    normalizer = ArticleNormalizer()
+    first = CollectedMediaCandidate(
+        url="https://example.com/first.jpg",
+        media_type=FeedMediaType.IMAGE,
+        origin=FeedMediaOrigin.MEDIA_CONTENT,
+        mime_type="image/jpeg",
+    )
+    second = CollectedMediaCandidate(
+        url="https://example.com/second.jpg",
+        media_type=FeedMediaType.IMAGE,
+        origin=FeedMediaOrigin.MEDIA_CONTENT,
+        mime_type="image/jpeg",
+    )
+
+    first_result = normalizer.normalize(_article(media_candidates=(first,)))
+    replay = normalizer.normalize(_article(media_candidates=(first,)))
+    changed = normalizer.normalize(_article(media_candidates=(second,)))
+
+    assert first_result.media_candidates == (first,)
+    assert replay.content_hash == first_result.content_hash
+    assert changed.content_hash != first_result.content_hash
+
+
+def test_empty_media_candidates_preserve_legacy_content_hash_identity() -> None:
+    result = ArticleNormalizer().normalize(_article(media_candidates=()))
+    import hashlib
+    import json
+
+    legacy = hashlib.sha256(
+        json.dumps(
+            {"title": result.title, "summary": result.summary, "body": result.body},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert result.content_hash == legacy

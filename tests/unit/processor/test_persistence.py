@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from news_ai_common import CollectedMediaCandidate, FeedMediaOrigin, FeedMediaType
 from news_ai_database import Article, ArticleVersion, Base, EventOutbox, Source
 from news_ai_events import EventType
 from news_ai_processor import (
@@ -39,6 +40,7 @@ def _normalized(
     title: str = "Example headline",
     author: str = "Jane Doe",
     summary: str = "Example summary",
+    media_candidates: tuple[CollectedMediaCandidate, ...] = (),
 ) -> NormalizedArticle:
     return ArticleNormalizer().normalize(
         ArticleNormalizationInput(
@@ -52,6 +54,7 @@ def _normalized(
             summary=summary,
             body=body,
             external_id="item-123",
+            media_candidates=media_candidates,
             retrieved_at=datetime(2026, 9, 10, 3, 5, tzinfo=UTC),
         )
     )
@@ -184,3 +187,52 @@ def test_caller_rollback_removes_article_version_and_outbox(session: Session) ->
     assert _count(session, Article) == 0
     assert _count(session, ArticleVersion) == 0
     assert _count(session, EventOutbox) == 0
+
+
+def _media_candidate(url: str) -> CollectedMediaCandidate:
+    return CollectedMediaCandidate(
+        url=url,
+        media_type=FeedMediaType.IMAGE,
+        origin=FeedMediaOrigin.MEDIA_CONTENT,
+        mime_type="image/jpeg",
+        width=1600,
+        height=900,
+        credit="District administration",
+        license_url="https://example.com/license",
+    )
+
+
+def test_media_candidates_are_snapshotted_on_exact_article_version(session: Session) -> None:
+    source = _source(session)
+    candidate = _media_candidate("https://example.com/media/incident.jpg")
+
+    result = ArticlePersistenceService(session).persist(
+        _normalized(source.id, media_candidates=(candidate,))
+    )
+
+    version = session.get(ArticleVersion, result.version_id)
+    assert version is not None
+    assert version.version_metadata["media_candidates"] == [candidate.model_dump(mode="json")]
+    assert version.version_metadata["media_candidates"][0]["reuse_status"] == "UNASSESSED"
+
+
+def test_changed_media_candidate_creates_new_immutable_article_version(session: Session) -> None:
+    source = _source(session)
+    service = ArticlePersistenceService(session)
+
+    first = service.persist(
+        _normalized(
+            source.id,
+            media_candidates=(_media_candidate("https://example.com/media/first.jpg"),),
+        )
+    )
+    second = service.persist(
+        _normalized(
+            source.id,
+            media_candidates=(_media_candidate("https://example.com/media/second.jpg"),),
+        )
+    )
+
+    assert second.version_id != first.version_id
+    assert second.version_number == 2
+    assert _count(session, ArticleVersion) == 2

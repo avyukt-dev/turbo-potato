@@ -98,6 +98,14 @@ It does NOT answer:
 Is this source sufficient evidence for a claim?
 ```
 
+RSS/Atom collection may preserve bounded image/video candidate declarations from
+Media RSS and enclosure metadata. These records are discovery provenance only. A
+feed URL, credit, copyright notice, or declared license does not by itself prove
+reuse rights, evidentiary relevance, authenticity, source authority, or publication
+eligibility. Newly collected candidates therefore remain `UNASSESSED` and cannot
+be promoted to a publication `MediaAsset` without a separate rights/byte-validation
+and explicit content-attachment workflow.
+
 ## 3.2 Research/evidence policy
 
 Owned by:

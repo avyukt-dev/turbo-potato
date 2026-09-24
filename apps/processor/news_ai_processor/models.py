@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from news_ai_common import MAX_FEED_MEDIA_CANDIDATES, CollectedMediaCandidate
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
 
 from .acquisition import ContentAcquisitionProvenance
@@ -21,6 +22,9 @@ class ArticleNormalizationInput(BaseModel):
     body: str | None = None
     content_acquisition: ContentAcquisitionProvenance | None = None
     external_id: str | None = None
+    media_candidates: tuple[CollectedMediaCandidate, ...] = Field(
+        default=(), max_length=MAX_FEED_MEDIA_CANDIDATES
+    )
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("url")
@@ -50,5 +54,8 @@ class NormalizedArticle(BaseModel):
     body: str | None = None
     content_acquisition: ContentAcquisitionProvenance | None = None
     external_id: str | None = None
+    media_candidates: tuple[CollectedMediaCandidate, ...] = Field(
+        default=(), max_length=MAX_FEED_MEDIA_CANDIDATES
+    )
     retrieved_at: datetime
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

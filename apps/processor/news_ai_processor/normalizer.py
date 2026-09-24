@@ -14,6 +14,8 @@ import unicodedata
 from datetime import UTC, datetime
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from news_ai_common import CollectedMediaCandidate
+
 from .models import ArticleNormalizationInput, NormalizedArticle
 
 _TRACKING_QUERY_KEYS = {
@@ -151,9 +153,24 @@ def normalize_timestamp(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _content_hash(*, title: str, summary: str | None, body: str | None) -> str:
+def _content_hash(
+    *,
+    title: str,
+    summary: str | None,
+    body: str | None,
+    media_candidates: tuple[CollectedMediaCandidate, ...],
+) -> str:
+    semantic_payload: dict[str, object] = {
+        "title": title,
+        "summary": summary,
+        "body": body,
+    }
+    if media_candidates:
+        semantic_payload["media_candidates"] = [
+            candidate.model_dump(mode="json") for candidate in media_candidates
+        ]
     payload = json.dumps(
-        {"title": title, "summary": summary, "body": body},
+        semantic_payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -195,6 +212,12 @@ class ArticleNormalizer:
             body=body,
             content_acquisition=article.content_acquisition,
             external_id=normalize_inline_text(article.external_id),
+            media_candidates=article.media_candidates,
             retrieved_at=retrieved_at,
-            content_hash=_content_hash(title=title, summary=summary, body=body),
+            content_hash=_content_hash(
+                title=title,
+                summary=summary,
+                body=body,
+                media_candidates=article.media_candidates,
+            ),
         )

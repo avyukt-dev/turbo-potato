@@ -351,6 +351,13 @@ Recommended uniqueness:
 
 Source edits must not silently overwrite the material used for earlier evidence/review decisions.
 
+Current `ArticleVersion.metadata.media_candidates` snapshots the bounded typed
+image/video declarations collected with that exact source version: URL, feed origin,
+media/MIME type, dimensions/duration when declared, descriptive text, and feed-declared
+credit/copyright/license metadata. Candidate changes participate in the immutable
+version hash. `reuse_status=UNASSESSED` is deliberate: this metadata is not a
+`media_assets` row, evidence, verified licensing, downloaded bytes, or publication approval.
+
 ---
 
 # 11. Stories

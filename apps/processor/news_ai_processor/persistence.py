@@ -190,6 +190,9 @@ class ArticlePersistenceService:
                 str(normalized.source_feed_id) if normalized.source_feed_id is not None else None
             ),
             "external_id": normalized.external_id,
+            "media_candidates": [
+                candidate.model_dump(mode="json") for candidate in normalized.media_candidates
+            ],
         }
         if normalized.content_acquisition:
             metadata["content_acquisition"] = normalized.content_acquisition.model_dump(mode="json")

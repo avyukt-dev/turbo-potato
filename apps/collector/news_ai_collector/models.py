@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from news_ai_common.feed_media import MAX_FEED_MEDIA_CANDIDATES, CollectedMediaCandidate
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
 
@@ -44,6 +45,9 @@ class CollectedArticle(BaseModel):
     summary: str | None = None
     body: str | None = None
     external_id: str | None = None
+    media_candidates: tuple[CollectedMediaCandidate, ...] = Field(
+        default=(), max_length=MAX_FEED_MEDIA_CANDIDATES
+    )
 
 
 class FeedFetchResult(BaseModel):

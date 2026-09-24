@@ -76,6 +76,10 @@ class DiscoveredArticleHandler:
             "external_id": article.external_id,
             "retrieved_at": retrieved_at.isoformat(),
         }
+        if article.media_candidates:
+            raw_payload["media_candidates"] = [
+                candidate.model_dump(mode="json") for candidate in article.media_candidates
+            ]
         semantic_payload = {
             key: value for key, value in raw_payload.items() if key != "retrieved_at"
         }

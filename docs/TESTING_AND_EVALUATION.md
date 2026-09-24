@@ -294,6 +294,8 @@ Validate:
 
 ```text
 RSS/Atom parsing
+Media RSS and RSS/Atom enclosure parsing, deduplication and bounds
+media candidate provenance remains UNASSESSED and cannot imply reuse rights
 malformed source payloads
 missing titles/dates
 canonical URL

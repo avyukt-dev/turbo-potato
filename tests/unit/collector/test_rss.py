@@ -75,3 +75,24 @@ def test_response_size_limit_is_enforced() -> None:
             asyncio.run(collector.collect(_feed(max_response_bytes=1024)))
     finally:
         asyncio.run(client.aclose())
+
+
+def test_collects_typed_feed_media_without_promoting_it_to_publishable_media() -> None:
+    media_feed = b"""<rss xmlns:media="http://search.yahoo.com/mrss/"><channel><item>
+      <title>Incident</title><link>/incident</link>
+      <media:content url="/incident.jpg" type="image/jpeg" />
+    </item></channel></rss>"""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=media_feed, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+    try:
+        result = asyncio.run(RSSCollector(client).collect(_feed()))
+    finally:
+        asyncio.run(client.aclose())
+
+    candidate = result.articles[0].media_candidates[0]
+    assert str(candidate.url) == "https://example.com/incident.jpg"
+    assert candidate.media_type == "IMAGE"
+    assert candidate.reuse_status == "UNASSESSED"
