@@ -156,6 +156,20 @@ class FakeReviewService:
                         },
                     ],
                     "unresolved_questions": ["What remains unknown?"],
+                    "sources": [
+                        {
+                            "source_id": "33333333-3333-3333-3333-333333333333",
+                            "name": "Example News",
+                            "source_level": 2,
+                            "url": "https://example.com/report",
+                        },
+                        {
+                            "source_id": "33333333-3333-3333-3333-333333333333",
+                            "name": "Example News duplicate",
+                            "source_level": 2,
+                            "url": "https://example.com/report",
+                        },
+                    ],
                 },
                 "editorial_brief": {"human_review_required": True},
                 "quality_check": {
@@ -241,28 +255,33 @@ def _callback_update(variant_id: UUID, *, user_id: int = _TELEGRAM_USER_ID) -> d
     }
 
 
-def test_review_command_returns_evidence_context_and_exact_version_button() -> None:
+def test_review_command_returns_publication_preview_sources_and_exact_version_button() -> None:
     controller, service, transport = _controller()
     asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
 
-    assert len(transport.messages) > 1
     rendered = "\n".join(message["text"] for message in transport.messages)
-    assert "Canonical headline" in rendered
-    assert "An uncertain claim" in rendered
+    assert "Publication preview" in rendered
+    assert "Reviewed title" in rendered
+    assert "Slide one heading" in rendered
     assert "Slide-only consequential statement" in rendered
+    assert "Reviewed caption" in rendered
     assert "#publicsafety" in rendered
-    assert "Contradictory evidence excerpt" in rendered
-    assert "What remains unknown?" in rendered
-    assert "Reviewer-visible quality warning" in rendered
-    assert "deterministic" in rendered
+    assert "Sources" in rendered
+    assert "• Example News: https://example.com/report" in rendered
+    assert rendered.count("https://example.com/report") == 1
+    assert "Canonical headline" not in rendered
+    assert "Reviewer-visible quality warning" not in rendered
+    assert "deterministic" not in rendered
+    assert "content_variant_id" not in rendered
+    assert "{" not in rendered
     assert transport.photos == [
         {
             "chat_id": _CHAT_ID,
             "photo": "https://media.example/reviewed.jpg",
-            "caption": transport.photos[0]["caption"],
+            "caption": "Media preview 1/1",
         }
     ]
-    assert "a" * 64 in transport.photos[0]["caption"]
+    assert "a" * 64 not in transport.photos[0]["caption"]
     assert all("reply_markup" not in message for message in transport.messages[:-1])
     message = transport.messages[-1]
     assert message["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == (
@@ -278,7 +297,9 @@ def test_review_packet_is_losslessly_chunked_with_button_only_at_end() -> None:
         detail = original_detail(**arguments)
         payload = detail.model_dump()
         marker = "exact-boundary-content-"
-        payload["content_variant"]["body"] = marker + ("x" * 9000)
+        payload["content_variant"]["structured_payload"]["slides"][0]["body"] = marker + (
+            "x" * 9000
+        )
         return SimpleNamespace(model_dump=lambda **_kwargs: payload)
 
     service.detail = long_detail
