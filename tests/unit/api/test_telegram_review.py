@@ -18,9 +18,20 @@ from news_ai_api.telegram_review import (
     create_telegram_review_router,
 )
 from news_ai_common.config import AppSettings
-from news_ai_domain import ReviewState, RiskLevel
+from news_ai_database import (
+    ContentVariant,
+    ProcessedEvent,
+    Publication,
+    ReviewDecisionRecord,
+    SocialAccount,
+)
+from news_ai_database.models import OutboxStatus
+from news_ai_domain import PublicationStatus, ReviewState, RiskLevel
 from news_ai_events import EventEnvelope, EventType, ProcessingOutcome
+from news_ai_events.outbox import build_outbox_record
+from news_ai_publishing import PublicationService
 from news_ai_review import (
+    ApprovalEligibilityService,
     ArtifactType,
     ReviewActionResult,
     ReviewCapability,
@@ -29,8 +40,12 @@ from news_ai_review import (
     ReviewerPrincipal,
     ReviewQueueItem,
     ReviewQueuePage,
+    ReviewService,
 )
 from pydantic import ValidationError
+from sqlalchemy import select
+from unit.publishing.test_scheduler import Clock, seed_candidate
+from unit.review.test_review_service import _factory, _policy
 
 _REVIEWER_ID = UUID("11111111-1111-1111-1111-111111111111")
 _TELEGRAM_USER_ID = 123456
@@ -332,6 +347,54 @@ def test_quality_event_pushes_once_and_records_durable_completion(monkeypatch) -
     assert state["result"] == {"notified": 1}
 
 
+def test_published_quality_outbox_recovers_notification_without_redis_transport() -> None:
+    factory = _factory()
+    variant_id = seed_candidate(factory)[0]
+    with factory() as session, session.begin():
+        variant = session.get(ContentVariant, variant_id)
+        variant.review_state = ReviewState.READY_FOR_REVIEW
+        event = EventEnvelope(
+            event_type=EventType.CONTENT_QUALITY_CHECKED,
+            producer="ai-worker",
+            producer_version="0.1.0",
+            aggregate_type="content_draft",
+            aggregate_id=variant.content_draft_id,
+            idempotency_key=f"content.quality_checked:{variant.content_draft_id}:recovery",
+            payload={
+                "content_draft_id": str(variant.content_draft_id),
+                "passed": True,
+                "fact_check_passed": True,
+                "source_check_passed": True,
+                "style_check_passed": True,
+                "risk_level": "LOW",
+                "review_required": True,
+            },
+        )
+        row = build_outbox_record(event)
+        row.status = OutboxStatus.PUBLISHED
+        session.add(row)
+
+    class Consumer:
+        stream = "news:content"
+        group = TELEGRAM_REVIEW_CONSUMER_GROUP
+
+    class Controller:
+        sent: list[tuple[UUID, int]] = []
+
+        async def send_review(self, artifact_id, version):
+            self.sent.append((artifact_id, version))
+            return True
+
+    controller = Controller()
+    worker = TelegramReviewNotificationWorker(Consumer(), factory, controller)  # type: ignore[arg-type]
+
+    assert asyncio.run(worker.recover_durable_once()) == 1
+    assert asyncio.run(worker.recover_durable_once()) == 0
+    assert controller.sent == [(variant_id, 1)]
+    with factory() as session:
+        assert session.get(ProcessedEvent, (event.event_id, TELEGRAM_REVIEW_CONSUMER_GROUP))
+
+
 def test_review_command_returns_publication_preview_sources_and_exact_version_button() -> None:
     controller, service, transport = _controller()
     asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
@@ -487,6 +550,58 @@ def test_approval_can_idempotently_schedule_through_publication_service(monkeypa
     assert transport.answers[-1]["text"] == "Approved and scheduled for publication."
 
 
+def test_durable_approval_is_recovered_after_scheduling_gap() -> None:
+    factory, clock = _factory(), Clock()
+    variant_id, account_id, actor = seed_candidate(factory)
+    with factory() as session:
+        account_identifier = session.get(SocialAccount, account_id).account_identifier
+    publication_service = PublicationService(
+        factory,
+        ApprovalEligibilityService(factory, _policy()),
+        clock=clock,
+    )
+    controller = TelegramReviewController(
+        ReviewService(factory, _policy()),
+        FakeTelegramTransport(),
+        chat_id=_CHAT_ID,
+        reviewer_user_id=_TELEGRAM_USER_ID,
+        principal=actor,
+        publication_service=publication_service,
+        publication_account_identifier=account_identifier,
+    )
+
+    assert controller.recover_approved_publications() == 0
+    with factory() as session, session.begin():
+        decision = session.scalar(
+            select(ReviewDecisionRecord).where(ReviewDecisionRecord.artifact_id == variant_id)
+        )
+        decision.idempotency_key = f"telegram:approve:{variant_id.hex}:1"
+    assert controller.recover_approved_publications() == 1
+    assert controller.recover_approved_publications() == 0
+    with factory() as session:
+        publication = session.scalar(select(Publication))
+        assert publication.content_variant_id == variant_id
+        assert publication.status is PublicationStatus.SCHEDULED
+
+
+def test_empty_source_provenance_does_not_expose_unrelated_fact_sheet_sources() -> None:
+    controller, service, transport = _controller()
+    original_detail = service.detail
+
+    def detail_without_sources(**arguments):
+        payload = original_detail(**arguments).model_dump()
+        payload["content_variant"]["source_ids_used"] = []
+        return SimpleNamespace(model_dump=lambda **_kwargs: payload)
+
+    service.detail = detail_without_sources
+    asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
+
+    rendered = "\n".join(message["text"] for message in transport.messages)
+    assert "No source link available" in rendered
+    assert "https://example.com/report" not in rendered
+    assert "https://unrelated.example/report" not in rendered
+
+
 def test_telegram_automation_configuration_fails_closed(monkeypatch) -> None:
     with pytest.raises(ValidationError, match="requires Telegram review"):
         AppSettings(telegram_review_push_enabled=True, redis_url="redis://localhost:6379/0")
@@ -595,6 +710,31 @@ def test_api_composes_telegram_review_without_exposing_bearer_review_routes() ->
     assert len(transport.messages) > 1
     assert "reply_markup" in transport.messages[-1]
     assert client.get("/api/v1/review/queue").status_code == 404
+
+
+def test_telegram_only_review_does_not_load_social_publication_settings(monkeypatch) -> None:
+    controller, service, _transport = _controller()
+    settings = AppSettings(
+        telegram_review_enabled=True,
+        telegram_bot_token="123456:secret",
+        telegram_webhook_secret="telegram-secret",
+        telegram_review_chat_id=_CHAT_ID,
+        telegram_reviewer_user_id=_TELEGRAM_USER_ID,
+        reviewer_id=_REVIEWER_ID,
+        telegram_auto_publish_on_approval=False,
+    )
+
+    def unexpected_social_settings(**_arguments):
+        raise AssertionError("Telegram-only review must not load social settings")
+
+    monkeypatch.setattr("news_ai_api.main.SocialSettings", unexpected_social_settings)
+    app = create_app(
+        settings,
+        review_service=service,  # type: ignore[arg-type]
+        telegram_review_controller=controller,
+    )
+
+    assert app is not None
 
 
 def test_enabled_telegram_review_fails_closed_without_review_database() -> None:

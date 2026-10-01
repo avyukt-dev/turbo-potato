@@ -13,7 +13,15 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import httpx
 from fastapi import APIRouter, Header, HTTPException, status
 from news_ai_common.config import AppSettings
-from news_ai_database import ContentVariant, SocialAccount
+from news_ai_database import (
+    ContentVariant,
+    EventOutbox,
+    ProcessedEvent,
+    Publication,
+    ReviewDecisionRecord,
+    SocialAccount,
+)
+from news_ai_database.models import OutboxStatus
 from news_ai_domain import ReviewState
 from news_ai_events import (
     EventEnvelope,
@@ -24,6 +32,7 @@ from news_ai_events import (
     WorkerBatchResult,
 )
 from news_ai_events.idempotency import mark_processed, was_processed
+from news_ai_events.outbox import envelope_from_outbox
 from news_ai_events.streams import stream_for_event
 from news_ai_publishing import CreatePublicationRequest, PublicationError, PublicationService
 from news_ai_review import (
@@ -34,7 +43,7 @@ from news_ai_review import (
     ReviewService,
 )
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -292,7 +301,10 @@ class TelegramReviewController:
             except PublicationError:
                 await self.transport.answer_callback_query(
                     callback_query_id=callback.id,
-                    text="Approved; publication scheduling is temporarily unavailable.",
+                    text="Approved; publication scheduling is retained for automatic retry.",
+                )
+                await self.transport.clear_reply_markup(
+                    chat_id=message.chat.id, message_id=message.message_id
                 )
                 return
         await self.transport.clear_reply_markup(
@@ -339,6 +351,43 @@ class TelegramReviewController:
             idempotency_key=f"telegram-now:{artifact_id.hex}:{artifact_version}",
             request_id=request_identity,
         )
+
+    def recover_approved_publications(self, *, limit: int = 100) -> int:
+        """Schedule approved decisions that have no durable destination publication yet."""
+
+        if self.publication_service is None:
+            return 0
+        if not 1 <= limit <= 500:
+            raise ValueError("approval recovery limit is outside allowed bounds")
+        with self.publication_service.session_factory() as session:
+            decisions = tuple(
+                session.scalars(
+                    select(ReviewDecisionRecord)
+                    .where(
+                        ReviewDecisionRecord.decision == ReviewState.APPROVED,
+                        ReviewDecisionRecord.idempotency_key.like("telegram:approve:%"),
+                        ~exists().where(Publication.review_decision_id == ReviewDecisionRecord.id),
+                    )
+                    .order_by(ReviewDecisionRecord.decided_at, ReviewDecisionRecord.id)
+                    .limit(limit)
+                )
+            )
+        scheduled = 0
+        for decision in decisions:
+            operation = f"telegram:approve:{decision.artifact_id.hex}:{decision.artifact_version}"
+            request_identity = uuid5(NAMESPACE_URL, operation)
+            try:
+                self._schedule_approved_publication(
+                    decision.artifact_id,
+                    decision.artifact_version,
+                    request_identity,
+                )
+            except PublicationError:
+                # The immutable approval remains the recovery source of truth.
+                # A later bounded pass revalidates all publication prerequisites.
+                continue
+            scheduled += 1
+        return scheduled
 
     def _authorized(self, user: TelegramUser | None, chat: TelegramChat) -> bool:
         return (
@@ -443,6 +492,34 @@ class TelegramReviewNotificationWorker:
         return await self.reliability.recover(
             self._handle_event, min_idle_ms=min_idle_ms, start_id=start_id
         )
+
+    async def recover_durable_once(self, *, limit: int = 100) -> int:
+        """Recover quality notifications whose published Redis transport was lost."""
+
+        if not 1 <= limit <= 500:
+            raise ValueError("notification recovery limit is outside allowed bounds")
+        with self.session_factory() as session:
+            rows = tuple(
+                session.scalars(
+                    select(EventOutbox)
+                    .where(
+                        EventOutbox.event_type == EventType.CONTENT_QUALITY_CHECKED.value,
+                        EventOutbox.status == OutboxStatus.PUBLISHED,
+                        ~exists().where(
+                            ProcessedEvent.event_id == EventOutbox.event_id,
+                            ProcessedEvent.consumer_group == TELEGRAM_REVIEW_CONSUMER_GROUP,
+                        ),
+                    )
+                    .order_by(EventOutbox.published_at, EventOutbox.id)
+                    .limit(limit)
+                )
+            )
+        recovered = 0
+        for row in rows:
+            outcome = await self._handle_event(envelope_from_outbox(row))
+            if outcome in {ProcessingOutcome.PROCESSED, ProcessingOutcome.DUPLICATE}:
+                recovered += 1
+        return recovered
 
     async def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
         with self.session_factory() as session:
@@ -589,7 +666,7 @@ def _source_links(sheet: dict[str, Any], variant: dict[str, Any]) -> str:
     seen: set[str] = set()
     for raw_source in raw_sources:
         source = _mapping(raw_source, "source")
-        if used_ids and str(source.get("source_id") or "") not in used_ids:
+        if str(source.get("source_id") or "") not in used_ids:
             continue
         url = str(source.get("url") or "").strip()
         if not url or url in seen:

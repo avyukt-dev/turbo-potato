@@ -205,18 +205,17 @@ def create_app(
         authenticator = reviewer_authenticator or ReviewerTokenAuthenticator(resolved_settings)
         application.include_router(create_review_router(resolved_review_service, authenticator))
     if resolved_review_service is not None and telegram_review_configured:
-        social_settings = SocialSettings(environment=resolved_settings.environment)
+        publication_account_identifier = None
+        if resolved_settings.telegram_auto_publish_on_approval:
+            social_settings = SocialSettings(environment=resolved_settings.environment)
+            publication_account_identifier = social_settings.instagram_account_id
         controller = telegram_review_controller or build_telegram_review_controller(
             resolved_settings,
             resolved_review_service,
             publication_service=(
                 publication_service if resolved_settings.telegram_auto_publish_on_approval else None
             ),
-            publication_account_identifier=(
-                social_settings.instagram_account_id
-                if resolved_settings.telegram_auto_publish_on_approval
-                else None
-            ),
+            publication_account_identifier=publication_account_identifier,
         )
         application.include_router(
             create_telegram_review_router(
@@ -251,6 +250,8 @@ def create_app(
                         cursor, _ = await worker.recover_once(min_idle_ms=60_000, start_id=cursor)
                         if not stop.is_set():
                             await worker.run_once()
+                        if not stop.is_set():
+                            await worker.recover_durable_once()
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -275,6 +276,36 @@ def create_app(
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
                 await redis_client.aclose()
+
+        if resolved_settings.telegram_auto_publish_on_approval:
+            publication_stop = asyncio.Event()
+
+            async def publication_recovery_loop() -> None:
+                while not publication_stop.is_set():
+                    try:
+                        await asyncio.to_thread(controller.recover_approved_publications)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "Approved publication recovery unavailable; durable work retained"
+                        )
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(publication_stop.wait(), timeout=5)
+
+            @application.on_event("startup")
+            async def start_approved_publication_recovery() -> None:
+                application.state.telegram_publication_recovery_task = asyncio.create_task(
+                    publication_recovery_loop(), name="telegram-publication-recovery"
+                )
+
+            @application.on_event("shutdown")
+            async def stop_approved_publication_recovery() -> None:
+                publication_stop.set()
+                task = getattr(application.state, "telegram_publication_recovery_task", None)
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
     elif telegram_review_configured:
         raise ReviewConfigurationError("Telegram review database configuration is unavailable")
     if publication_service is not None and review_api_configured:
