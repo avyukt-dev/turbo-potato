@@ -547,7 +547,12 @@ Use environment secrets, encrypted credential storage, or a secret manager accor
 For optional Telegram human approval, deployment supplies
 `NEWS_AI_TELEGRAM_BOT_TOKEN`, `NEWS_AI_TELEGRAM_WEBHOOK_SECRET`,
 `NEWS_AI_TELEGRAM_REVIEW_CHAT_ID`, and `NEWS_AI_TELEGRAM_REVIEWER_USER_ID`, then explicitly sets
-`NEWS_AI_TELEGRAM_REVIEW_ENABLED=true`. The webhook URL is
+`NEWS_AI_TELEGRAM_REVIEW_ENABLED=true`. Optional autonomous delivery additionally requires
+`NEWS_AI_TELEGRAM_REVIEW_PUSH_ENABLED=true` and Redis. Optional approval-to-schedule orchestration
+requires `NEWS_AI_TELEGRAM_AUTO_PUBLISH_ON_APPROVAL=true`, `publish` in
+`NEWS_AI_REVIEW_CAPABILITIES`, the configured `NEWS_AI_INSTAGRAM_ACCOUNT_ID`, and its existing active
+PostgreSQL `SocialAccount`. These switches never bypass media validation or the publication pause.
+The webhook URL is
 `https://<api-host>/api/v1/integrations/telegram/review/webhook`. Configure Telegram `setWebhook`
 with that HTTPS URL, `allowed_updates=["message","callback_query"]`, and the same secret token.
 The API validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header on every update. Bot and

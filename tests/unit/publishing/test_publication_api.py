@@ -4,13 +4,14 @@ import pytest
 from fastapi.testclient import TestClient
 from news_ai_api.auth import ReviewerTokenAuthenticator
 from news_ai_api.main import create_app
+from news_ai_api.telegram_review import TelegramReviewController
 from news_ai_common.config import AppSettings
-from news_ai_database import Base, ContentVariant, SocialAccount, SocialAccountStatus
+from news_ai_database import Base, ContentVariant, Publication, SocialAccount, SocialAccountStatus
 from news_ai_domain import ReviewState
 from news_ai_publishing import PublicationError, SchedulerConfig
 from news_ai_scheduler import build_production_scheduler_stack
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from unit.publishing.test_scheduler import Clock, request, seed_candidate, stack
@@ -104,6 +105,34 @@ def test_publication_api_auth_closed_request_safe_state_and_scheduling_only():
     missing = api.get(f"/api/v1/publications/{uuid4()}", headers=headers)
     assert missing.status_code == 404 and missing.json()["error"]["code"] == "PUBLICATION_NOT_FOUND"
     assert "synthetic-review-token" not in str(data)
+
+
+def test_telegram_approval_scheduling_is_idempotent_and_uses_existing_publication_fences():
+    factory, clock = _factory(), Clock()
+    variant, account_id, actor = seed_candidate(factory)
+    service, _scheduler = stack(factory, clock)
+    with factory() as session:
+        account_identifier = session.get(SocialAccount, account_id).account_identifier
+    controller = TelegramReviewController(
+        service=None,  # type: ignore[arg-type]
+        transport=None,  # type: ignore[arg-type]
+        chat_id=1,
+        reviewer_user_id=1,
+        principal=actor,
+        publication_service=service,
+        publication_account_identifier=account_identifier,
+    )
+    request_id = uuid4()
+
+    controller._schedule_approved_publication(variant, 1, request_id)
+    controller._schedule_approved_publication(variant, 1, request_id)
+
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Publication)) == 1
+        publication = session.scalar(select(Publication))
+        assert publication.status.value == "SCHEDULED"
+        assert publication.scheduled_at is not None
+        assert publication.scheduled_event_id is None
 
 
 @pytest.mark.parametrize(

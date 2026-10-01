@@ -552,6 +552,15 @@ publication becomes eligible for scheduling
 
 Approval must identify the exact artifact/version.
 
+An optional Telegram notifier may consume `content.quality_checked` to deliver that exact review
+packet. Its transport is at-least-once and does not authorize publication. The notifier also scans
+published quality outbox rows that lack its `ProcessedEvent`, providing bounded recovery after
+Redis loss; a crash around delivery may therefore duplicate the Telegram packet. An explicitly
+configured Telegram approval may create the ordinary idempotent publication schedule. If the
+approval commits before schedule creation, the immutable Telegram approval identity remains
+recoverable until the idempotent publication exists. Execution remains owned by the
+scheduler/publisher and every existing approval, pause, media, and ambiguity check.
+
 No queue event alone authorizes external publication.
 
 ---

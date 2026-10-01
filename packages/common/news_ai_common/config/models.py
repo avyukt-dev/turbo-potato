@@ -54,6 +54,8 @@ class AppSettings(BaseSettings):
     telegram_webhook_secret: SecretStr | None = Field(default=None, min_length=1, max_length=256)
     telegram_review_chat_id: int | None = None
     telegram_reviewer_user_id: int | None = Field(default=None, gt=0)
+    telegram_review_push_enabled: bool = False
+    telegram_auto_publish_on_approval: bool = False
     media_generation_enabled: bool = False
     generated_media_storage_backend: GeneratedMediaStorageBackend = (
         GeneratedMediaStorageBackend.LOCAL
@@ -172,6 +174,12 @@ class AppSettings(BaseSettings):
             )
         ):
             raise ValueError("Telegram review configuration is incomplete")
+        if (
+            self.telegram_review_push_enabled or self.telegram_auto_publish_on_approval
+        ) and not self.telegram_review_enabled:
+            raise ValueError("Telegram review automation requires Telegram review to be enabled")
+        if self.telegram_review_push_enabled and not self.redis_url:
+            raise ValueError("Telegram review push requires Redis configuration")
         if self.media_generation_enabled and self.generated_media_public_base_url is None:
             raise ValueError(
                 "generated media public base URL is required when generation is enabled"
