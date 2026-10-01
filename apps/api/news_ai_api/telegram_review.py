@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 from urllib.parse import urlsplit
@@ -13,7 +13,19 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import httpx
 from fastapi import APIRouter, Header, HTTPException, status
 from news_ai_common.config import AppSettings
+from news_ai_database import ContentVariant, SocialAccount
 from news_ai_domain import ReviewState
+from news_ai_events import (
+    EventEnvelope,
+    EventType,
+    ProcessingOutcome,
+    RedisStreamConsumer,
+    ReliableMessageProcessor,
+    WorkerBatchResult,
+)
+from news_ai_events.idempotency import mark_processed, was_processed
+from news_ai_events.streams import stream_for_event
+from news_ai_publishing import CreatePublicationRequest, PublicationError, PublicationService
 from news_ai_review import (
     ReviewActionRequest,
     ReviewCapability,
@@ -22,12 +34,15 @@ from news_ai_review import (
     ReviewService,
 )
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 _CALLBACK_PATTERN = re.compile(r"^approve:([0-9a-f]{32}):([1-9][0-9]*)$")
 _TELEGRAM_API_BASE = "https://api.telegram.org"
 _TELEGRAM_MESSAGE_LIMIT = 4096
 _TELEGRAM_MEDIA_CAPTION_LIMIT = 1024
+TELEGRAM_REVIEW_CONSUMER_GROUP = "telegram-review-notifier"
 
 
 class TelegramUser(BaseModel):
@@ -140,12 +155,21 @@ class TelegramReviewController:
         chat_id: int,
         reviewer_user_id: int,
         principal: ReviewerPrincipal,
+        publication_service: PublicationService | None = None,
+        publication_account_identifier: str | None = None,
     ) -> None:
         self.service = service
         self.transport = transport
         self.chat_id = chat_id
         self.reviewer_user_id = reviewer_user_id
         self.principal = principal
+        self.publication_service = publication_service
+        self.publication_account_identifier = publication_account_identifier
+        if publication_service is not None and (
+            publication_account_identifier is None
+            or not principal.has_any(ReviewCapability.PUBLISH)
+        ):
+            raise ValueError("Telegram automatic publication configuration is incomplete")
 
     async def handle(self, update: TelegramUpdate) -> None:
         if update.callback_query is not None:
@@ -176,18 +200,26 @@ class TelegramReviewController:
             )
             return
         item = page.items[0]
+        if not await self.send_review(item.artifact_id, item.artifact_version):
+            await self.transport.send_message(
+                chat_id=self.chat_id, text="This content is no longer ready for review."
+            )
+
+    async def send_review(self, artifact_id: UUID, artifact_version: int) -> bool:
+        """Send one exact review artifact; callers retain durable delivery ownership."""
+
         detail = await run_in_threadpool(
-            self.service.detail,
-            artifact_type=item.artifact_type.value,
-            artifact_id=item.artifact_id,
+            self.service.detail, artifact_type="content_variant", artifact_id=artifact_id
         )
         detail_payload = detail.model_dump(mode="json")
         if (
-            detail_payload.get("artifact_id") != str(item.artifact_id)
-            or detail_payload.get("artifact_version") != item.artifact_version
+            detail_payload.get("artifact_id") != str(artifact_id)
+            or detail_payload.get("artifact_version") != artifact_version
         ):
             raise ValueError("Telegram review packet does not match the queued artifact")
-        callback_data = f"approve:{item.artifact_id.hex}:{item.artifact_version}"
+        if detail_payload.get("current_reviewable") is not True:
+            return False
+        callback_data = f"approve:{artifact_id.hex}:{artifact_version}"
         packet = _build_review_packet(detail_payload)
         # The approval action is deliberately sent last. A partial packet or a
         # failed media preview can therefore never expose an approval button.
@@ -212,6 +244,7 @@ class TelegramReviewController:
                 ]
             },
         )
+        return True
 
     async def _callback(self, callback: TelegramCallbackQuery) -> None:
         message = callback.message
@@ -228,8 +261,8 @@ class TelegramReviewController:
             return
         artifact_id = UUID(hex=match.group(1))
         artifact_version = int(match.group(2))
-        callback_hash = hashlib.sha256(callback.id.encode("utf-8")).hexdigest()
-        request_identity = uuid5(NAMESPACE_URL, f"telegram-callback:{callback_hash}")
+        operation_key = f"telegram:approve:{artifact_id.hex}:{artifact_version}"
+        request_identity = uuid5(NAMESPACE_URL, operation_key)
         try:
             await run_in_threadpool(
                 self.service.decide,
@@ -238,7 +271,7 @@ class TelegramReviewController:
                 request=ReviewActionRequest(artifact_version=artifact_version),
                 decision=ReviewState.APPROVED,
                 principal=self.principal,
-                idempotency_key=f"telegram:{callback_hash}",
+                idempotency_key=operation_key,
                 request_id=request_identity,
                 correlation_id=request_identity,
             )
@@ -248,11 +281,63 @@ class TelegramReviewController:
                 text="Approval was not applied; refresh the review item.",
             )
             return
+        if self.publication_service is not None:
+            try:
+                await run_in_threadpool(
+                    self._schedule_approved_publication,
+                    artifact_id,
+                    artifact_version,
+                    request_identity,
+                )
+            except PublicationError:
+                await self.transport.answer_callback_query(
+                    callback_query_id=callback.id,
+                    text="Approved; publication scheduling is temporarily unavailable.",
+                )
+                return
         await self.transport.clear_reply_markup(
             chat_id=message.chat.id, message_id=message.message_id
         )
         await self.transport.answer_callback_query(
-            callback_query_id=callback.id, text="Exact content version approved."
+            callback_query_id=callback.id,
+            text=(
+                "Approved and scheduled for publication."
+                if self.publication_service is not None
+                else "Exact content version approved."
+            ),
+        )
+
+    def _schedule_approved_publication(
+        self, artifact_id: UUID, artifact_version: int, request_identity: UUID
+    ) -> None:
+        assert self.publication_service is not None
+        with self.publication_service.session_factory() as session:
+            account_id = session.scalar(
+                select(SocialAccount.id).where(
+                    SocialAccount.platform == "INSTAGRAM",
+                    SocialAccount.account_identifier == self.publication_account_identifier,
+                )
+            )
+        if account_id is None:
+            raise PublicationError("ACCOUNT_NOT_FOUND")
+        key = f"telegram-publish:{artifact_id.hex}:{artifact_version}"
+        publication = self.publication_service.create(
+            CreatePublicationRequest(
+                content_variant_id=artifact_id,
+                social_account_id=account_id,
+                platform="INSTAGRAM",
+                scheduled_at=None,
+                idempotency_key=key,
+            ),
+            self.principal,
+            correlation_id=request_identity,
+            request_id=request_identity,
+        )
+        self.publication_service.publish_now(
+            publication.id,
+            self.principal,
+            idempotency_key=f"telegram-now:{artifact_id.hex}:{artifact_version}",
+            request_id=request_identity,
         )
 
     def _authorized(self, user: TelegramUser | None, chat: TelegramChat) -> bool:
@@ -296,6 +381,8 @@ def build_telegram_review_controller(
     service: ReviewService,
     *,
     transport: TelegramTransport | None = None,
+    publication_service: PublicationService | None = None,
+    publication_account_identifier: str | None = None,
 ) -> TelegramReviewController:
     if (
         settings.telegram_bot_token is None
@@ -315,7 +402,81 @@ def build_telegram_review_controller(
             reviewer_id=settings.reviewer_id,
             capabilities=capabilities,
         ),
+        publication_service=publication_service,
+        publication_account_identifier=publication_account_identifier,
     )
+
+
+class TelegramReviewNotificationWorker:
+    """Consume quality completion and push exact review packets with durable ACKs."""
+
+    def __init__(
+        self,
+        consumer: RedisStreamConsumer,
+        session_factory: Callable[[], Session],
+        controller: TelegramReviewController,
+    ) -> None:
+        if (
+            consumer.stream != stream_for_event(EventType.CONTENT_QUALITY_CHECKED)
+            or consumer.group != TELEGRAM_REVIEW_CONSUMER_GROUP
+        ):
+            raise ValueError("Telegram notifier must use the canonical content stream/group")
+        self.consumer = consumer
+        self.session_factory = session_factory
+        self.controller = controller
+        self.reliability = ReliableMessageProcessor(
+            consumer,
+            session_factory,
+            consumer_group=TELEGRAM_REVIEW_CONSUMER_GROUP,
+            handled_event_types=frozenset({EventType.CONTENT_QUALITY_CHECKED}),
+        )
+
+    async def ensure_ready(self) -> None:
+        await self.consumer.ensure_group()
+
+    async def run_once(self) -> WorkerBatchResult:
+        return await self.reliability.process(await self.consumer.read(), self._handle_event)
+
+    async def recover_once(
+        self, *, min_idle_ms: int, start_id: str = "0-0"
+    ) -> tuple[str, WorkerBatchResult]:
+        return await self.reliability.recover(
+            self._handle_event, min_idle_ms=min_idle_ms, start_id=start_id
+        )
+
+    async def _handle_event(self, event: EventEnvelope) -> ProcessingOutcome:
+        with self.session_factory() as session:
+            if was_processed(
+                session, event_id=event.event_id, consumer_group=TELEGRAM_REVIEW_CONSUMER_GROUP
+            ):
+                return ProcessingOutcome.DUPLICATE
+            draft_id = UUID(str(event.payload["content_draft_id"]))
+            variants = tuple(
+                session.scalars(
+                    select(ContentVariant)
+                    .where(
+                        ContentVariant.content_draft_id == draft_id,
+                        ContentVariant.review_state == ReviewState.READY_FOR_REVIEW,
+                    )
+                    .order_by(ContentVariant.created_at, ContentVariant.id)
+                )
+            )
+        notified = 0
+        for variant in variants:
+            if await self.controller.send_review(variant.id, variant.version):
+                notified += 1
+        with self.session_factory() as session, session.begin():
+            if was_processed(
+                session, event_id=event.event_id, consumer_group=TELEGRAM_REVIEW_CONSUMER_GROUP
+            ):
+                return ProcessingOutcome.DUPLICATE
+            mark_processed(
+                session,
+                event_id=event.event_id,
+                consumer_group=TELEGRAM_REVIEW_CONSUMER_GROUP,
+                result={"notified": notified},
+            )
+        return ProcessingOutcome.PROCESSED
 
 
 @dataclass(frozen=True, slots=True)

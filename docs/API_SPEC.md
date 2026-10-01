@@ -503,6 +503,15 @@ The current Telegram channel supports exact-version approval. Decisions that req
 (`REJECTED` and `CHANGES_REQUESTED`) continue through a reason-capable review client rather than
 fabricating or omitting the required human rationale.
 
+When `telegram_review_push_enabled` is explicitly enabled, an optional reliable consumer of
+`content.quality_checked` pushes the exact review packet without requiring `/review`. Delivery is
+at-least-once: a crash around Telegram I/O may duplicate a packet, while the exact-version callback
+and durable review decision remain idempotent. When `telegram_auto_publish_on_approval` is also
+explicitly enabled, the allowlisted reviewer must have `publish` capability and the callback creates
+an idempotent publish-now schedule for the configured Instagram account. The API never invokes the
+social adapter; the ordinary scheduler, publication pause, publisher revalidation, and ambiguity
+fences remain authoritative.
+
 ---
 
 # 22. MVP Approval Invariant

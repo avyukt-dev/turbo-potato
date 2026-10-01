@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -11,13 +10,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from news_ai_api.main import create_app
 from news_ai_api.telegram_review import (
+    TELEGRAM_REVIEW_CONSUMER_GROUP,
     TelegramBotTransport,
     TelegramReviewController,
+    TelegramReviewNotificationWorker,
     TelegramUpdate,
     create_telegram_review_router,
 )
 from news_ai_common.config import AppSettings
 from news_ai_domain import ReviewState, RiskLevel
+from news_ai_events import EventEnvelope, EventType, ProcessingOutcome
 from news_ai_review import (
     ArtifactType,
     ReviewActionResult,
@@ -261,6 +263,75 @@ def _callback_update(variant_id: UUID, *, user_id: int = _TELEGRAM_USER_ID) -> d
     }
 
 
+def test_quality_event_pushes_once_and_records_durable_completion(monkeypatch) -> None:
+    variant_id, draft_id, event_id = uuid4(), uuid4(), uuid4()
+    state = {"processed": False, "result": None}
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_arguments):
+            return None
+
+        def begin(self):
+            return self
+
+        def scalars(self, _statement):
+            return [SimpleNamespace(id=variant_id, version=3)]
+
+    class Consumer:
+        stream = "news:content"
+        group = TELEGRAM_REVIEW_CONSUMER_GROUP
+
+    class Controller:
+        sent: list[tuple[UUID, int]] = []
+
+        async def send_review(self, artifact_id, version):
+            self.sent.append((artifact_id, version))
+            return True
+
+    monkeypatch.setattr(
+        "news_ai_api.telegram_review.was_processed",
+        lambda *_args, **_kwargs: state["processed"],
+    )
+
+    def mark(*_args, **kwargs):
+        state["processed"] = True
+        state["result"] = kwargs["result"]
+
+    monkeypatch.setattr("news_ai_api.telegram_review.mark_processed", mark)
+    controller = Controller()
+    worker = TelegramReviewNotificationWorker(Consumer(), Session, controller)  # type: ignore[arg-type]
+    event = EventEnvelope(
+        event_id=event_id,
+        event_type=EventType.CONTENT_QUALITY_CHECKED,
+        producer="ai-worker",
+        producer_version="0.1.0",
+        aggregate_type="content_draft",
+        aggregate_id=draft_id,
+        correlation_id=uuid4(),
+        idempotency_key=f"content.quality_checked:{draft_id}",
+        payload={
+            "content_draft_id": str(draft_id),
+            "passed": True,
+            "fact_check_passed": True,
+            "source_check_passed": True,
+            "style_check_passed": True,
+            "risk_level": "LOW",
+            "review_required": True,
+        },
+    )
+
+    first = asyncio.run(worker._handle_event(event))
+    replay = asyncio.run(worker._handle_event(event))
+
+    assert first is ProcessingOutcome.PROCESSED
+    assert replay is ProcessingOutcome.DUPLICATE
+    assert controller.sent == [(variant_id, 3)]
+    assert state["result"] == {"notified": 1}
+
+
 def test_review_command_returns_publication_preview_sources_and_exact_version_button() -> None:
     controller, service, transport = _controller()
     asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
@@ -381,9 +452,55 @@ def test_authorized_callback_uses_canonical_exact_version_review_service() -> No
     assert decision["request"].artifact_version == 2
     assert decision["decision"] is ReviewState.APPROVED
     assert decision["principal"].reviewer_id == _REVIEWER_ID
-    assert decision["idempotency_key"] == ("telegram:" + hashlib.sha256(b"callback-1").hexdigest())
+    assert decision["idempotency_key"] == (f"telegram:approve:{service.variant_id.hex}:2")
     assert transport.cleared == [{"chat_id": _CHAT_ID, "message_id": 11}]
     assert transport.answers[0]["text"] == "Exact content version approved."
+
+
+def test_approval_can_idempotently_schedule_through_publication_service(monkeypatch) -> None:
+    capabilities = frozenset(
+        {
+            ReviewCapability.VIEW,
+            ReviewCapability.REVIEW,
+            ReviewCapability.APPROVE,
+            ReviewCapability.PUBLISH,
+        }
+    )
+    controller, service, transport = _controller(capabilities=capabilities)
+    controller.publication_service = object()  # type: ignore[assignment]
+    controller.publication_account_identifier = "17841442632456782"
+    scheduled: list[tuple[UUID, int, UUID]] = []
+    monkeypatch.setattr(
+        controller,
+        "_schedule_approved_publication",
+        lambda artifact_id, version, request_id: scheduled.append(
+            (artifact_id, version, request_id)
+        ),
+    )
+
+    asyncio.run(
+        controller.handle(TelegramUpdate.model_validate(_callback_update(service.variant_id)))
+    )
+
+    assert [(item[0], item[1]) for item in scheduled] == [(service.variant_id, 2)]
+    assert transport.cleared == [{"chat_id": _CHAT_ID, "message_id": 11}]
+    assert transport.answers[-1]["text"] == "Approved and scheduled for publication."
+
+
+def test_telegram_automation_configuration_fails_closed(monkeypatch) -> None:
+    with pytest.raises(ValidationError, match="requires Telegram review"):
+        AppSettings(telegram_review_push_enabled=True, redis_url="redis://localhost:6379/0")
+    monkeypatch.delenv("NEWS_AI_REDIS_URL", raising=False)
+    with pytest.raises(ValidationError, match="requires Redis"):
+        AppSettings(
+            telegram_review_enabled=True,
+            telegram_review_push_enabled=True,
+            telegram_bot_token="123456:secret",
+            telegram_webhook_secret="valid-secret",
+            telegram_review_chat_id=_CHAT_ID,
+            telegram_reviewer_user_id=_TELEGRAM_USER_ID,
+            reviewer_id=_REVIEWER_ID,
+        )
 
 
 def test_unauthorized_user_cannot_view_or_approve() -> None:
