@@ -169,6 +169,12 @@ class FakeReviewService:
                             "source_level": 2,
                             "url": "https://example.com/report",
                         },
+                        {
+                            "source_id": "77777777-7777-7777-7777-777777777777",
+                            "name": "Unrelated source",
+                            "source_level": 2,
+                            "url": "https://unrelated.example/report",
+                        },
                     ],
                 },
                 "editorial_brief": {"human_review_required": True},
@@ -269,6 +275,8 @@ def test_review_command_returns_publication_preview_sources_and_exact_version_bu
     assert "Sources" in rendered
     assert "• Example News: https://example.com/report" in rendered
     assert rendered.count("https://example.com/report") == 1
+    assert "https://unrelated.example/report" not in rendered
+    assert str(service.variant_id) not in rendered
     assert "Canonical headline" not in rendered
     assert "Reviewer-visible quality warning" not in rendered
     assert "deterministic" not in rendered
@@ -287,6 +295,23 @@ def test_review_command_returns_publication_preview_sources_and_exact_version_bu
     assert message["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == (
         f"approve:{service.variant_id.hex}:2"
     )
+
+
+def test_review_packet_rejects_credential_bearing_source_url() -> None:
+    controller, service, transport = _controller()
+    original_detail = service.detail
+
+    def invalid_detail(**arguments):
+        payload = original_detail(**arguments).model_dump()
+        payload["fact_sheet"]["sources"][0]["url"] = "https://user:secret@example.com/report"
+        return SimpleNamespace(model_dump=lambda **_kwargs: payload)
+
+    service.detail = invalid_detail
+    with pytest.raises(ValueError, match="invalid source URL"):
+        asyncio.run(controller.handle(TelegramUpdate.model_validate(_message_update())))
+
+    assert transport.messages == []
+    assert transport.photos == []
 
 
 def test_review_packet_is_losslessly_chunked_with_button_only_at_end() -> None:

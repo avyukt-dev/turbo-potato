@@ -7,6 +7,7 @@ import hmac
 import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
@@ -202,8 +203,8 @@ class TelegramReviewController:
             chat_id=self.chat_id,
             text=(
                 "Approval action\n"
-                f"Artifact: {item.artifact_id} v{item.artifact_version}\n"
-                "Approve only after reviewing every preceding packet section and media preview."
+                "Approve only after reviewing the complete publication preview "
+                "and every media item."
             ),
             reply_markup={
                 "inline_keyboard": [
@@ -368,7 +369,7 @@ def _build_review_packet(detail: dict[str, Any]) -> _TelegramReviewPacket:
     # Complete provenance and policy data remain durable and validated. Telegram
     # is a focused approval surface, not a serialization of the internal graph.
     preview = _publication_text(variant)
-    sources = _source_links(sheet)
+    sources = _source_links(sheet, variant)
     messages = _chunk_text(f"Publication preview\n\n{preview}\n\nSources\n{sources}")
     return _TelegramReviewPacket(messages=messages, media=tuple(media))
 
@@ -417,21 +418,34 @@ def _publication_text(variant: dict[str, Any]) -> str:
     return "\n\n".join(sections)
 
 
-def _source_links(sheet: dict[str, Any]) -> str:
+def _source_links(sheet: dict[str, Any], variant: dict[str, Any]) -> str:
     raw_sources = sheet.get("sources") or ()
-    if not isinstance(raw_sources, (list, tuple)):
+    raw_used_ids = variant.get("source_ids_used") or ()
+    if not isinstance(raw_sources, (list, tuple)) or not isinstance(raw_used_ids, (list, tuple)):
         raise ValueError("Telegram review packet has invalid sources")
+    used_ids = {str(value) for value in raw_used_ids}
     links: list[str] = []
     seen: set[str] = set()
     for raw_source in raw_sources:
         source = _mapping(raw_source, "source")
+        if used_ids and str(source.get("source_id") or "") not in used_ids:
+            continue
         url = str(source.get("url") or "").strip()
         if not url or url in seen:
             continue
-        if not url.startswith(("https://", "http://")):
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"https", "http"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(character in url for character in "\r\n\t")
+        ):
             raise ValueError("Telegram review packet has an invalid source URL")
         seen.add(url)
         name = str(source.get("name") or "Source").strip() or "Source"
+        if any(character in name for character in "\r\n\t"):
+            raise ValueError("Telegram review packet has an invalid source name")
         links.append(f"• {name}: {url}")
     return "\n".join(links) if links else "No source link available"
 
