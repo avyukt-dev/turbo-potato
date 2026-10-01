@@ -29,7 +29,7 @@ from news_ai_database.models import OutboxStatus
 from news_ai_domain import PublicationStatus, ReviewState, RiskLevel
 from news_ai_events import EventEnvelope, EventType, ProcessingOutcome
 from news_ai_events.outbox import build_outbox_record
-from news_ai_publishing import PublicationService
+from news_ai_publishing import CreatePublicationRequest, PublicationService
 from news_ai_review import (
     ApprovalEligibilityService,
     ArtifactType,
@@ -582,6 +582,47 @@ def test_durable_approval_is_recovered_after_scheduling_gap() -> None:
         publication = session.scalar(select(Publication))
         assert publication.content_variant_id == variant_id
         assert publication.status is PublicationStatus.SCHEDULED
+
+
+def test_created_publication_is_recovered_after_publish_now_gap() -> None:
+    factory, clock = _factory(), Clock()
+    variant_id, account_id, actor = seed_candidate(factory)
+    with factory() as session, session.begin():
+        account_identifier = session.get(SocialAccount, account_id).account_identifier
+        decision = session.scalar(
+            select(ReviewDecisionRecord).where(ReviewDecisionRecord.artifact_id == variant_id)
+        )
+        decision.idempotency_key = f"telegram:approve:{variant_id.hex}:1"
+    publication_service = PublicationService(
+        factory,
+        ApprovalEligibilityService(factory, _policy()),
+        clock=clock,
+    )
+    publication = publication_service.create(
+        CreatePublicationRequest(
+            content_variant_id=variant_id,
+            social_account_id=account_id,
+            platform="INSTAGRAM",
+            idempotency_key=f"telegram-publish:{variant_id.hex}:1",
+        ),
+        actor,
+    )
+    assert publication.status is PublicationStatus.APPROVED
+    controller = TelegramReviewController(
+        ReviewService(factory, _policy()),
+        FakeTelegramTransport(),
+        chat_id=_CHAT_ID,
+        reviewer_user_id=_TELEGRAM_USER_ID,
+        principal=actor,
+        publication_service=publication_service,
+        publication_account_identifier=account_identifier,
+    )
+
+    assert controller.recover_approved_publications() == 1
+    assert controller.recover_approved_publications() == 0
+    with factory() as session:
+        recovered = session.get(Publication, publication.id)
+        assert recovered.status is PublicationStatus.SCHEDULED
 
 
 def test_empty_source_provenance_does_not_expose_unrelated_fact_sheet_sources() -> None:

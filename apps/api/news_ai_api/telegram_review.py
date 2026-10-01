@@ -22,7 +22,7 @@ from news_ai_database import (
     SocialAccount,
 )
 from news_ai_database.models import OutboxStatus
-from news_ai_domain import ReviewState
+from news_ai_domain import PublicationStatus, ReviewState
 from news_ai_events import (
     EventEnvelope,
     EventType,
@@ -43,7 +43,7 @@ from news_ai_review import (
     ReviewService,
 )
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import exists, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -366,7 +366,16 @@ class TelegramReviewController:
                     .where(
                         ReviewDecisionRecord.decision == ReviewState.APPROVED,
                         ReviewDecisionRecord.idempotency_key.like("telegram:approve:%"),
-                        ~exists().where(Publication.review_decision_id == ReviewDecisionRecord.id),
+                        or_(
+                            ~exists().where(
+                                Publication.review_decision_id == ReviewDecisionRecord.id
+                            ),
+                            exists().where(
+                                Publication.review_decision_id == ReviewDecisionRecord.id,
+                                Publication.status == PublicationStatus.APPROVED,
+                                Publication.scheduled_event_id.is_(None),
+                            ),
+                        ),
                     )
                     .order_by(ReviewDecisionRecord.decided_at, ReviewDecisionRecord.id)
                     .limit(limit)
