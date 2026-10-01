@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
@@ -203,8 +203,8 @@ class TelegramReviewController:
             chat_id=self.chat_id,
             text=(
                 "Approval action\n"
-                f"Artifact: {item.artifact_id} v{item.artifact_version}\n"
-                "Approve only after reviewing every preceding packet section and media preview."
+                "Approve only after reviewing the complete publication preview "
+                "and every media item."
             ),
             reply_markup={
                 "inline_keyboard": [
@@ -331,7 +331,7 @@ class _TelegramReviewPacket:
 
 
 def _build_review_packet(detail: dict[str, Any]) -> _TelegramReviewPacket:
-    """Render the exact durable review graph without truncating review evidence."""
+    """Render publication-facing content while validating its durable review graph."""
 
     variant = _mapping(detail.get("content_variant"), "content_variant")
     sheet = _mapping(detail.get("fact_sheet"), "fact_sheet")
@@ -359,49 +359,19 @@ def _build_review_packet(detail: dict[str, Any]) -> _TelegramReviewPacket:
         if not media_id or not url.startswith("https://"):
             raise ValueError("Telegram review packet has invalid media provenance")
         provenance_ids.append(media_id)
-        caption = (
-            f"Exact reviewed media {position}/{len(raw_media)}\n"
-            f"Asset: {media_id}\n"
-            f"Format: {item.get('mime_type') or 'unknown'} / "
-            f"{item.get('media_format') or 'unknown'}\n"
-            f"Content hash: {item.get('file_hash') or 'unavailable'}"
-        )
+        caption = f"Media preview {position}/{len(raw_media)}"
         if len(caption) > _TELEGRAM_MEDIA_CAPTION_LIMIT:
             raise ValueError("Telegram review media provenance exceeds caption limit")
         media.append(_TelegramMediaPreview(url=url, caption=caption))
     if tuple(provenance_ids) != media_ids:
         raise ValueError("Telegram review media provenance does not match the artifact")
 
-    # Media bytes are delivered as Telegram photo previews. Their complete,
-    # immutable provenance is also retained in the publication-artifact JSON.
-    sections: tuple[tuple[str, Any], ...] = (
-        (
-            "Review identity and policy",
-            {
-                "artifact_id": artifact_id,
-                "artifact_version": artifact_version,
-                "current_review_state": detail.get("current_review_state"),
-                "current_reviewable": detail.get("current_reviewable"),
-                "risk_level": detail.get("risk_level"),
-                "sensitive_topics": detail.get("sensitive_topics") or [],
-            },
-        ),
-        ("Exact publication artifact", variant),
-        ("Immutable Fact Sheet", sheet),
-        ("Editorial brief", detail.get("editorial_brief") or {}),
-        ("Quality assessment", quality),
-        (
-            "Safe AI provenance",
-            {
-                "generation": detail.get("generation_ai_provenance"),
-                "quality": detail.get("quality_ai_provenance"),
-            },
-        ),
-    )
-    messages: list[str] = []
-    for heading, value in sections:
-        messages.extend(_chunk_text(_json_section(heading, value)))
-    return _TelegramReviewPacket(messages=tuple(messages), media=tuple(media))
+    # Complete provenance and policy data remain durable and validated. Telegram
+    # is a focused approval surface, not a serialization of the internal graph.
+    preview = _publication_text(variant)
+    sources = _source_links(sheet, variant)
+    messages = _chunk_text(f"Publication preview\n\n{preview}\n\nSources\n{sources}")
+    return _TelegramReviewPacket(messages=messages, media=tuple(media))
 
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:
@@ -410,8 +380,74 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
-def _json_section(heading: str, value: Any) -> str:
-    return f"{heading}\n{json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)}"
+def _publication_text(variant: dict[str, Any]) -> str:
+    title = str(variant.get("title") or "").strip()
+    caption = str(variant.get("caption") or "").strip()
+    payload = _mapping(variant.get("structured_payload"), "structured_payload")
+    raw_slides = payload.get("slides") or ()
+    if not isinstance(raw_slides, (list, tuple)):
+        raise ValueError("Telegram review packet has invalid slides")
+
+    sections: list[str] = []
+    if title:
+        sections.append(title)
+    for position, raw_slide in enumerate(raw_slides, start=1):
+        slide = _mapping(raw_slide, "slide")
+        heading = str(slide.get("heading") or "").strip()
+        body = str(slide.get("body") or "").strip()
+        if not heading and not body:
+            raise ValueError("Telegram review packet has an empty slide")
+        text = "\n".join(part for part in (heading, body) if part)
+        sections.append(f"Slide {position}\n{text}")
+    if not raw_slides:
+        body = str(variant.get("body") or "").strip()
+        if body:
+            sections.append(body)
+    if caption:
+        sections.append(f"Caption\n{caption}")
+
+    hashtags = payload.get("hashtags") or ()
+    if not isinstance(hashtags, (list, tuple)) or any(
+        not isinstance(item, str) for item in hashtags
+    ):
+        raise ValueError("Telegram review packet has invalid hashtags")
+    if hashtags:
+        sections.append(" ".join(item.strip() for item in hashtags if item.strip()))
+    if not sections:
+        raise ValueError("Telegram review packet has no publication text")
+    return "\n\n".join(sections)
+
+
+def _source_links(sheet: dict[str, Any], variant: dict[str, Any]) -> str:
+    raw_sources = sheet.get("sources") or ()
+    raw_used_ids = variant.get("source_ids_used") or ()
+    if not isinstance(raw_sources, (list, tuple)) or not isinstance(raw_used_ids, (list, tuple)):
+        raise ValueError("Telegram review packet has invalid sources")
+    used_ids = {str(value) for value in raw_used_ids}
+    links: list[str] = []
+    seen: set[str] = set()
+    for raw_source in raw_sources:
+        source = _mapping(raw_source, "source")
+        if used_ids and str(source.get("source_id") or "") not in used_ids:
+            continue
+        url = str(source.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"https", "http"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(character in url for character in "\r\n\t")
+        ):
+            raise ValueError("Telegram review packet has an invalid source URL")
+        seen.add(url)
+        name = str(source.get("name") or "Source").strip() or "Source"
+        if any(character in name for character in "\r\n\t"):
+            raise ValueError("Telegram review packet has an invalid source name")
+        links.append(f"• {name}: {url}")
+    return "\n".join(links) if links else "No source link available"
 
 
 def _chunk_text(text: str) -> tuple[str, ...]:
